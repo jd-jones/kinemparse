@@ -5,7 +5,6 @@ import argparse
 
 import yaml
 import joblib
-import numpy as np
 
 from blocks.core import labels, duplocorpus
 from mathtools import metrics, utils
@@ -17,7 +16,8 @@ def main(
         out_dir=None, scores_dir=None, preprocessed_data_dir=None,
         keyframe_model_name=None,
         subsample_period=None, window_size=None, corpus_name=None,
-        default_annotator=None, cv_scheme=None, model_name=None, model_config=None):
+        default_annotator=None, cv_scheme=None, model_name=None, model_config={},
+        camera_params_config={}):
 
     out_dir = os.path.expanduser(out_dir)
     scores_dir = os.path.expanduser(scores_dir)
@@ -28,6 +28,11 @@ def main(
 
     def saveToWorkingDir(var, var_name):
         joblib.dump(var, os.path.join(out_dir, f"{var_name}.pkl"))
+
+    # Load camera parameters from external file and add them to model config kwargs
+    model_config['init_kwargs'].update(
+        render.loadCameraParams(**camera_params_config, as_dict=True)
+    )
 
     trial_ids = joblib.load(os.path.join(preprocessed_data_dir, 'trial_ids.pkl'))
 
@@ -143,25 +148,22 @@ def main(
                 for rgb_image, segment_image in zip(rgb_frame_seq, seg_frame_seq)
             )
 
+            # NOTE: Casting uint16 -> float here --- maybe we want to make this
+            #   happen somewhere more intuitive, like when the frame is loaded.
+            depth_frame_seq = tuple(depth_image.astype(float) for depth_image in depth_frame_seq)
+
+            rgb_background_seq, depth_background_seq = utils.batchProcess(
+                model.renderPlane, background_plane_seq, unzip=True
+            )
+
             logger.info(f'    Decoding video {trial_id}...')
             start_time = time.process_time()
-            try:
-                ret = model.predictSeq(
-                    rgb_frame_seq, depth_frame_seq, seg_frame_seq, background_plane_seq,
-                    **model_config['decode_kwargs']
-                )
-                pred_assembly_seq, pred_idx_seq, max_log_probs, log_likelihoods, poses_seq = ret
-            # FIXME: Throw a DecodeError to distinguish between bugs and cases where
-            #   there is no valid decode.
-            except ValueError:
-                new_decode_kwargs = model_config['decode_kwargs'].copy()
-                new_decode_kwargs['greed_coeff'] = -np.inf
-                logger.warning('Re-running decode with greed_coeff = -infinity')
-                ret = model.predictSeq(
-                    rgb_frame_seq, depth_frame_seq, seg_frame_seq, background_plane_seq,
-                    **new_decode_kwargs
-                )
-                pred_assembly_seq, pred_idx_seq, max_log_probs, log_likelihoods, poses_seq = ret
+            out = model.predictSeq(
+                rgb_frame_seq, depth_frame_seq, seg_frame_seq,
+                rgb_background_seq, depth_background_seq,
+                **model_config['decode_kwargs']
+            )
+            pred_assembly_seq, pred_idx_seq, max_log_probs, log_likelihoods, poses_seq = out
             end_time = time.process_time()
             logger.info(utils.makeProcessTimeStr(end_time - start_time))
 
@@ -191,13 +193,8 @@ def main(
 
             # Save figures
             rgb_rendered_seq, depth_rendered_seq, label_rendered_seq = utils.batchProcess(
-                render.renderScene,
+                model.renderScene,
                 background_plane_seq, pred_assembly_seq, poses_seq,
-                static_kwargs={
-                    'camera_pose': render.camera_pose,
-                    'camera_params': render.intrinsic_matrix,
-                    'object_appearances': render.object_colors
-                },
                 unzip=True
             )
             if utils.in_ipython_console():

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import scipy
 
-from seqtools import utils, torchutils
+from mathtools import utils, torchutils
 from visiontools import geometry, render, imageprocessing
 import neural_renderer as nr
 
@@ -16,6 +16,16 @@ class TorchSceneRenderer(nr.Renderer):
     def __init__(
             self, intrinsic_matrix=None, camera_pose=None, colors=None, image_size=None,
             **super_kwargs):
+
+        if not isinstance(intrinsic_matrix, torch.Tensor):
+            intrinsic_matrix = torch.tensor(intrinsic_matrix, dtype=torch.float)
+
+        if not isinstance(camera_pose, torch.Tensor):
+            camera_pose = torch.tensor(camera_pose, dtype=torch.float)
+
+        if not isinstance(colors, torch.Tensor):
+            colors = torch.tensor(colors, dtype=torch.float)
+
         K = intrinsic_matrix
         K = K[None, :, :].cuda()
 
@@ -72,14 +82,16 @@ class TorchSceneRenderer(nr.Renderer):
         # [batch_size, RGB, image_size, image_size] -> [batch_size, image_size, image_size, RGB]
         images_rgb = images_rgb.permute(0, 2, 3, 1)
 
+        # Crop square image back to the original aspect ratio
         images_rgb = images_rgb[:, :self.image_size[0], :self.image_size[1]]
         images_depth = images_depth[:, :self.image_size[0], :self.image_size[1]]
 
         return images_rgb, images_depth
 
     def renderScene(
-            self, background_plane, assembly, component_poses,
-            camera_pose=None, camera_params=None, render_background=True,
+            self, assembly, component_poses,
+            rgb_background=None, depth_background=None,
+            camera_pose=None, camera_params=None,
             as_numpy=False):
         """ Render a scene consisting of a spatial assembly and a background plane.
 
@@ -96,13 +108,14 @@ class TorchSceneRenderer(nr.Renderer):
         if camera_params is None:
             camera_params = self.K[0]
 
-        if render_background:
-            rgb_bkgrnd, depth_bkgrnd = self.renderPlane(
-                background_plane, camera_pose=camera_pose, camera_params=camera_params
-            )
+        if rgb_background is None:
+            rgb_background = torch.zeros(*self.image_size, 3)
+
+        if depth_background is None:
+            depth_background = torch.full(self.image_size, float('inf'))
 
         if not assembly.blocks:
-            return rgb_bkgrnd, depth_bkgrnd
+            return rgb_background, depth_background
 
         assembly = assembly.setPose(component_poses, in_place=False)
 
@@ -111,9 +124,9 @@ class TorchSceneRenderer(nr.Renderer):
         textures = torchutils.makeBatch(assembly.textures, dtype=torch.float).cuda()
 
         rgb_images, depth_images = self.render(vertices, faces, textures)
-        if render_background:
-            rgb_images = torch.cat((rgb_bkgrnd, rgb_images), 0)
-            depth_images = torch.cat((depth_bkgrnd, depth_images), 0)
+
+        rgb_images = torch.cat((rgb_background, rgb_images), 0)
+        depth_images = torch.cat((depth_background, depth_images), 0)
 
         rgb_image, depth_image, label_image = render.reduceByDepth(rgb_images, depth_images)
 
@@ -137,18 +150,15 @@ class TorchSceneRenderer(nr.Renderer):
 
         return rgb_image, depth_image
 
-    def renderComponent(self, assembly, component_index, component_pose, background_images=None):
+    def renderComponent(
+            self, assembly, component_index, component_pose,
+            rgb_background=None, depth_background=None):
         """
 
         Parameters
         ----------
-        background_images : tuple(
-            array of float, shape (img_height, img_width, 3),
-            array of shape (img_height, img_width)
-        )
-            Elements should be as follows:
-            0 --- RGB image
-            1 --- Depth image
+        rgb_background : array of float, shape (img_height, img_width, 3), optional
+        depth_background : array of shape (img_height, img_width), optional
 
         Returns
         -------
@@ -156,6 +166,14 @@ class TorchSceneRenderer(nr.Renderer):
         depth_image :
         label_image :
         """
+
+        if (rgb_background is None) != (depth_background is None):
+            err_str = (
+                "Keyword arguments 'rgb_background' and 'depth_background'"
+                "must be passed together --- one of the arguments passed is None,"
+                "but the other is not."
+            )
+            raise AssertionError(err_str)
 
         assembly = assembly.recenter(component_index, in_place=False)
 
@@ -173,9 +191,12 @@ class TorchSceneRenderer(nr.Renderer):
         vertices = vertices @ R.T + t
 
         rgb_images, depth_images = self.render(vertices, faces, textures)
-        if background_images is not None:
-            rgb_images = torch.cat((background_images[0], rgb_images), 0)
-            depth_images = torch.cat((background_images[1], depth_images), 0)
+
+        if rgb_background is not None:
+            rgb_images = torch.cat((rgb_background, rgb_images), 0)
+
+        if depth_background is not None:
+            depth_images = torch.cat((depth_background, depth_images), 0)
 
         rgb_image, depth_image, label_image = render.reduceByDepth(rgb_images, depth_images)
 
@@ -224,7 +245,7 @@ class RenderingSceneScorer(object):
 
     def fitScene(
             self, rgb_image, depth_image, segment_image,
-            assembly, background_plane,
+            rgb_background, depth_background, assembly,
             camera_params=None, camera_pose=None, block_colors=None,
             W=None, error_func=None, bias=None, scale=None,
             ignore_background=False):
@@ -242,11 +263,6 @@ class RenderingSceneScorer(object):
 
         if W is None:
             W = np.ones(2)
-
-        rgb_background, depth_background, label_background = self.renderPlane(
-            background_plane, camera_pose, camera_params,
-            plane_appearance=block_colors[0, :],
-        )
 
         # Estimate initial poses from each detected image segment
         segment_labels = np.unique(segment_image[segment_image != 0])
@@ -273,7 +289,6 @@ class RenderingSceneScorer(object):
                     rgb_image, depth_image, segment_image, assembly,
                     rgb_background=rgb_background,
                     depth_background=depth_background,
-                    label_background=label_background,
                     component_index=component_key, init_pose=init_pose,
                     camera_params=camera_params, camera_pose=camera_pose,
                     block_colors=block_colors,
@@ -290,8 +305,9 @@ class RenderingSceneScorer(object):
         )
 
         # Render the complete final scene
+        # FIXME: Call renderComponents
         rgb_render, depth_render, label_render = self.renderScene(
-            background_plane, assembly, component_poses,
+            assembly, component_poses,
             camera_pose=camera_pose,
             camera_params=camera_params,
             object_appearances=block_colors

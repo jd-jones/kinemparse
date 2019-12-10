@@ -1,22 +1,26 @@
 import logging
 
 import numpy as np
+import torch
 
-from mathtools import torchutils
-from seqtools import fsm
+from seqtools import fsm, torchutils
 
 from .. import scene
 
-logger = logging.getlogger(__name__)
+
+logger = logging.getLogger(__name__)
 
 
 class LegacyHmmInterface(object):
     """ This class allows newer pytorch models to conform to the sklearn-style API. """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, transition_weights=None)
+
     def fit(self, label_seqs, *feat_seqs,
             uniform_regularizer=0, diag_regularizer=0, empty_regularizer=0,
             zero_transition_regularizer=0,
-            override_transitions=False, **super_kwargs):
+            override_transitions=False):
         """ Fit this model to observed data-label pairs.
 
         This method estimates the state-to-state transition parameters.
@@ -47,11 +51,14 @@ class LegacyHmmInterface(object):
             must represent samples because numpy iterates over rows by default.
         """
 
-        super().__init__(**super_kwargs)
-
         # Instantiate an integerizer and convert labels to integer values
         self.integerizer = fsm.UnhashableFstIntegerizer(prepend_epsilon=False)
         self.integerizer.updateFromSequences(label_seqs)
+
+        num_tokens = sum(len(s) for s in label_seqs)
+        num_types = len(self.integerizer._objects)
+        logger.info(f"  {num_tokens} tokens -> {num_types} types")
+
         label_seqs = tuple(self.integerizer.integerizeSequence(s) for s in label_seqs)
 
         edge_counts, state_counts, init_states, final_states = fsm.countSeqs(label_seqs)
@@ -75,10 +82,10 @@ class LegacyHmmInterface(object):
             final_counts[i] = count
 
         # Regularize the heck out of these counts
-        unigram_counts[0, 0] += empty_regularizer
-        unigram_counts[:, 0] += zero_transition_regularizer
-        unigram_counts[0, :] += zero_transition_regularizer
-        unigram_counts += uniform_regularizer
+        bigram_counts[0, 0] += empty_regularizer
+        bigram_counts[:, 0] += zero_transition_regularizer
+        bigram_counts[0, :] += zero_transition_regularizer
+        bigram_counts += uniform_regularizer
         diag_indices = np.diag_indices_from(bigram_counts)
         bigram_counts[diag_indices] += diag_regularizer
 
@@ -86,7 +93,7 @@ class LegacyHmmInterface(object):
             logger.info('Overriding bigram_counts with an array of all ones')
             bigram_counts = np.ones_like(bigram_counts)
 
-        denominator = bigram_counts.sum(dim=1)
+        denominator = bigram_counts.sum(axis=1)
         transition_probs = bigram_counts / denominator
         initial_probs = initial_counts / initial_counts.sum()
         final_probs = final_counts / final_counts.sum()
@@ -97,7 +104,18 @@ class LegacyHmmInterface(object):
 
     def predictSeq(self, *feat_seqs, decode_method='MAP', viz_predictions=False, **kwargs):
 
-        outputs = super().forward(feat_seqs)
+        # ((num samples,), ..., (num_samples,)) -> (batch size, ..., num samples)
+        input_seq = torch.stack(
+            tuple(
+                torchutils.tensorFromSequence(seq)
+                for seq in feat_seqs
+            ),
+            dim=0
+        )[None, ...]
+
+        # import pdb; pdb.set_trace()
+
+        outputs = super().forward(input_seq)
         pred_idxs = super().predict(outputs)
 
         pred_states = self.integerizer.deintegerizeSequence(pred_idxs)

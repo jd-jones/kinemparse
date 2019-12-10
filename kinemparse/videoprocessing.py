@@ -5,7 +5,7 @@ import numpy as np
 import skimage
 import scipy
 
-from seqtools import utils
+from mathtools import utils
 from visiontools import imageprocessing, render
 from blocks.estimation import rawdata
 
