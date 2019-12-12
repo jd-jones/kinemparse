@@ -6,22 +6,26 @@ import argparse
 import yaml
 import joblib
 
-from blocks.core import labels, duplocorpus
-from mathtools import metrics, utils
+import mathtools as m
+from mathtools import metrics, utils, torchutils
 from visiontools import imageprocessing, render
 from kinemparse import videoprocessing, models
+from blocks.core import labels, duplocorpus
 
 
 def main(
         out_dir=None, scores_dir=None, preprocessed_data_dir=None,
         keyframe_model_name=None,
         subsample_period=None, window_size=None, corpus_name=None,
-        default_annotator=None, cv_scheme=None, model_name=None, model_config={},
-        camera_params_config={}):
+        default_annotator=None, cv_scheme=None, model_name=None,
+        numeric_backend=None, gpu_dev_id=None,
+        model_config={}, camera_params_config={}):
 
     out_dir = os.path.expanduser(out_dir)
     scores_dir = os.path.expanduser(scores_dir)
     preprocessed_data_dir = os.path.expanduser(preprocessed_data_dir)
+
+    m.set_backend('numpy')
 
     def loadFromWorkingDir(var_name):
         return joblib.load(os.path.join(scores_dir, f"{var_name}.pkl"))
@@ -104,6 +108,10 @@ def main(
         logger.info(f'    Model trained on {model.num_states} unique assembly states')
         saveToWorkingDir(model, f'model-fold0')
         cv_folds = [(tuple(range(len(child_trial_ids))), tuple(range(len(trial_ids))))]
+
+    device = torchutils.selectDevice(gpu_dev_id)
+    m.set_backend('torch')
+    m.set_default_device(device)
 
     num_cv_folds = len(cv_folds)
     saveToWorkingDir(cv_folds, f'cv-folds')

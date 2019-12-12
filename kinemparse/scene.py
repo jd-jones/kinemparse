@@ -1,9 +1,9 @@
 import logging
 
-import numpy as np
 import torch
 import scipy
 
+import mathtools as m
 from mathtools import utils, torchutils
 from visiontools import geometry, render, imageprocessing
 import neural_renderer as nr
@@ -12,9 +12,12 @@ import neural_renderer as nr
 logger = logging.getLogger(__name__)
 
 
+m.set_backend('torch')
+
+
 class TorchSceneRenderer(nr.Renderer):
     def __init__(
-            self, intrinsic_matrix=None, camera_pose=None, colors=None, image_size=None,
+            self, intrinsic_matrix=None, camera_pose=None, colors=None, image_shape=None,
             **super_kwargs):
 
         if not isinstance(intrinsic_matrix, torch.Tensor):
@@ -34,10 +37,10 @@ class TorchSceneRenderer(nr.Renderer):
         t = t[None, None, :].float().cuda()
 
         self.colors = colors
-        self.image_size = image_size
+        self.image_shape = image_shape
 
         super().__init__(
-            camera_mode='projection', K=K, R=R, t=t, orig_size=max(self.image_size),
+            camera_mode='projection', K=K, R=R, t=t, orig_size=max(self.image_shape),
             near=0, far=1000, **super_kwargs
         )
 
@@ -79,12 +82,12 @@ class TorchSceneRenderer(nr.Renderer):
 
         images_rgb, images_depth, images_alpha = super().render(vertices, faces, textures)
 
-        # [batch_size, RGB, image_size, image_size] -> [batch_size, image_size, image_size, RGB]
+        # [batch_size, RGB, image_shape, image_shape] -> [batch_size, image_shape, image_shape, RGB]
         images_rgb = images_rgb.permute(0, 2, 3, 1)
 
         # Crop square image back to the original aspect ratio
-        images_rgb = images_rgb[:, :self.image_size[0], :self.image_size[1]]
-        images_depth = images_depth[:, :self.image_size[0], :self.image_size[1]]
+        images_rgb = images_rgb[:, :self.image_shape[0], :self.image_shape[1]]
+        images_depth = images_depth[:, :self.image_shape[0], :self.image_shape[1]]
 
         return images_rgb, images_depth
 
@@ -109,10 +112,10 @@ class TorchSceneRenderer(nr.Renderer):
             camera_params = self.K[0]
 
         if rgb_background is None:
-            rgb_background = torch.zeros(*self.image_size, 3)
+            rgb_background = torch.zeros(*self.image_shape, 3)
 
         if depth_background is None:
-            depth_background = torch.full(self.image_size, float('inf'))
+            depth_background = torch.full(self.image_shape, float('inf'))
 
         if not assembly.blocks:
             return rgb_background, depth_background
@@ -144,7 +147,14 @@ class TorchSceneRenderer(nr.Renderer):
         if camera_params is None:
             camera_params = self.K[0]
 
-        vertices, faces = render.planeVertices(plane, camera_pose, camera_params)
+        if not isinstance(plane._t, torch.Tensor):
+            plane._t = m.np.array(plane._t)
+        if not isinstance(plane._U, torch.Tensor):
+            plane._U = m.np.array(plane._U)
+
+        vertices, faces = render.planeVertices(
+            plane, camera_params, camera_pose, image_shape=self.image_shape
+        )
         textures = render.makeTextures(faces, uniform_color=self.colors['black'])
         rgb_image, depth_image = self.render(vertices, faces, textures)
 
@@ -262,10 +272,10 @@ class RenderingSceneScorer(object):
             error_func = sse
 
         if W is None:
-            W = np.ones(2)
+            W = m.np.ones(2)
 
         # Estimate initial poses from each detected image segment
-        segment_labels = np.unique(segment_image[segment_image != 0])
+        segment_labels = m.np.unique(segment_image[segment_image != 0])
         object_masks = tuple(segment_image == i for i in segment_labels)
         object_poses_est = utils.batchProcess(
             imageprocessing.estimateSegmentPose,
@@ -279,7 +289,7 @@ class RenderingSceneScorer(object):
 
         # Find the best pose for each component of the spatial assembly, assuming
         # we try to match it to a particular segment.
-        errors = np.zeros((num_components, num_segments))
+        errors = m.np.zeros((num_components, num_segments))
         poses = {}
         for component_index, component_key in enumerate(assembly.connected_components.keys()):
             for segment_index in range(num_segments):
@@ -335,7 +345,7 @@ class RenderingSceneScorer(object):
             true_mask=image_background, est_mask=render_background
         )
 
-        error = np.array([rgb_error, depth_error]) @ W
+        error = m.np.array([rgb_error, depth_error]) @ W
 
         return error, component_poses, (rgb_render, depth_render, label_render)
 
@@ -359,7 +369,7 @@ class RenderingSceneScorer(object):
             error_func = sse
 
         if W is None:
-            W = np.ones(2)
+            W = m.np.ones(2)
 
         if theta_samples is None:
             theta_samples = range(0, 360, 90)
@@ -405,7 +415,7 @@ class RenderingSceneScorer(object):
             for depth_render, label_mask in zip(depth_renders, label_background_masks)
         ]
 
-        errors = np.column_stack((np.array(rgb_errors), np.array(depth_errors))) @ W
+        errors = m.np.column_stack((m.np.array(rgb_errors), m.np.array(depth_errors))) @ W
 
         best_idx = errors.argmin()
         best_error = errors[best_idx]
@@ -446,12 +456,12 @@ def matchComponentsToSegments(
 
     # linear_sum_assignment can't take an infinty-valued matrix, so set those
     # greater than the max. That way they'll never be chosen by the routine.
-    non_inf_max = objectives[~np.isinf(objectives)].max()
-    objectives[np.isinf(objectives)] = non_inf_max + 1
+    non_inf_max = objectives[~m.np.isinf(objectives)].max()
+    objectives[m.np.isinf(objectives)] = non_inf_max + 1
 
     num_components, num_segments = objectives.shape
     if greedy_assignment:
-        row_ind = np.arange(num_components)
+        row_ind = m.np.arange(num_components)
         col_ind = objectives.argmin(axis=1)
     else:
         row_ind, col_ind = scipy.optimize.linear_sum_assignment(objectives)
@@ -467,7 +477,7 @@ def matchComponentsToSegments(
     num_unassigned_components = num_components - num_segments
     for i in range(num_unassigned_components):
         R = geometry.rotationMatrix(z_angle=0, x_angle=0)
-        t = np.zeros(3) + i * np.array([75, 0, 0])
+        t = m.np.zeros(3) + i * m.np.array([75, 0, 0])
         best_poses.append((R, t))
         best_seg_idxs.append(-1)
 
