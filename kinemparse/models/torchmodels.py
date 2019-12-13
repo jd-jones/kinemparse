@@ -1,8 +1,8 @@
 import logging
 
-import numpy as np
 import torch
 
+import mathtools as m
 from seqtools import fsm, torchutils
 
 from .. import scene
@@ -65,19 +65,19 @@ class LegacyHmmInterface(object):
 
         self.num_states = len(state_counts)
 
-        bigram_counts = np.zeros((self.num_states, self.num_states))
+        bigram_counts = m.np.zeros((self.num_states, self.num_states))
         for (i, j), count in edge_counts.items():
             bigram_counts[i, j] = count
 
-        unigram_counts = np.zeros(self.num_states)
+        unigram_counts = m.np.zeros(self.num_states)
         for i, count in state_counts.items():
             unigram_counts[i] = count
 
-        initial_counts = np.zeros(self.num_states)
+        initial_counts = m.np.zeros(self.num_states)
         for i, count in init_states.items():
             initial_counts[i] = count
 
-        final_counts = np.zeros(self.num_states)
+        final_counts = m.np.zeros(self.num_states)
         for i, count in final_states.items():
             final_counts[i] = count
 
@@ -86,32 +86,33 @@ class LegacyHmmInterface(object):
         bigram_counts[:, 0] += zero_transition_regularizer
         bigram_counts[0, :] += zero_transition_regularizer
         bigram_counts += uniform_regularizer
-        diag_indices = np.diag_indices_from(bigram_counts)
+        diag_indices = m.np.diag_indices_from(bigram_counts)
         bigram_counts[diag_indices] += diag_regularizer
 
         if override_transitions:
             logger.info('Overriding bigram_counts with an array of all ones')
-            bigram_counts = np.ones_like(bigram_counts)
+            bigram_counts = m.np.ones_like(bigram_counts)
 
         denominator = bigram_counts.sum(axis=1)
         transition_probs = bigram_counts / denominator
         initial_probs = initial_counts / initial_counts.sum()
         final_probs = final_counts / final_counts.sum()
 
-        self.transition_weights = np.log(transition_probs)
-        self.initial_weights = np.log(initial_probs)
-        self.final_weights = np.log(final_probs)
+        self.transition_weights = m.np.log(transition_probs)
+        self.initial_weights = m.np.log(initial_probs)
+        self.final_weights = m.np.log(final_probs)
 
     def predictSeq(self, *feat_seqs, decode_method='MAP', viz_predictions=False, **kwargs):
 
         # ((num samples,), ..., (num_samples,)) -> (batch size, ..., num samples)
-        input_seq = torch.stack(
-            tuple(
-                torchutils.tensorFromSequence(seq)
-                for seq in feat_seqs
-            ),
-            dim=0
-        )[None, ...]
+        # input_seq = torch.stack(
+        #     tuple(
+        #         torchutils.tensorFromSequence(seq, device=m.np.DEFAULT_DEVICE).float()
+        #         for seq in feat_seqs
+        #     ),
+        #     dim=0
+        # )[None, ...]
+        input_seq = zip(*feat_seqs)
 
         # import pdb; pdb.set_trace()
 

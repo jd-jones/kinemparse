@@ -155,8 +155,12 @@ class TorchSceneRenderer(nr.Renderer):
         vertices, faces = render.planeVertices(
             plane, camera_params, camera_pose, image_shape=self.image_shape
         )
-        textures = render.makeTextures(faces, uniform_color=self.colors['black'])
-        rgb_image, depth_image = self.render(vertices, faces, textures)
+        faces = faces.int()
+        textures = render.makeTextures(faces, uniform_color=self.colors[0])
+        rgb_image_batch, depth_image_batch = self.render(vertices, faces, textures)
+
+        rgb_image = rgb_image_batch[0, ...]
+        depth_image = depth_image_batch[0, ...]
 
         return rgb_image, depth_image
 
