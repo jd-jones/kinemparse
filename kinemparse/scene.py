@@ -12,9 +12,6 @@ import neural_renderer as nr
 logger = logging.getLogger(__name__)
 
 
-m.set_backend('torch')
-
-
 class TorchSceneRenderer(nr.Renderer):
     def __init__(
             self, intrinsic_matrix=None, camera_pose=None, colors=None, image_shape=None,
@@ -249,20 +246,37 @@ class LegacySceneRenderer(object):
 
 
 class RenderingSceneScorer(object):
-    def forward(self, rgb_image, depth_image, segment_image, assembly, background_plane, **kwargs):
-        error, __, __ = self.fitScene(
-            rgb_image, depth_image, segment_image, assembly, background_plane,
-            **kwargs
+    def forward(self, sample, W=None, **kwargs):
+        """
+        Parameters
+        ----------
+        sample :
+            (rgb_image, depth_image, segment_image, rgb_background, depth_background)
+        **kwargs : optional
+
+        Returns
+        -------
+        error :
+        """
+
+        if W is None:
+            W = m.np.ones(2)
+
+        errors = tuple(
+            self.fitScene(*sample, self.integerizer[i], W=W, **kwargs)[0]
+            for i in range(self.num_states)
         )
 
-        return error
+        error = m.np.hstack(errors) @ W
+
+        return error[None, :]
 
     def fitScene(
             self, rgb_image, depth_image, segment_image,
             rgb_background, depth_background, assembly,
             camera_params=None, camera_pose=None, block_colors=None,
             W=None, error_func=None, bias=None, scale=None,
-            ignore_background=False):
+            ignore_background=False, legacy_mode=False):
         """ Fit a spatial assembly and a background plane to an RGBD image.
 
         Parameters
@@ -274,9 +288,6 @@ class RenderingSceneScorer(object):
 
         if error_func is None:
             error_func = sse
-
-        if W is None:
-            W = m.np.ones(2)
 
         # Estimate initial poses from each detected image segment
         segment_labels = m.np.unique(segment_image[segment_image != 0])
@@ -349,9 +360,8 @@ class RenderingSceneScorer(object):
             true_mask=image_background, est_mask=render_background
         )
 
-        error = m.np.array([rgb_error, depth_error]) @ W
-
-        return error, component_poses, (rgb_render, depth_render, label_render)
+        error_vec = m.np.array([rgb_error, depth_error])
+        return error_vec, component_poses,
 
     def refineComponentPose(
             self, rgb_image, depth_image, segment_image, assembly,
@@ -455,7 +465,8 @@ def matchComponentsToSegments(
     best_seg_idxs :
     """
 
-    if not objectives.any():
+    # TODO: LEFT OFF HERE --- MAKE SURE THIS FUNCTION IS COMPATIBLE WITH PYTORCH
+    if not m.np.any(objectives):
         return None, (tuple(), tuple(), tuple()), tuple()
 
     # linear_sum_assignment can't take an infinty-valued matrix, so set those

@@ -160,6 +160,10 @@ def main(
             #   happen somewhere more intuitive, like when the frame is loaded.
             depth_frame_seq = tuple(depth_image.astype(float) for depth_image in depth_frame_seq)
 
+            rgb_frame_seq = tuple(m.np.array(frame) for frame in rgb_frame_seq)
+            depth_frame_seq = tuple(m.np.array(frame) for frame in depth_frame_seq)
+            seg_frame_seq = tuple(m.np.array(frame) for frame in seg_frame_seq)
+
             rgb_background_seq, depth_background_seq = utils.batchProcess(
                 model.renderPlane, background_plane_seq, unzip=True
             )

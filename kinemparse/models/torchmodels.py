@@ -1,7 +1,5 @@
 import logging
 
-import torch
-
 import mathtools as m
 from seqtools import fsm, torchutils
 
@@ -104,17 +102,7 @@ class LegacyHmmInterface(object):
 
     def predictSeq(self, *feat_seqs, decode_method='MAP', viz_predictions=False, **kwargs):
 
-        # ((num samples,), ..., (num_samples,)) -> (batch size, ..., num samples)
-        # input_seq = torch.stack(
-        #     tuple(
-        #         torchutils.tensorFromSequence(seq, device=m.np.DEFAULT_DEVICE).float()
-        #         for seq in feat_seqs
-        #     ),
-        #     dim=0
-        # )[None, ...]
         input_seq = zip(*feat_seqs)
-
-        # import pdb; pdb.set_trace()
 
         outputs = super().forward(input_seq)
         pred_idxs = super().predict(outputs)
