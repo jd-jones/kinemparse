@@ -5,6 +5,7 @@ import argparse
 
 import yaml
 import joblib
+import torch
 
 import mathtools as m
 from mathtools import metrics, utils, torchutils
@@ -17,8 +18,9 @@ def main(
         out_dir=None, scores_dir=None, preprocessed_data_dir=None,
         keyframe_model_name=None,
         subsample_period=None, window_size=None, corpus_name=None,
-        default_annotator=None, cv_scheme=None, model_name=None,
-        numeric_backend=None, gpu_dev_id=None,
+        default_annotator=None, cv_scheme=None, max_trials_per_fold=None,
+        model_name=None,
+        numeric_backend=None, gpu_dev_id=None, visualize=False,
         model_config={}, camera_params_config={}):
 
     out_dir = os.path.expanduser(out_dir)
@@ -98,20 +100,53 @@ def main(
     elif cv_scheme == 'train on child':
         child_corpus = duplocorpus.DuploCorpus('child')
         child_trial_ids = utils.loadVariable('trial_ids', 'preprocess-all-data', 'child')
-        train_assembly_seqs = tuple(
+        child_assembly_seqs = [
             labels.parseLabelSeq(child_corpus.readLabels(trial_id, 'Cathryn')[0])
             for trial_id in child_trial_ids
+        ]
+        num_easy = len(assembly_keyframe_seqs)
+        num_child = len(child_assembly_seqs)
+        cv_folds = [(tuple(range(num_easy, num_easy + num_child)), tuple(range(num_easy)))]
+        assembly_keyframe_seqs = assembly_keyframe_seqs + child_assembly_seqs
+
+    rgb_keyframe_seqs = tuple(
+        tuple(
+            imageprocessing.saturateImage(rgb_image, background_mask=segment_image == 0)
+            for rgb_image, segment_image in zip(rgb_frame_seq, seg_frame_seq)
         )
-        model = getattr(models, model_name)(**model_config['init_kwargs'])
-        logger.info(f"  Training {model_name} on {len(train_assembly_seqs)} sequences...")
-        model.fit(train_assembly_seqs, **model_config['fit_kwargs'])
-        logger.info(f'    Model trained on {model.num_states} unique assembly states')
-        saveToWorkingDir(model, f'model-fold0')
-        cv_folds = [(tuple(range(len(child_trial_ids))), tuple(range(len(trial_ids))))]
+        for rgb_frame_seq, seg_frame_seq in zip(rgb_keyframe_seqs, seg_keyframe_seqs)
+    )
+
+    depth_keyframe_seqs = tuple(
+        tuple(depth_image.astype(float) for depth_image in depth_frame_seq)
+        for depth_frame_seq in depth_keyframe_seqs
+    )
 
     device = torchutils.selectDevice(gpu_dev_id)
     m.set_backend('torch')
     m.set_default_device(device)
+
+    assembly_keyframe_seqs = tuple(
+        tuple(a.to(device=device, in_place=False) for a in seq)
+        for seq in assembly_keyframe_seqs
+    )
+    assembly_seqs = tuple(
+        tuple(a.to(device=device, in_place=False) for a in seq)
+        for seq in assembly_seqs
+    )
+
+    rgb_keyframe_seqs = tuple(
+        tuple(m.np.array(frame, dtype=torch.float) for frame in rgb_frame_seq)
+        for rgb_frame_seq in rgb_keyframe_seqs
+    )
+    depth_keyframe_seqs = tuple(
+        tuple(m.np.array(frame, dtype=torch.float) for frame in depth_frame_seq)
+        for depth_frame_seq in depth_keyframe_seqs
+    )
+    seg_keyframe_seqs = tuple(
+        tuple(m.np.array(frame, dtype=torch.int) for frame in seg_frame_seq)
+        for seg_frame_seq in seg_keyframe_seqs
+    )
 
     num_cv_folds = len(cv_folds)
     saveToWorkingDir(cv_folds, f'cv-folds')
@@ -119,18 +154,14 @@ def main(
         logger.info(f"CV FOLD {fold_index + 1} / {num_cv_folds}")
 
         # Initialize and train model
-        if cv_scheme == 'train on child':
-            pass
-        else:
-            utils.validateCvFold(train_idxs, test_idxs)
-            selectTrain = functools.partial(utils.select, train_idxs)
-            # train_trial_ids = selectTrain(trial_ids)
-            train_assembly_seqs = selectTrain(assembly_keyframe_seqs)
-            model = getattr(models, model_name)(**model_config['init_kwargs'])
-            logger.info(f"  Training {model_name} on {len(train_idxs)} sequences...")
-            model.fit(train_assembly_seqs, **model_config['fit_kwargs'])
-            logger.info(f'    Model trained on {model.num_states} unique assembly states')
-            saveToWorkingDir(model, f'model-fold{fold_index}')
+        utils.validateCvFold(train_idxs, test_idxs)
+        selectTrain = functools.partial(utils.select, train_idxs)
+        train_assembly_seqs = selectTrain(assembly_keyframe_seqs)
+        model = getattr(models, model_name)(**model_config['init_kwargs'])
+        logger.info(f"  Training {model_name} on {len(train_idxs)} sequences...")
+        model.fit(train_assembly_seqs, **model_config['fit_kwargs'])
+        logger.info(f'    Model trained on {model.num_states} unique assembly states')
+        # saveToWorkingDir(model, f'model-fold{fold_index}')
 
         # Decode on the test set
         selectTest = functools.partial(utils.select, test_idxs)
@@ -144,25 +175,15 @@ def main(
 
         logger.info(f"  Testing model on {len(test_idxs)} sequences...")
         for i, trial_id in enumerate(test_trial_ids):
+            if max_trials_per_fold is not None and i >= max_trials_per_fold:
+                break
+
             rgb_frame_seq = test_rgb_keyframe_seqs[i]
             depth_frame_seq = test_depth_keyframe_seqs[i]
             seg_frame_seq = test_seg_keyframe_seqs[i]
             background_plane_seq = test_background_keyframe_seqs[i]
             true_assembly_seq = test_assembly_keyframe_seqs[i]
             true_assembly_seq_orig = test_assembly_seqs[i]
-
-            rgb_frame_seq = tuple(
-                imageprocessing.saturateImage(rgb_image, background_mask=segment_image == 0)
-                for rgb_image, segment_image in zip(rgb_frame_seq, seg_frame_seq)
-            )
-
-            # NOTE: Casting uint16 -> float here --- maybe we want to make this
-            #   happen somewhere more intuitive, like when the frame is loaded.
-            depth_frame_seq = tuple(depth_image.astype(float) for depth_image in depth_frame_seq)
-
-            rgb_frame_seq = tuple(m.np.array(frame) for frame in rgb_frame_seq)
-            depth_frame_seq = tuple(m.np.array(frame) for frame in depth_frame_seq)
-            seg_frame_seq = tuple(m.np.array(frame) for frame in seg_frame_seq)
 
             rgb_background_seq, depth_background_seq = utils.batchProcess(
                 model.renderPlane, background_plane_seq, unzip=True
@@ -204,19 +225,23 @@ def main(
             saveToWorkingDir(log_likelihoods, f'log_likelihoods-{trial_id}')
 
             # Save figures
-            rgb_rendered_seq, depth_rendered_seq, label_rendered_seq = utils.batchProcess(
-                model.renderScene,
-                background_plane_seq, pred_assembly_seq, poses_seq,
-                unzip=True
-            )
-            if utils.in_ipython_console():
-                file_path = None
-            else:
-                trial_str = f"trial-{trial_id}"
-                file_path = os.path.join(out_dir, f'{trial_str}_best-frames.png')
-            imageprocessing.displayImages(
-                *rgb_frame_seq, *rgb_rendered_seq, num_rows=2, file_path=file_path
-            )
+            if visualize:
+                rgb_rendered_seq, depth_rendered_seq, label_rendered_seq = utils.batchProcess(
+                    model.renderScene,
+                    pred_assembly_seq, poses_seq,
+                    rgb_background_seq, depth_background_seq,
+                    unzip=True,
+                    static_kwargs={'as_numpy': True}
+                )
+                if utils.in_ipython_console():
+                    file_path = None
+                else:
+                    trial_str = f"trial-{trial_id}"
+                    file_path = os.path.join(out_dir, f'{trial_str}_best-frames.png')
+                rgb_frame_seq = tuple(img.cpu().numpy() for img in rgb_frame_seq)
+                imageprocessing.displayImages(
+                    *rgb_frame_seq, *rgb_rendered_seq, num_rows=2, file_path=file_path
+                )
 
 
 if __name__ == '__main__':

@@ -37,9 +37,22 @@ class TorchSceneRenderer(nr.Renderer):
         self.image_shape = image_shape
 
         super().__init__(
-            camera_mode='projection', K=K, R=R, t=t, orig_size=max(self.image_shape),
+            camera_mode='projection', K=K, R=R, t=t,
+            image_size=max(self.image_shape),
             near=0, far=1000, **super_kwargs
         )
+
+    @property
+    def camera_params(self):
+        return self.K[0]
+
+    @property
+    def camera_pose(self):
+        return geometry.homogeneousMatrix(self.R[0], self.t[0][0])
+
+    @property
+    def block_colors(self):
+        return self.colors
 
     def render(self, vertices, faces, textures, intrinsic_matrix=None, camera_pose=None):
         """ Wrapper around a differentiable renderer implemented in pytorch.
@@ -115,7 +128,8 @@ class TorchSceneRenderer(nr.Renderer):
             depth_background = torch.full(self.image_shape, float('inf'))
 
         if not assembly.blocks:
-            return rgb_background, depth_background
+            label_background = torch.zeros(*self.image_shape, dtype=torch.int)
+            return rgb_background, depth_background, label_background
 
         assembly = assembly.setPose(component_poses, in_place=False)
 
@@ -125,8 +139,8 @@ class TorchSceneRenderer(nr.Renderer):
 
         rgb_images, depth_images = self.render(vertices, faces, textures)
 
-        rgb_images = torch.cat((rgb_background, rgb_images), 0)
-        depth_images = torch.cat((depth_background, depth_images), 0)
+        rgb_images = torch.cat((rgb_background[None, ...], rgb_images), 0)
+        depth_images = torch.cat((depth_background[None, ...], depth_images), 0)
 
         rgb_image, depth_image, label_image = render.reduceByDepth(rgb_images, depth_images)
 
@@ -188,26 +202,20 @@ class TorchSceneRenderer(nr.Renderer):
 
         assembly = assembly.recenter(component_index, in_place=False)
 
-        vertices = torchutils.makeBatch(
-            assembly.componentVertices(component_index), dtype=torch.float
-        ).cuda()
-        faces = torchutils.makeBatch(
-            assembly.componentFaces(component_index), dtype=torch.int
-        ).cuda()
-        textures = torchutils.makeBatch(
-            assembly.componentTextures(component_index), dtype=torch.float
-        ).cuda()
+        vertices = torch.stack(tuple(assembly.componentVertices(component_index)))
+        faces = torch.stack(tuple(assembly.componentFaces(component_index)))
+        textures = torch.stack(tuple(assembly.componentTextures(component_index)))
 
         R, t = component_pose
-        vertices = vertices @ R.T + t
+        vertices = vertices @ m.np.transpose(R) + t
 
         rgb_images, depth_images = self.render(vertices, faces, textures)
 
         if rgb_background is not None:
-            rgb_images = torch.cat((rgb_background, rgb_images), 0)
+            rgb_images = torch.cat((rgb_background[None, ...], rgb_images), 0)
 
         if depth_background is not None:
-            depth_images = torch.cat((depth_background, depth_images), 0)
+            depth_images = torch.cat((depth_background[None, ...], depth_images), 0)
 
         rgb_image, depth_image, label_image = render.reduceByDepth(rgb_images, depth_images)
 
@@ -246,7 +254,10 @@ class LegacySceneRenderer(object):
 
 
 class RenderingSceneScorer(object):
-    def forward(self, sample, W=None, **kwargs):
+    def forward(self, *args, **kwargs):
+        return self._create_data_scores(*args, **kwargs)
+
+    def _create_data_scores(self, sample, W=None, return_poses=False, **kwargs):
         """
         Parameters
         ----------
@@ -262,14 +273,23 @@ class RenderingSceneScorer(object):
         if W is None:
             W = m.np.ones(2)
 
-        errors = tuple(
-            self.fitScene(*sample, self.integerizer[i], W=W, **kwargs)[0]
-            for i in range(self.num_states)
+        kwargs['W'] = W
+
+        assemblies = tuple(self.integerizer[i] for i in range(self.num_states))
+
+        errors, component_poses = utils.batchProcess(
+            self.fitScene, assemblies,
+            static_args=sample,
+            static_kwargs=kwargs,
+            unzip=True
         )
 
-        error = m.np.hstack(errors) @ W
+        error = (m.np.vstack(errors) @ W)[None, :]
 
-        return error[None, :]
+        if not return_poses:
+            return error
+
+        return error, component_poses
 
     def fitScene(
             self, rgb_image, depth_image, segment_image,
@@ -286,11 +306,33 @@ class RenderingSceneScorer(object):
         -------
         """
 
+        if camera_params is None:
+            camera_params = self.camera_params
+
+        if camera_pose is None:
+            camera_pose = self.camera_pose
+
+        if block_colors is None:
+            block_colors = self.block_colors
+
+        if W is None:
+            W = m.np.ones(2)
+
         if error_func is None:
             error_func = sse
 
+        if bias is None:
+            bias = m.np.zeros(2)
+
+        if scale is None:
+            scale = m.np.ones(2)
+
         # Estimate initial poses from each detected image segment
         segment_labels = m.np.unique(segment_image[segment_image != 0])
+
+        num_segments = len(segment_labels)
+        num_components = len(assembly.connected_components.keys())
+
         object_masks = tuple(segment_image == i for i in segment_labels)
         object_poses_est = utils.batchProcess(
             imageprocessing.estimateSegmentPose,
@@ -305,7 +347,7 @@ class RenderingSceneScorer(object):
         # Find the best pose for each component of the spatial assembly, assuming
         # we try to match it to a particular segment.
         errors = m.np.zeros((num_components, num_segments))
-        poses = {}
+        poses = m.np.zeros((num_components, num_segments, 3, 4))
         for component_index, component_key in enumerate(assembly.connected_components.keys()):
             for segment_index in range(num_segments):
                 object_mask = object_masks[segment_index]
@@ -315,8 +357,6 @@ class RenderingSceneScorer(object):
                     rgb_background=rgb_background,
                     depth_background=depth_background,
                     component_index=component_key, init_pose=init_pose,
-                    camera_params=camera_params, camera_pose=camera_pose,
-                    block_colors=block_colors,
                     object_mask=object_mask, W=W, error_func=error_func,
                     bias=bias, scale=scale
                 )
@@ -325,17 +365,13 @@ class RenderingSceneScorer(object):
 
         # Match components to segments by solving the linear sum assignment problem
         # (ie data association)
-        _, component_poses, _ = matchComponentsToSegments(
-            errors, poses, downstream_objectives=None, greedy_assignment=False
-        )
+        # FIXME: set greedy=False
+        _, component_poses, _ = matchComponentsToSegments(errors, poses, greedy=True)
 
         # Render the complete final scene
-        # FIXME: Call renderComponents
         rgb_render, depth_render, label_render = self.renderScene(
             assembly, component_poses,
-            camera_pose=camera_pose,
-            camera_params=camera_params,
-            object_appearances=block_colors
+            depth_background=depth_background, rgb_background=rgb_background
         )
 
         # Subtract background from all depth images. This gives distances relative
@@ -361,7 +397,7 @@ class RenderingSceneScorer(object):
         )
 
         error_vec = m.np.array([rgb_error, depth_error])
-        return error_vec, component_poses,
+        return error_vec, component_poses
 
     def refineComponentPose(
             self, rgb_image, depth_image, segment_image, assembly,
@@ -376,7 +412,7 @@ class RenderingSceneScorer(object):
         Returns
         -------
         best_error : float
-        best_pose : (R, t)
+        best_pose : m.np.array of float, shape (3, 4)
         """
 
         if error_func is None:
@@ -386,13 +422,16 @@ class RenderingSceneScorer(object):
             W = m.np.ones(2)
 
         if theta_samples is None:
-            theta_samples = range(0, 360, 90)
+            theta_samples = m.np.linspace(0, 1.5 * m.np.pi, 4)
 
         R_init, t_init = init_pose
-        pose_candidates = tuple(
-            (geometry.rotationMatrix(z_angle=theta, x_angle=0) @ R_init, t_init)
-            for theta in theta_samples
-        )
+        # pose_candidates = tuple(
+        #     (geometry.rotationMatrix(z_angle=theta, x_angle=0) @ R_init, t_init)
+        #     for theta in theta_samples
+        # )
+
+        rotation_candidates = geometry.zRotations(theta_samples) @ R_init
+        pose_candidates = tuple((R, t_init) for R in rotation_candidates)
 
         rgb_renders, depth_renders, label_renders = utils.batchProcess(
             self.renderComponent, pose_candidates,
@@ -434,6 +473,7 @@ class RenderingSceneScorer(object):
         best_idx = errors.argmin()
         best_error = errors[best_idx]
         best_pose = pose_candidates[best_idx]
+        best_pose = geometry.homogeneousMatrix(pose_candidates[best_idx])
 
         return best_error, best_pose
 
@@ -447,8 +487,7 @@ class TorchSceneScorer(RenderingSceneScorer, TorchSceneRenderer):
 
 
 # -=( HELPER FUNCTIONS FOR SCENE SCORER)==-------------------------------------
-def matchComponentsToSegments(
-        objectives, poses, downstream_objectives=None, greedy_assignment=False):
+def matchComponentsToSegments(objectives, poses, greedy=False):
     """
 
     Parameters
@@ -465,40 +504,53 @@ def matchComponentsToSegments(
     best_seg_idxs :
     """
 
-    # TODO: LEFT OFF HERE --- MAKE SURE THIS FUNCTION IS COMPATIBLE WITH PYTORCH
+    if greedy:
+        def assign(objectives):
+            row_ind = m.np.arange(objectives.shape[0])
+            col_ind = objectives.argmin(1)
+            return row_ind, col_ind
+    else:
+        def assign(objectives):
+            # linear_sum_assignment can't take an infinty-valued matrix, so set those
+            # greater than the max. That way they'll never be chosen by the routine.
+            non_inf_max = objectives[~m.np.isinf(objectives)].max()
+            objectives[m.np.isinf(objectives)] = non_inf_max + 1
+            if isinstance(objectives, torch.Tensor):
+                return scipy.optimize.linear_sum_assignment(objectives.cpu().numpy())
+            else:
+                return scipy.optimize.linear_sum_assignment(objectives)
+
     if not m.np.any(objectives):
-        return None, (tuple(), tuple(), tuple()), tuple()
-
-    # linear_sum_assignment can't take an infinty-valued matrix, so set those
-    # greater than the max. That way they'll never be chosen by the routine.
-    non_inf_max = objectives[~m.np.isinf(objectives)].max()
-    objectives[m.np.isinf(objectives)] = non_inf_max + 1
-
-    num_components, num_segments = objectives.shape
-    if greedy_assignment:
-        row_ind = m.np.arange(num_components)
-        col_ind = objectives.argmin(axis=1)
+        final_obj = 0
+        best_poses = []
+        best_seg_idxs = m.np.array([])
     else:
-        row_ind, col_ind = scipy.optimize.linear_sum_assignment(objectives)
-
-    if downstream_objectives is None:
+        row_ind, col_ind = assign(objectives)
         final_obj = objectives[row_ind, col_ind].sum()
-    else:
-        final_obj = downstream_objectives[row_ind, col_ind].sum()
+        best_poses = list(zip(geometry.fromHomogeneous(poses[row_ind, col_ind])))
+        best_seg_idxs = col_ind + 1
 
-    best_poses = [poses[r, c] for r, c in zip(row_ind, col_ind)]
-    best_seg_idxs = [c + 1 for c in col_ind]
+    # Give unassigned components a pose
+    num_components, num_segments = objectives.shape
+    num_unassigned = num_components - num_segments
+    # FIXME: hstack breaks when best_seg_idxs is empty (ie objectives is empty)
+    best_seg_idxs = m.np.hstack((best_seg_idxs, -m.np.ones(num_unassigned, dtype=m.np.long)))
+    R = m.np.eye(3)
+    t_space = m.np.array([75, 0, 0], dtype=m.np.float)
+    for i in range(num_unassigned):
+        best_poses.append((R, i * t_space))
 
-    num_unassigned_components = num_components - num_segments
-    for i in range(num_unassigned_components):
-        R = geometry.rotationMatrix(z_angle=0, x_angle=0)
-        t = m.np.zeros(3) + i * m.np.array([75, 0, 0])
-        best_poses.append((R, t))
-        best_seg_idxs.append(-1)
+    return final_obj, best_poses, best_seg_idxs
 
-    # argmaxima = (theta_best, t_best, seg_best)
-    if downstream_objectives is None:
-        return final_obj, best_poses, best_seg_idxs
+
+def sse(x_true, x_est, true_mask=None, est_mask=None, bias=None, scale=None):
+    x_true = standardize(x_true, bias=bias, scale=scale)
+    x_est = standardize(x_est, bias=bias, scale=scale)
+
+    resid = residual(x_true, x_est, true_mask=true_mask, est_mask=est_mask)
+    sse = (resid ** 2).sum()
+
+    return sse
 
 
 def residual(x_true, x_est, true_mask=None, est_mask=None):
@@ -515,13 +567,3 @@ def residual(x_true, x_est, true_mask=None, est_mask=None):
 def standardize(x, bias=0, scale=1):
     x_standardized = (x - bias) / scale
     return x_standardized
-
-
-def sse(x_true, x_est, true_mask=None, est_mask=None, bias=None, scale=None):
-    x_true = standardize(x_true, bias=bias, scale=scale)
-    x_est = standardize(x_est, bias=bias, scale=scale)
-
-    resid = residual(x_true, x_est, true_mask=true_mask, est_mask=est_mask)
-    sse = (resid ** 2).sum()
-
-    return sse

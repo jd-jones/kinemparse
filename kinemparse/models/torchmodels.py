@@ -1,6 +1,9 @@
 import logging
 
+import torch
+
 import mathtools as m
+from mathtools import utils
 from seqtools import fsm, torchutils
 
 from .. import scene
@@ -91,7 +94,7 @@ class LegacyHmmInterface(object):
             logger.info('Overriding bigram_counts with an array of all ones')
             bigram_counts = m.np.ones_like(bigram_counts)
 
-        denominator = bigram_counts.sum(axis=1)
+        denominator = bigram_counts.sum(1)
         transition_probs = bigram_counts / denominator
         initial_probs = initial_counts / initial_counts.sum()
         final_probs = final_counts / final_counts.sum()
@@ -103,13 +106,23 @@ class LegacyHmmInterface(object):
     def predictSeq(self, *feat_seqs, decode_method='MAP', viz_predictions=False, **kwargs):
 
         input_seq = zip(*feat_seqs)
+        scores, component_poses = utils.batchProcess(
+            self.obsv_model.forward,
+            input_seq,
+            static_kwargs={'return_poses':True},
+            unzip=True
+        )
+        scores = torch.stack(scores, dim=1)
 
-        outputs = super().forward(input_seq)
-        pred_idxs = super().predict(outputs)
+        outputs = super().forward(scores, scores_as_input=True)
+        pred_idxs = super().predict(outputs)[0]
 
         pred_states = self.integerizer.deintegerizeSequence(pred_idxs)
+        pred_poses = tuple(component_poses[t][i] for t, i in enumerate(pred_idxs))
 
-        return pred_states, pred_idxs, None, None, None
+        # import pdb; pdb.set_trace()
+
+        return pred_states, pred_idxs, None, scores, pred_poses
 
 
 class RenderingCrf(LegacyHmmInterface, torchutils.LinearChainScorer, scene.TorchSceneScorer):
