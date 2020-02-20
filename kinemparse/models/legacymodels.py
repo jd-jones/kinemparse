@@ -14,7 +14,7 @@ from skimage import img_as_float
 # from LCTM import models as lctm_models
 
 from mathtools import utils
-from visiontools import imageprocessing, render, geometry
+from visiontools import imageprocessing, render
 
 
 logger = logging.getLogger(__name__)
@@ -266,6 +266,279 @@ class EmpiricalStateVariable(EmpiricalLatentVariables):
             self.states.append(state)
             state_index = self.num_states - 1
         return state_index
+
+
+# -=( AIRPLANE CORPUS MODELS )==-----------------------------------------------
+class HandDetectionLikelihood(object):
+    def __init__(self, bias_params=None, nan_score=None):
+        """
+        Parameters
+        ----------
+        bias_params : (float, float)
+            0 -- Amount of probability to add when hand detection is present
+            1 -- Amount of probability to add when hand detection is missing
+        """
+
+        if bias_params is None:
+            # Consistent with settings in Vo et al.
+            bias_params = (0.01, 0.1)
+
+        if nan_score is None:
+            nan_score = -np.inf
+        self.nan_score = nan_score
+
+        self._means = None
+        self._covs = None
+        self._mean_detection_scores = None
+        self._log_biases = np.log(np.array(bias_params))
+
+    def fit(
+            self, label_seqs, hand_detection_seqs,
+            action_means=None, action_covs=None,
+            **super_kwargs):
+        """ Estimate this model's parameters from data.
+
+        Parameters
+        ----------
+        label_seqs : iterable( iterable( airplanecorpus.AirplaneAssembly ) )
+        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
+        detection_window_len : int (odd), optional
+            Parameters are estimated around a window centered at the start of
+            the action. This argument gives the width of that window.
+        outlier_proportion : float (<= 1), optional
+            After fitting an initial model, treat the least-likely
+            `outlier_proportion` proportion of samples as outliers and re-estimate
+            parameters.
+        min_y : int
+            Hand detections with y-value lower than this are discarded before training.
+        **super_kwargs : optional
+            Any extra keyword arguments are passed to ``super().fit()``.
+        """
+
+        super().fit(label_seqs, **super_kwargs)
+
+        label_seqs = tuple(self.toLabelIndexArray(label_seq) for label_seq in label_seqs)
+        hand_detection_seqs = np.vstack(hand_detection_seqs)
+        label_seqs = np.hstack(label_seqs)
+
+        num_data_samples = hand_detection_seqs.shape[0]
+        num_label_samples = label_seqs.shape[0]
+        if num_data_samples != num_label_samples and not self.segment_labels:
+            err_str = f"{num_data_samples} data samples != {num_label_samples} label samples"
+            raise ValueError(err_str)
+
+        self._means = action_means
+        self._covs = action_covs
+
+    def computeActionScores(self, hand_detection_seq):
+        scores = np.column_stack(
+            tuple(
+                self.computeEdgeScore(hand_detection_seq, action_key=key)
+                for key in self._means.keys()
+            )
+        )
+
+        return scores
+
+    def computeEdgeScore(self, hand_detection_seq, transition=None, action_key=None):
+        if action_key is None:
+            action_key = self.makeActionKey(transition)
+
+        # Compute Gaussian component of log prob
+        mean = self._means[action_key]
+        cov = self._covs[action_key]
+        # mean_detection_score = self._mean_detection_scores[action_key]
+        score = -gaussianScore(hand_detection_seq, mean, cov)  # - mean_detection_score
+        # FIXME: add in Gaussian normalization constant?
+
+        # Compute correction for missed hand detections
+        score_is_nan = np.isnan(score)
+        score[score_is_nan] = self.nan_score
+        score = np.logaddexp(score, self._log_biases[score_is_nan.astype(int)])
+
+        return score
+
+    def computeLogLikelihoods(self, hand_detection_seq, transitions=None, as_array=False):
+        """ Compute log-likelihood scores for a set of hypotheses.
+
+        Parameters
+        ----------
+        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
+        transitions : iterable( tuple(int, int) ), optional
+            Each element is a pair of state indices, and represents the transition
+            ``first --> second``. If `None`, this function defaults to evaluating
+            all observed transitions.
+        as_array : bool, optional
+            If True, results is compiled into a numpy array before is it returned.
+            This array has shape ``(num_samples, num_states, num_states)``.
+
+        Returns
+        -------
+        transition_logprobs : dict{(int, int) -> np.array of float, shape (num_samples,)}
+            See argument `as_array` for alternative return type.
+        """
+
+        if transitions is None:
+            transitions = self.transitions
+
+        transition_logprobs = {
+            transition: self.computeEdgeScore(hand_detection_seq, transition)
+            for transition in transitions
+        }
+
+        if as_array:
+            num_samples = hand_detection_seq.shape[0]
+            array = np.full((num_samples, self.num_states, self.num_states), -np.inf)
+            for (prev_state_idx, state_idx), seq_probs in transition_logprobs.items():
+                array[:, prev_state_idx, state_idx] = seq_probs
+            transition_logprobs = array
+
+        return transition_logprobs
+
+    @property
+    def transitions(self):
+        prev_states, cur_states = self.psi.nonzero()
+        transitions = zip(prev_states, cur_states)
+        return transitions
+
+    def makeActionKey(self, transition):
+        start_state_idx, end_state_idx = transition
+
+        start_objects = self.getState(start_state_idx).assembly_state
+        end_objects = self.getState(end_state_idx).assembly_state
+        difference = end_objects - start_objects
+
+        if not difference:
+            return ''
+
+        if len(difference) > 1:
+            logger.warning(
+                f"transition {transition[0]} -> {transition[1]}"
+                f"adds more than one object: {difference}"
+            )
+
+        action_key = difference.pop()
+        return action_key
+
+
+class BinDetectionLikelihood(object):
+    def __init__(self, match_prob=0.9):
+        self._scores = np.log(np.array([1 - match_prob, match_prob]))
+
+    def fit(
+            self, label_seqs, hand_detection_seqs,
+            action_means=None, action_covs=None, bin_contents=None,
+            **super_kwargs):
+        """ Estimate this model's parameters from data.
+
+        Parameters
+        ----------
+        label_seqs : iterable( iterable( airplanecorpus.AirplaneAssembly ) )
+        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
+        detection_window_len : int (odd), optional
+            Parameters are estimated around a window centered at the start of
+            the action. This argument gives the width of that window.
+        outlier_proportion : float (<= 1), optional
+            After fitting an initial model, treat the least-likely
+            `outlier_proportion` proportion of samples as outliers and re-estimate
+            parameters.
+        min_y : int
+            Hand detections with y-value lower than this are discarded before training.
+        **super_kwargs : optional
+            Any extra keyword arguments are passed to ``super().fit()``.
+        """
+
+        super().fit(label_seqs, **super_kwargs)
+
+        label_seqs = tuple(self.toLabelIndexArray(label_seq) for label_seq in label_seqs)
+        hand_detection_seqs = np.vstack(hand_detection_seqs)
+        # label_seqs contains row vectors
+        label_seqs = np.hstack(label_seqs)
+
+        num_data_samples = hand_detection_seqs.shape[0]
+        num_label_samples = label_seqs.shape[0]
+        if num_data_samples != num_label_samples and not self.segment_labels:
+            err_str = f"{num_data_samples} data samples != {num_label_samples} label samples"
+            raise ValueError(err_str)
+
+        self._means = action_means
+        self._covs = action_covs
+        self._bin_contents = bin_contents
+
+    def computeEdgeScore(self, bin_detection_seq, transition=None, action_key=None):
+        if action_key is None:
+            action_key = self.makeActionKey(transition)
+
+        scores = []
+        for bin_index in bin_detection_seq:
+            bin_objects = self._bin_contents[bin_index]
+            transition_matches_bin = action_key in bin_objects
+            scores.append(self._scores[int(transition_matches_bin)])
+        scores = np.array(scores)
+
+        return scores
+
+    def computeLogLikelihoods(self, bin_detection_seq, transitions=None, as_array=False):
+        """ Compute log-likelihood scores for a set of hypotheses.
+
+        Parameters
+        ----------
+        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
+        transitions : iterable( tuple(int, int) ), optional
+            Each element is a pair of state indices, and represents the transition
+            ``first --> second``. If `None`, this function defaults to evaluating
+            all observed transitions.
+        as_array : bool, optional
+            If True, results is compiled into a numpy array before is it returned.
+            This array has shape ``(num_samples, num_states, num_states)``.
+
+        Returns
+        -------
+        transition_logprobs : dict{(int, int) -> np.array of float, shape (num_samples,)}
+            See argument `as_array` for alternative return type.
+        """
+
+        if transitions is None:
+            transitions = self.transitions
+
+        transition_logprobs = {
+            transition: self.computeEdgeScore(bin_detection_seq, transition)
+            for transition in transitions
+        }
+
+        if as_array:
+            num_samples = bin_detection_seq.shape[0]
+            array = np.full((num_samples, self.num_states, self.num_states), -np.inf)
+            for (prev_state_idx, state_idx), seq_probs in transition_logprobs.items():
+                array[:, prev_state_idx, state_idx] = seq_probs
+            transition_logprobs = array
+
+        return transition_logprobs
+
+    @property
+    def transitions(self):
+        prev_states, cur_states = self.psi.nonzero()
+        transitions = zip(prev_states, cur_states)
+        return transitions
+
+    def makeActionKey(self, transition):
+        start_state_idx, end_state_idx = transition
+
+        start_objects = self.getState(start_state_idx).assembly_state
+        end_objects = self.getState(end_state_idx).assembly_state
+        difference = end_objects - start_objects
+
+        if not difference:
+            return ''
+
+        if False and len(difference) > 1:
+            logger.warning(
+                f"transition {transition[0]} -> {transition[1]} "
+                f"adds more than one object: {difference}"
+            )
+
+        action_key = next(iter(difference))
+        return action_key
 
 
 # -=( FRAME SCORING MODELS )==-------------------------------------------------
@@ -832,281 +1105,6 @@ class FrameScorer(object):
         return best_idx
 
 
-class HandDetectionLikelihood(object):
-    def __init__(self, bias_params=None, nan_score=None):
-        """
-        Parameters
-        ----------
-        bias_params : (float, float)
-            0 -- Amount of probability to add when hand detection is present
-            1 -- Amount of probability to add when hand detection is missing
-        """
-
-        if bias_params is None:
-            # Consistent with settings in Vo et al.
-            bias_params = (0.01, 0.1)
-
-        if nan_score is None:
-            nan_score = -np.inf
-        self.nan_score = nan_score
-
-        self._means = None
-        self._covs = None
-        self._mean_detection_scores = None
-        self._log_biases = np.log(np.array(bias_params))
-
-        pass
-
-    def fit(
-            self, label_seqs, hand_detection_seqs,
-            action_means=None, action_covs=None,
-            **super_kwargs):
-        """ Estimate this model's parameters from data.
-
-        Parameters
-        ----------
-        label_seqs : iterable( iterable( airplanecorpus.AirplaneAssembly ) )
-        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
-        detection_window_len : int (odd), optional
-            Parameters are estimated around a window centered at the start of
-            the action. This argument gives the width of that window.
-        outlier_proportion : float (<= 1), optional
-            After fitting an initial model, treat the least-likely
-            `outlier_proportion` proportion of samples as outliers and re-estimate
-            parameters.
-        min_y : int
-            Hand detections with y-value lower than this are discarded before training.
-        **super_kwargs : optional
-            Any extra keyword arguments are passed to ``super().fit()``.
-        """
-
-        super().fit(label_seqs, **super_kwargs)
-
-        label_seqs = tuple(self.toLabelIndexArray(label_seq) for label_seq in label_seqs)
-        hand_detection_seqs = np.vstack(hand_detection_seqs)
-        # label_seqs contains row vectors
-        label_seqs = np.hstack(label_seqs)
-
-        num_data_samples = hand_detection_seqs.shape[0]
-        num_label_samples = label_seqs.shape[0]
-        if num_data_samples != num_label_samples and not self.segment_labels:
-            err_str = f"{num_data_samples} data samples != {num_label_samples} label samples"
-            raise ValueError(err_str)
-
-        self._means = action_means
-        self._covs = action_covs
-
-    def computeActionScores(self, hand_detection_seq):
-        scores = np.column_stack(
-            tuple(
-                self.computeEdgeScore(hand_detection_seq, action_key=key)
-                for key in self._means.keys()
-            )
-        )
-
-        return scores
-
-    def computeEdgeScore(self, hand_detection_seq, transition=None, action_key=None):
-        if action_key is None:
-            action_key = self.makeActionKey(transition)
-
-        # Compute Gaussian component of log prob
-        mean = self._means[action_key]
-        cov = self._covs[action_key]
-        # mean_detection_score = self._mean_detection_scores[action_key]
-        score = -gaussianScore(hand_detection_seq, mean, cov)  # - mean_detection_score
-        # FIXME: add in Gaussian normalization constant?
-
-        # Compute correction for missed hand detections
-        score_is_nan = np.isnan(score)
-        score[score_is_nan] = self.nan_score
-        score = np.logaddexp(score, self._log_biases[score_is_nan.astype(int)])
-
-        return score
-
-    def computeLogLikelihoods(self, hand_detection_seq, transitions=None, as_array=False):
-        """ Compute log-likelihood scores for a set of hypotheses.
-
-        Parameters
-        ----------
-        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
-        transitions : iterable( tuple(int, int) ), optional
-            Each element is a pair of state indices, and represents the transition
-            ``first --> second``. If `None`, this function defaults to evaluating
-            all observed transitions.
-        as_array : bool, optional
-            If True, results is compiled into a numpy array before is it returned.
-            This array has shape ``(num_samples, num_states, num_states)``.
-
-        Returns
-        -------
-        transition_logprobs : dict{(int, int) -> np.array of float, shape (num_samples,)}
-            See argument `as_array` for alternative return type.
-        """
-
-        if transitions is None:
-            transitions = self.transitions
-
-        transition_logprobs = {
-            transition: self.computeEdgeScore(hand_detection_seq, transition)
-            for transition in transitions
-        }
-
-        if as_array:
-            num_samples = hand_detection_seq.shape[0]
-            array = np.full((num_samples, self.num_states, self.num_states), -np.inf)
-            for (prev_state_idx, state_idx), seq_probs in transition_logprobs.items():
-                array[:, prev_state_idx, state_idx] = seq_probs
-            transition_logprobs = array
-
-        return transition_logprobs
-
-    @property
-    def transitions(self):
-        prev_states, cur_states = self.psi.nonzero()
-        transitions = zip(prev_states, cur_states)
-        return transitions
-
-    def makeActionKey(self, transition):
-        start_state_idx, end_state_idx = transition
-
-        start_objects = self.getState(start_state_idx).assembly_state
-        end_objects = self.getState(end_state_idx).assembly_state
-        difference = end_objects - start_objects
-
-        if not difference:
-            return ''
-
-        if len(difference) > 1:
-            logger.warning(
-                f"transition {transition[0]} -> {transition[1]}"
-                f"adds more than one object: {difference}"
-            )
-
-        action_key = difference.pop()
-        return action_key
-
-
-class BinDetectionLikelihood(object):
-    def __init__(self, match_prob=0.9):
-        self._scores = np.log(np.array([1 - match_prob, match_prob]))
-
-    def fit(
-            self, label_seqs, hand_detection_seqs,
-            action_means=None, action_covs=None, bin_contents=None,
-            **super_kwargs):
-        """ Estimate this model's parameters from data.
-
-        Parameters
-        ----------
-        label_seqs : iterable( iterable( airplanecorpus.AirplaneAssembly ) )
-        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
-        detection_window_len : int (odd), optional
-            Parameters are estimated around a window centered at the start of
-            the action. This argument gives the width of that window.
-        outlier_proportion : float (<= 1), optional
-            After fitting an initial model, treat the least-likely
-            `outlier_proportion` proportion of samples as outliers and re-estimate
-            parameters.
-        min_y : int
-            Hand detections with y-value lower than this are discarded before training.
-        **super_kwargs : optional
-            Any extra keyword arguments are passed to ``super().fit()``.
-        """
-
-        super().fit(label_seqs, **super_kwargs)
-
-        label_seqs = tuple(self.toLabelIndexArray(label_seq) for label_seq in label_seqs)
-        hand_detection_seqs = np.vstack(hand_detection_seqs)
-        # label_seqs contains row vectors
-        label_seqs = np.hstack(label_seqs)
-
-        num_data_samples = hand_detection_seqs.shape[0]
-        num_label_samples = label_seqs.shape[0]
-        if num_data_samples != num_label_samples and not self.segment_labels:
-            err_str = f"{num_data_samples} data samples != {num_label_samples} label samples"
-            raise ValueError(err_str)
-
-        self._means = action_means
-        self._covs = action_covs
-        self._bin_contents = bin_contents
-
-    def computeEdgeScore(self, bin_detection_seq, transition=None, action_key=None):
-        if action_key is None:
-            action_key = self.makeActionKey(transition)
-
-        scores = []
-        for bin_index in bin_detection_seq:
-            bin_objects = self._bin_contents[bin_index]
-            transition_matches_bin = action_key in bin_objects
-            scores.append(self._scores[int(transition_matches_bin)])
-        scores = np.array(scores)
-
-        return scores
-
-    def computeLogLikelihoods(self, bin_detection_seq, transitions=None, as_array=False):
-        """ Compute log-likelihood scores for a set of hypotheses.
-
-        Parameters
-        ----------
-        hand_detection_seqs : iterable( numpy array of float, shape (num_samples, 4) )
-        transitions : iterable( tuple(int, int) ), optional
-            Each element is a pair of state indices, and represents the transition
-            ``first --> second``. If `None`, this function defaults to evaluating
-            all observed transitions.
-        as_array : bool, optional
-            If True, results is compiled into a numpy array before is it returned.
-            This array has shape ``(num_samples, num_states, num_states)``.
-
-        Returns
-        -------
-        transition_logprobs : dict{(int, int) -> np.array of float, shape (num_samples,)}
-            See argument `as_array` for alternative return type.
-        """
-
-        if transitions is None:
-            transitions = self.transitions
-
-        transition_logprobs = {
-            transition: self.computeEdgeScore(bin_detection_seq, transition)
-            for transition in transitions
-        }
-
-        if as_array:
-            num_samples = bin_detection_seq.shape[0]
-            array = np.full((num_samples, self.num_states, self.num_states), -np.inf)
-            for (prev_state_idx, state_idx), seq_probs in transition_logprobs.items():
-                array[:, prev_state_idx, state_idx] = seq_probs
-            transition_logprobs = array
-
-        return transition_logprobs
-
-    @property
-    def transitions(self):
-        prev_states, cur_states = self.psi.nonzero()
-        transitions = zip(prev_states, cur_states)
-        return transitions
-
-    def makeActionKey(self, transition):
-        start_state_idx, end_state_idx = transition
-
-        start_objects = self.getState(start_state_idx).assembly_state
-        end_objects = self.getState(end_state_idx).assembly_state
-        difference = end_objects - start_objects
-
-        if not difference:
-            return ''
-
-        if len(difference) > 1:
-            logger.warning(
-                f"transition {transition[0]} -> {transition[1]}"
-                f"adds more than one object: {difference}"
-            )
-
-        action_key = difference.pop()
-        return action_key
-
-
 def visualizeKeyframeModel(model):
     """ Draw a figure visualizing a keyframe model.
 
@@ -1426,7 +1424,7 @@ class ImageLikelihood(object):
         self.error_covariance = err_cov
         """
 
-    def structuredStateLogl(
+    def stateLogl(
             self, rgb_image, depth_image, segment_image,
             background_plane, state_idx=None, state=None,
             # include_hand_pixel_logprob=False,
@@ -1493,149 +1491,6 @@ class ImageLikelihood(object):
         )
 
         return -error, component_poses
-
-    def unstructuredStateLogl(
-            self, observed, pixel_classes, segment_labels, background_model,
-            state_idx=None, state=None, viz_pose=False, is_depth=False,
-            obsv_std=1, greedy_assignment=False, **optim_kwargs):
-        """ Score an observed image against a hypothesis state.
-
-        Parameters
-        ----------
-        observed : numpy array of float, shape (img_height, img_width)
-        pixel_classes : numpy array of int, shape (img_height, img_width)
-            This array gives a class assignment for each pixel in `observed`.
-            Classes are from the following set:
-                0 -- Hands
-                1 -- Blocks
-                2 -- Specularity
-        segment_labels : numpy array of int, shape (img_height, img_width)
-            This array gives a segment assignment for each pixel in `observed`.
-            Segments are (mostly) contiguous regions of the image.
-        background_model :
-        state_idx : int, optional
-            Index of the hypothesis state to score. One of `state_idx` and `state`
-            must be passed to this method. If `state_idx` is not passed, this
-            method will retrieve the index of `state`.
-        state : blockassembly.BlockAssembly, optional
-            The hypothesis state to score. One of `state_idx` and `state` must
-            be passed to this method. If `state` is not passed, this method will
-            retrieve the state corresponding to `state_idx`.
-        viz_pose : bool, optional
-        is_depth : bool, optional
-        obsv_std : bool, optional
-        greedy_assignment : bool, optional
-        **optim_kwargs : optional
-            Additional keyword arguments that get passed to
-            `self.computeStateLogLikelihood`.
-
-        Returns
-        -------
-        log_likelihoods : numpy array of float, shape (len(state_idxs),)
-            Log likelihood score for each hypothesis in `state_idxs`
-        argmaxima : iterable( ??? )
-            arg-maximizers of any sub-models that were optimized to produce
-            `log_likelihoods`. The i-th element if `argmaxima` corresponds to
-            the i-th element of `log_likelihoods`.
-        """
-
-        if state is None:
-            state = self.states[state_idx]
-
-        if state_idx is None:
-            state_idx = self.getStateIndex(state)
-
-        if not state.connected_components:
-            state.connected_components[0] = set()
-
-        background_plane_img = None
-        if is_depth:
-            background_plane_img = render.renderPlane(background_model, observed.shape)
-            background_plane_img /= obsv_std
-            observed = observed.astype(float) / obsv_std
-            observed[segment_labels == 0] = background_plane_img[segment_labels == 0]
-
-        bboxes = imageprocessing.segmentBoundingBoxes(observed, segment_labels)
-        num_segments = segment_labels.max()
-
-        if viz_pose:
-            obsv_bboxes = observed.copy()
-
-        num_components = len(state.connected_components)
-        nll_upper_bound = 1e14
-        OBJECTIVES = np.full((num_components, num_segments), nll_upper_bound)
-        NEG_LOGLS = np.full((num_components, num_segments), nll_upper_bound)
-
-        visibility_ratio_lower_bound = 0.35
-
-        TS = []
-        THETAS = []
-        TEMPLATES = []
-        for comp_arr_idx, comp_idx in enumerate(state.connected_components.keys()):
-            template_model = self.makeTemplateGmm(state_idx, comp_idx)
-
-            if viz_pose:
-                plt.figure()
-                plt.stem(template_model.weights_)
-                plt.title(f'GMM prior, state {state_idx} component {comp_idx}')
-                plt.ylabel('p(color)')
-                plt.xlabel('color')
-                plt.show()
-
-            # TEMPLATES.append(rendered)
-            if viz_pose:
-                rgb_rendered = self.getCanonicalTemplate(state_idx, comp_idx, img_type='rgb')
-                TEMPLATES.append(rgb_rendered)
-
-            TS.append([])
-            THETAS.append([])
-            for seg_idx in range(1, num_segments + 1):
-                bbox = bboxes[seg_idx - 1]
-                t, __ = geometry.extremePoints(*bbox)
-
-                TS[-1].append(t)
-                THETAS[-1].append(0)
-
-                in_seg = segment_labels == seg_idx
-                is_blocks = pixel_classes == 3
-                is_blocks_in_seg = in_seg & is_blocks
-
-                visibility_ratio = is_blocks_in_seg.sum() / in_seg.sum()
-                prune_segment = visibility_ratio < visibility_ratio_lower_bound
-                # logger.info(f'visibility ratio: {visibility_ratio:.2f}')
-
-                if not prune_segment:
-                    seg_pixels = observed[in_seg, :]
-                    avg_log_prob = template_model.score(seg_pixels)
-                    log_prob = template_model.score_samples(seg_pixels).sum()
-                    OBJECTIVES[comp_arr_idx, seg_idx - 1] = -avg_log_prob
-                    NEG_LOGLS[comp_arr_idx, seg_idx - 1] = -log_prob
-
-                if viz_pose:
-                    perimeter = imageprocessing.rectangle_perimeter(*bbox)
-                    obsv_bboxes[perimeter] = 1
-                    if prune_segment:
-                        obsv_bboxes[in_seg] = 1
-
-        final_obj, argmaxima = matchComponentsToSegments(
-            OBJECTIVES, TS, THETAS,
-            # downstream_objectives=NEG_LOGLS,
-            greedy_assignment=greedy_assignment
-        )
-
-        if viz_pose:
-            final_render = render.makeFinalRender(
-                TEMPLATES, observed, argmaxima[0], argmaxima[1],
-                copy_observed=True)
-
-            imageprocessing.displayImages(obsv_bboxes, final_render, pixel_classes, segment_labels)
-            if is_depth:
-                f, axes = plt.subplots(2, 1, figsize=(16, 8))
-                # axes[0].hist(residual_img.ravel(), bins=100)
-                axes[1].hist(final_render.ravel(), bins=100)
-                plt.show()
-
-        return -final_obj, argmaxima
 
     def computeLogLikelihoods(
             self, observed, pixel_classes, segment_labels, background_model,
@@ -2451,6 +2306,8 @@ class EdgeHmm(Hmm):
         if seg_level_transitions:
             self.segment_labels = True
             label_seqs = tuple(utils.computeSegments(label_seq)[0] for label_seq in label_seqs)
+        else:
+            self.segment_labels = False
 
         super().fit(label_seqs, *feat_seqs, **super_kwargs)
 
@@ -2461,9 +2318,9 @@ class EdgeHmm(Hmm):
             self.final_probs = makeHistogram(self.num_states, end_state_idxs, normalize=True)
             self.final_scores = np.log(self.final_probs)
 
-            plt.figure()
-            plt.stem(self.final_probs)
-            plt.show()
+            # plt.figure()
+            # plt.stem(self.final_probs)
+            # plt.show()
         else:
             self.final_probs = np.ones(self.num_states)
             self.final_scores = np.zeros(self.num_states)
@@ -2472,7 +2329,7 @@ class EdgeHmm(Hmm):
             self, samples, prior=None,
             greed_coeff=None, sparsity_level=None, verbose_level=False,
             transition_thresh=0, ml_decode=False, sparse_ml_decode=False,
-            edge_scores=None, score_samples_as_batch=False,
+            edge_scores=None, score_samples_as_batch=False, viz_data_scores=False,
             **ll_kwargs):
         """
         Viterbi search with threshold and sparsity-based beam pruning.
@@ -2558,10 +2415,10 @@ class EdgeHmm(Hmm):
             prev_max_lps = max_log_probs[:, sample_idx]
 
         max_log_probs[:, -1] += self.final_scores
-        plt.figure()
-        plt.hist(edge_scores[~np.isinf(edge_scores)], bins=100)
-        plt.matshow(max_log_probs)
-        plt.show()
+        # plt.figure()
+        # plt.hist(edge_scores[~np.isinf(edge_scores)], bins=100)
+        # plt.matshow(max_log_probs)
+        # plt.show()
 
         # Backward pass (backtrace)
         pred_idxs = np.zeros(num_samples, dtype=int)
