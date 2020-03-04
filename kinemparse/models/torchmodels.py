@@ -1,9 +1,12 @@
 import collections
 import logging
 import math
+import pdb
 
 import torch
+import numpy as np
 from matplotlib import pyplot as plt
+import graphviz
 
 import mathtools as m
 from mathtools import utils
@@ -122,8 +125,6 @@ class LegacyHmmInterface(object):
 
         pred_states = self.integerizer.deintegerizeSequence(pred_idxs)
         pred_poses = tuple(component_poses[t][i] for t, i in enumerate(pred_idxs))
-
-        # import pdb; pdb.set_trace()
 
         return pred_states, pred_idxs, None, scores, pred_poses
 
@@ -254,6 +255,24 @@ def fitGaussianParams(samples, num_classes=None):
     return means, precs_sqrt, logZs, eigenvalues, eigenvectors
 
 
+def stateToString(names):
+    if names == '<BOS>':
+        return names
+    if not names:
+        return '()'
+    combined_names = [names[0]]
+    for name in names[1:]:
+        if combined_names[-1].startswith(name[:-1]):
+            if name == 'null':
+                combined_names.append(name)
+            else:
+                combined_names[-1] += name[-1]
+        else:
+            combined_names.append(name)
+    string = '(' + ', '.join(combined_names) + ')'
+    return string
+
+
 class ReachDetector(torch.nn.Module):
     def __init__(
             self, part_names, part_names_to_idxs, part_idxs_to_bins,
@@ -271,7 +290,7 @@ class ReachDetector(torch.nn.Module):
             ???
         """
 
-        super(ReachDetector, self).__init__()
+        super().__init__()
 
         if bias_params is None:
             # Consistent with settings in Vo et al.
@@ -307,8 +326,8 @@ class ReachDetector(torch.nn.Module):
         hand_detection_seqs : tuple(numpy.ndarray of float, shape (num_samples, 2))
         """
 
-        action_seqs = tuple(torch.tensor(a) for a in action_seqs)
-        hand_detection_seqs = tuple(torch.tensor(d).float() for d in hand_detection_seqs)
+        # action_seqs = tuple(torch.tensor(a) for a in action_seqs)
+        # hand_detection_seqs = tuple(torch.tensor(d).float() for d in hand_detection_seqs)
 
         self._fitBinDetectors(hand_detection_seqs, action_seqs)
         self._fitDurations(action_seqs)
@@ -339,6 +358,7 @@ class ReachDetector(torch.nn.Module):
         for action_seq in action_seqs:
             self._collectDurations(action_seq, durations=durations)
         durations = {key: torch.tensor(value).float()[:, None] for key, value in durations.items()}
+        self._max_dur = max(float(ds.max()) for ds in durations.values())
 
         self._dur_means, self._dur_precs_sqrt, self._dur_logZs, self._dur_evals, self._dur_evecs = \
             fitGaussianParams(durations, num_classes=self._num_parts)
@@ -363,7 +383,7 @@ class ReachDetector(torch.nn.Module):
         segments = {key: torch.cat(value) for key, value in segments.items()}
         self._bin_means, self._bin_precs_sqrt, self._bin_logZs, self._bin_evals, self._bin_evecs = \
             fitGaussianParams(segments, num_classes=self._num_bins)
-        self.visualize(segments, train=True)
+        # self.visualize(segments, train=True)
 
         # Remove bottom 5% of detections and re-fit model
         if outlier_ratio is not None:
@@ -373,7 +393,7 @@ class ReachDetector(torch.nn.Module):
             }
             self._bin_means, self._bin_precs_sqrt, self._bin_logZs, self._bin_evals, self._bin_evecs = \
                 fitGaussianParams(inlier_segments, num_classes=self._num_bins)
-            self.visualize(segments, train=True)
+            # self.visualize(segments, train=True)
 
         # Compute mean detection scores for each bin detector (in log-domain)
         subsample_period = 5
@@ -426,6 +446,12 @@ class ReachDetector(torch.nn.Module):
 
         return dur_scores
 
+    def maxDuration(self, num_stds=1):
+        upper_bound = self._dur_means + num_stds * self._dur_evals ** 0.5
+        thresh_dur, _ = upper_bound.max(dim=0)
+        # logger.info(f"max_dur: {self._max_dur}, thresh: {thresh_dur.squeeze()}")
+        return self._max_dur
+
     def predictSeq(self, *args, scores=None, viz=True, **kwargs):
         args = tuple(torch.tensor(a).float() for a in args)
 
@@ -443,7 +469,7 @@ class ReachDetector(torch.nn.Module):
         bin_means = self._bin_means.numpy()
         bin_diag_errs = torch.einsum('bij,bj->bi', self._bin_evecs, self._bin_evals ** 0.5)
 
-        logger.info(f"stds: {self._bin_evals ** 0.5}")
+        # logger.info(f"stds: {self._bin_evals ** 0.5}")
 
         _ = plt.figure()
         if train:
@@ -494,14 +520,12 @@ class ReachDetector(torch.nn.Module):
         num_classes = detection_scores.shape[-1]
         bin_scores = torch.full((num_samples, num_classes), -math.inf)
         bin_scores[~row_has_nan, :] = detection_scores
-        # import pdb; pdb.set_trace()
 
         # Add in the bias term (in log-domain)
         if add_bias:
             bias_param_idx = torch.isnan(hand_detections).any(1).long()
             log_biases = self._log_biases[bias_param_idx][:, None].expand(-1, bin_scores.shape[1])
             bin_scores = torch.logsumexp(torch.stack((bin_scores, log_biases), -1), -1)
-        # pdb.set_trace()
 
         if viz:
             f, axes = plt.subplots(bin_scores.shape[1], figsize=(12, 12))
@@ -557,8 +581,10 @@ class ReachDetector(torch.nn.Module):
 
 def smoothCounts(
         edge_counts, state_counts, init_states, final_states,
-        empty_regularizer=0, zero_transition_regularizer=0, uniform_regularizer=0,
-        diag_regularizer=0, override_transitions=False):
+        # empty_regularizer=0, zero_transition_regularizer=0,
+        init_regularizer=0, final_regularizer=0,
+        uniform_regularizer=0, diag_regularizer=0,
+        override_transitions=False, structure_only=False):
 
     num_states = len(state_counts)
 
@@ -579,85 +605,285 @@ def smoothCounts(
         final_counts[i] = count
 
     # Regularize the heck out of these counts
-    bigram_counts[0, 0] += empty_regularizer
-    bigram_counts[:, 0] += zero_transition_regularizer
-    bigram_counts[0, :] += zero_transition_regularizer
+    initial_states = initial_counts.nonzero()[:, 0]
+    for i in initial_states:
+        bigram_counts[i, i] += init_regularizer
+
+    final_states = final_counts.nonzero()[:, 0]
+    for i in final_states:
+        bigram_counts[i, i] += final_regularizer
+    # bigram_counts[:, 0] += zero_transition_regularizer
+    # bigram_counts[0, :] += zero_transition_regularizer
     bigram_counts += uniform_regularizer
-    # FIXME: diag_indices_from for tensor
-    diag_indices = m.np.diag_indices_from(bigram_counts)
+    diag_indices = np.diag_indices(bigram_counts.shape[0])
     bigram_counts[diag_indices] += diag_regularizer
 
     if override_transitions:
         logger.info('Overriding bigram_counts with an array of all ones')
         bigram_counts = torch.ones_like(bigram_counts)
 
+    if structure_only:
+        bigram_counts = (bigram_counts > 0).float()
+        initial_counts = (initial_counts > 0).float()
+        final_counts = (final_counts > 0).float()
+
     denominator = bigram_counts.sum(1)
-    transition_probs = bigram_counts / denominator
+    transition_probs = bigram_counts / denominator[:, None]
+    transition_probs[torch.isnan(transition_probs)] = 0
     initial_probs = initial_counts / initial_counts.sum()
-    final_probs = final_counts / final_counts.sum()
+    final_probs = (final_counts > 0).float()  # final_counts / final_counts.sum()
 
-    transition_weights = transition_probs.log()
-    initial_weights = initial_probs.log()
-    final_weights = final_probs.log()
-
-    return transition_weights, initial_weights, final_weights
+    return transition_probs, initial_probs, final_probs
 
 # class AirplaneParser(LegacyHmmInterface, torchutils.SemiMarkovScorer, ReachDetector):
 #     pass
 
 
 class AirplaneParser(torch.nn.Module):
-    def __init__(self, *args, subsample_period=1):
+    def __init__(self, *args, device=None, subsample_period=1):
         super().__init__()
 
         self._obsv_model = ReachDetector(*args)
         self._seq_model = torchutils.SemiMarkovScorer()
         self._seq_model.scoreSegment = self._scoreSegment
+        self._seq_model.scoreDurations = self._scoreDurations
+
+        self.device = device
 
         self._subsample_period = subsample_period
 
-    def _scoreSegment(self, sample_scores):
-        duration = sample_scores.shape[-1] * self._subsample_period
-        dur_score = self._obsv_model._scoreDurations(duration)
+    def _scoreDurations(self, durations, dur_scores=None):
+        if dur_scores is None:
+            durations = durations.float() * self._subsample_period
+            dur_scores = self._obsv_model._scoreDurations(durations[:, None])
+        else:
+            dur_scores = dur_scores[durations, :]
+        return self._expandActionScores(dur_scores[None, ...])
 
-        seg_score = sample_scores.sum(dim=-1) * dur_score
-        return seg_score
+    def _scoreSegment(self, action_scores):
+        action_seg_scores = action_scores.sum(dim=-1)
+        # pdb.set_trace()
+        return self._expandActionScores(action_seg_scores)
 
-    def fit(self, action_seqs, observations):
+    def _expandActionScores(self, action_scores):
+        shape = action_scores.shape[:-1] + (self.num_states, self.num_states)
+        transition_scores = torch.full(shape, -float('Inf'))
+        transition_scores[..., self._edges] = action_scores[..., self._edge_labels[self._edges]]
+        # pdb.set_trace()
+        return transition_scores
+
+    def fit(self, action_seqs, observations, **seq_kwargs):
+        action_seqs = tuple(torch.tensor(s).long() for s in action_seqs)
+        observations = tuple(torch.tensor(s).float() for s in observations)
+
         self._fitObsvModel(action_seqs, observations)
 
+        action_id_seqs = tuple(action_seq[:, 0] for action_seq in action_seqs)
         action_seqs = tuple(
-            tuple(self._obsv_model._part_names[a] for a in action_seq[:, 0])
-            for action_seq in action_seqs
+            tuple(self._obsv_model._part_names[a] for a in action_id_seq)
+            for action_id_seq in action_id_seqs
         )
+
+        action_id_seqs = tuple(
+            tuple(self._obsv_model._part_names_to_idxs[a] for a in a_seq)
+            for a_seq in action_seqs
+        )
+
+        def disambiguate(action_seq):
+            if 'wheel2' not in action_seq:
+                i = action_seq.index('body4')
+                return action_seq[:i] + ('body4_',) + action_seq[i + 1:]
+            return action_seq
+
+        action_seqs = tuple(disambiguate(a_seq) for a_seq in action_seqs)
+
         state_seqs = tuple(
-            tuple(frozenset(action_seq[:i]) for i in range(len(action_seq)))
+            tuple(action_seq[:i] for i in range(len(action_seq) + 1))
             for action_seq in action_seqs
         )
         self.integerizer = fsm.HashableFstIntegerizer(prepend_epsilon=False)
+
+        def make_equivalent(state):
+            if 'body4_' in state:
+                i = state.index('body4_')
+                return state[:i] + ('body4', 'wheel1', 'wheel2') + state[i + 1:]
+            return state
+
+        state_seqs = tuple(
+            tuple(frozenset(make_equivalent(state)) for state in state_seq)
+            for state_seq in state_seqs
+        )
         self.integerizer.updateFromSequences(state_seqs)
         state_id_seqs = tuple(self.integerizer.integerizeSequence(ss) for ss in state_seqs)
 
-        self._fitSeqModel(state_id_seqs)
+        self._fitSeqModel(state_id_seqs, **seq_kwargs)
+
+        # Record edge IDs/labels for every state transition
+        self._edge_labels = -torch.ones(self.num_states, self.num_states, dtype=torch.long)
+        self._edge_labels[self._edges] = 0
+        for action_ids, state_ids in zip(action_id_seqs, state_id_seqs):
+            if len(action_ids) != len(state_ids[1:]):
+                err_str = f"{len(action_ids)} actions != {len(state_ids)} states"
+                raise AssertionError(err_str)
+            for i in range(len(action_ids)):
+                s_cur = state_ids[i]
+                s_next = state_ids[i + 1]
+                a = action_ids[i]
+                stored_label = self._edge_labels[s_next, s_cur]
+                if stored_label > 0 and stored_label != a:
+                    err_str = f"Transition ({s_cur} -> {s_next}) has multiple labels!"
+                    raise AssertionError(err_str)
+                self._edge_labels[s_next, s_cur] = a
+
+        # self.printFST()
+
+    @property
+    def _edges(self):
+        # return self._edge_labels >= 0
+        return self._seq_model.transition_probs > 0
+
+    def printFST(self):
+        nz = self._edges.nonzero()
+        s_cur = nz[:, 1]
+        s_next = nz[:, 0]
+        edge_labels = self._edge_labels[s_next, s_cur]
+        for i, j, k in zip(s_cur, s_next, edge_labels):
+            a_name = self._obsv_model._part_names[k]
+            tx_prob = self._seq_model.transition_probs[j, i]
+            prev_state = stateToString(self.integerizer[i])
+            cur_state = stateToString(self.integerizer[j])
+            logger.info(f"{prev_state} -> {cur_state}: {a_name}, {tx_prob}")
+
+        nz = self._seq_model.start_probs.nonzero()
+        s_i = nz[:, 0]
+        for i in s_i:
+            prob = self._seq_model.start_probs[i]
+            cur_state = stateToString(self.integerizer[i])
+            logger.info(f"(s) -> {cur_state}: <eps>, {prob}")
+
+        nz = self._seq_model.end_probs.nonzero()
+        s_f = nz[:, 0]
+        for i in s_f:
+            prob = self._seq_model.end_probs[i]
+            prev_state = stateToString(self.integerizer[i])
+            logger.info(f"{prev_state} -> (e): <eps>, {prob}")
+
+    def showFST(self, action_dict=None, state_dict=None, display_dir='LR'):
+        """ When returned from an ipython cell, this will generate the FST visualization. """
+
+        def make_label(x):
+            if x < 0:
+                return '<eps>'
+            return str(action_dict[x])
+
+        fst = graphviz.Digraph("finite state machine", filename="fsm.gv")
+        fst.attr(rankdir=display_dir)
+
+        zero = 0
+
+        initial_state = int(self._seq_model.start_probs.nonzero()[0][0])
+
+        for s_idx in range(self.num_states):
+            s_label = str(s_idx)
+            final_prob = self._seq_model.end_probs[s_idx]
+            if final_prob == zero:
+                fst.node(str(s_idx), label=s_label, shape='circle')
+            else:
+                s_label += f'\n({final_prob:.2f})'
+                fst.node(str(s_idx), label=s_label, shape='doublecircle')
+
+        fst.attr('node', shape='circle')
+        edges = self._edges.nonzero()
+        for next_state, cur_state in edges.tolist():
+            edge_label = self._edge_labels[next_state, cur_state]
+            edge_prob = self._seq_model.transition_probs[next_state, cur_state]
+
+            label = make_label(edge_label) + f'/{edge_prob:.2f}'
+            fst.edge(str(cur_state), str(next_state), label=label)
+
+        # mark the start state
+        fst.node('', shape='point')
+        fst.edge('', str(initial_state))
+
+        return fst
 
     def _fitSeqModel(self, label_seqs, **kwargs):
-        w_tx, w_i, w_f = smoothCounts(*fsm.countSeqs(label_seqs), **kwargs)
-        self._obsv_model.start_weights = torch.nn.Parameter(w_i, requires_grad=False)
-        self._obsv_model.end_weights = torch.nn.Parameter(w_f, requires_grad=False)
-        self._obsv_model.transition_weights = torch.nn.Parameter(w_tx, requires_grad=False)
+        p_tx, p_i, p_f = smoothCounts(*fsm.countSeqs(label_seqs), **kwargs)
+        w_tx = p_tx.log()
+        w_i = p_i.log()
+        w_f = p_f.log()
+
+        self._seq_model.start_probs = p_i
+        self._seq_model.end_probs = p_f
+        self._seq_model.transition_probs = p_tx.transpose(0, 1)
+        self._seq_model.start_weights = torch.nn.Parameter(w_i, requires_grad=False)
+        self._seq_model.end_weights = torch.nn.Parameter(w_f, requires_grad=False)
+        self._seq_model.transition_weights = torch.nn.Parameter(
+            w_tx.transpose(0, 1), requires_grad=False
+        )
 
         self.num_states = w_tx.shape[0]
+        self._seq_model.max_duration = int(self._obsv_model.maxDuration() / self._subsample_period)
 
     def _fitObsvModel(self, *args, **kwargs):
         self._obsv_model.fit(*args, **kwargs)
 
-    def predictSeq(self, *args, obsv_scores=None, **kwargs):
-        if obsv_scores is None:
-            obsv_scores = self._obsv_model.forward(*args)
+    def predictSeq(self, hand_detections, obsv_scores=None, dur_scores=None, **kwargs):
+        hand_detections = torch.tensor(hand_detections[::self._subsample_period, :]).float()
 
-        seq_scores = self._seq_model.forward(obsv_scores)
-        preds = self._seq_model.predict(seq_scores)
-        return preds
+        if obsv_scores is None:
+            obsv_scores = self._obsv_model.forward(hand_detections)
+        else:
+            obsv_scores = obsv_scores[:, self._obsv_model._part_to_bin]
+            num_detections = hand_detections.shape[0]
+            num_scores = obsv_scores.shape[0]
+            if num_detections != num_scores:
+                err_str = f"{num_detections} detections != {num_scores} scores"
+                if abs(num_detections - num_scores) == 1:
+                    logger.warning(err_str)
+                else:
+                    raise AssertionError(err_str)
+
+        obsv_scores = obsv_scores.transpose(0, 1)[None, ...]
+        log_potentials = self._seq_model.forward(obsv_scores, dur_scores=dur_scores)
+
+        log_potentials = log_potentials.to(self.device)
+        pred_action_idxs, pred_scores = self._seq_model.predict(
+            log_potentials, arc_labels=self._edge_labels, **kwargs
+        )
+
+        pred_action_idxs, pred_scores = self._seq_model.predict(
+            log_potentials, arc_labels=self._edge_labels, **kwargs
+        )
+
+        return pred_action_idxs, pred_scores.detach()
+
+
+class FstAirplaneParser(AirplaneParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Override sequence model
+        self._seq_model = torchutils.MarkovScorer()
+        self._seq_model.scoreSegment = self._scoreSegment
+
+    def predictSeq(self, hand_detections, obsv_scores=None, dur_scores=None, **kwargs):
+        hand_detections = torch.tensor(hand_detections[::self._subsample_period, :]).float()
+
+        if obsv_scores is None:
+            obsv_scores = self._obsv_model.forward(hand_detections)
+        else:
+            obsv_scores = obsv_scores[:, self._obsv_model._part_to_bin]
+
+        obsv_scores = obsv_scores.transpose(0, 1)[None, ...]
+        log_potentials = self._seq_model.forward(obsv_scores)
+
+        log_potentials = log_potentials.to(self.device)
+        pred_action_idxs, pred_scores = self._seq_model.predict(
+            log_potentials, arc_labels=self._edge_labels, **kwargs
+        )
+
+        return pred_action_idxs, pred_scores.detach()
 
 
 class RenderingCrf(LegacyHmmInterface, torchutils.LinearChainScorer, scene.TorchSceneScorer):
