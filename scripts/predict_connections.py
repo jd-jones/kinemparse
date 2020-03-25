@@ -1,20 +1,24 @@
 import argparse
 import os
 import collections
+import itertools
+import copy
 
 import yaml
 import torch
-import pyplot as plt
+import numpy as np
+from matplotlib import pyplot as plt
 import joblib
 
 from mathtools import utils, torchutils, metrics
-from blocks import notebookutils
+from blocks.estimation import notebookutils
+from blocks.core import labels
 import seqtools.torchutils
 
 
 def main(
         out_dir=None, data_dir=None, model_name=None,
-        gpu_dev_id=None, batch_size=None, learning_rate=None,
+        gpu_dev_id=None, batch_size=None, learning_rate=None, as_array=None,
         cv_params={}, train_params={}):
 
     data_dir = os.path.expanduser(data_dir)
@@ -32,15 +36,16 @@ def main(
         return joblib.load(os.path.join(data_dir, f'{var_name}.pkl'))
 
     def saveVariable(var, var_name):
-        joblib.dump(os.path.join(out_data_dir, f'{var_name}.pkl'))
+        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
     device = torchutils.selectDevice(gpu_dev_id)
 
     # Load data
-    trial_ids = utils.loadVariable('trial_ids', data_dir)
-    accel_seqs = utils.loadVariable('accel_samples', data_dir)
-    gyro_seqs = utils.loadVariable('gyro_samples', data_dir)
-    action_seqs = utils.loadVariable('action_seqs', data_dir)
+    trial_ids = loadVariable('trial_ids')
+    accel_seqs = loadVariable('accel_samples')
+    gyro_seqs = loadVariable('gyro_samples')
+    action_seqs = loadVariable('action_seqs')
+    orig_rgb_frame_timestamp_seqs = loadVariable('orig_rgb_timestamps')
 
     # Reformat action_seqs
     action_seqs = tuple(
@@ -56,10 +61,71 @@ def main(
         unzip=True
     )
 
-    label_seqs = None
+    # Compute block activity labels from action annotations
+    obj_label_seqs = utils.batchProcess(
+        labels.extractBlockActionSeq,
+        action_seqs, orig_rgb_frame_timestamp_seqs,
+        static_kwargs={
+            'split_samples': False,
+            'include_adj_target': False,
+            'action_type': 'object'
+        }
+    )
+
+    tgt_label_seqs = utils.batchProcess(
+        labels.extractBlockActionSeq,
+        action_seqs, orig_rgb_frame_timestamp_seqs,
+        static_kwargs={
+            'split_samples': False,
+            'include_adj_target': False,
+            'action_type': 'target'
+        }
+    )
+
+    imu_obj_label_seqs = utils.batchProcess(
+        notebookutils.makeImuLabelSeq,
+        obj_label_seqs, orig_rgb_frame_timestamp_seqs, imu_timestamp_seqs
+    )
+
+    imu_tgt_label_seqs = utils.batchProcess(
+        notebookutils.makeImuLabelSeq,
+        tgt_label_seqs, orig_rgb_frame_timestamp_seqs, imu_timestamp_seqs
+    )
+
+    # Post-process data
+    imu_is_resting = utils.batchProcess(
+        notebookutils.imuResting, imu_obj_label_seqs, imu_tgt_label_seqs
+    )
+
+    centered_imu_sample_seqs = utils.batchProcess(
+        notebookutils.centerSignals, imu_sample_seqs, imu_is_resting
+    )
+
+    label_seqs = utils.batchProcess(
+        notebookutils.makeImuActivityLabels,
+        centered_imu_sample_seqs, imu_obj_label_seqs, imu_tgt_label_seqs
+    )
+
+    if as_array:
+        def stackSeqs(seq_dict):
+            num_seqs = len(seq_dict)
+            return np.hstack(tuple(seq_dict[i] for i in range(num_seqs)))
+        centered_imu_sample_seqs = tuple(map(stackSeqs, centered_imu_sample_seqs))
+        # imu_timestamp_seqs = tuple(map(stackSeqs, imu_timestamp_seqs))
+        label_seqs = tuple(map(stackSeqs, label_seqs))
+    else:
+        def splitSeqs(seq_dict):
+            num_seqs = len(seq_dict)
+            return tuple(seq_dict[i] for i in range(num_seqs))
+        trial_ids = tuple(itertools.chain(
+            *((t_id,) * len(label_dict) for t_id, label_dict in zip(trial_ids, label_seqs))
+        ))
+        imu_sample_seqs = tuple(itertools.chain(*map(splitSeqs, centered_imu_sample_seqs)))
+        # imu_timestamp_seqs = itertools.chain(*map(splitSeqs, imu_timestamp_seqs))
+        label_seqs = tuple(itertools.chain(*map(splitSeqs, label_seqs)))
 
     # Define cross-validation folds
-    cv_folds = notebookutils.makeDataSplits(imu_sample_seqs, label_seqs, **cv_params)
+    cv_folds = notebookutils.makeDataSplits(imu_sample_seqs, label_seqs, trial_ids, **cv_params)
 
     for cv_index, (train_data, val_data, test_data) in enumerate(cv_folds):
         if train_data == ((), (), (),):
@@ -68,9 +134,11 @@ def main(
             train_ids = tuple()
         else:
             train_obsv, train_labels, train_ids = train_data
-            train_set = seqtools.torchutils.SequenceDataset(train_obsv, train_labels, device=device)
+            train_set = seqtools.torchutils.SequenceDataset(
+                train_obsv, train_labels, device=device, labels_dtype=torch.long
+            )
             train_loader = torch.utils.data.DataLoader(
-                train_set, batch_size=batch_size, shuffle=True, num_workers=2
+                train_set, batch_size=batch_size, shuffle=True
             )
 
         if test_data == ((), (), (),):
@@ -79,10 +147,11 @@ def main(
             test_ids = tuple()
         else:
             test_obsv, test_labels, test_ids = test_data
-            test_set = seqtools.torchutils.SequenceDataset(test_obsv, test_labels, device=device)
-            test_loader = torch.utils.data.DataLoader(
-                test_set, batch_size=batch_size, shuffle=True, num_workers=2
+            test_set = seqtools.torchutils.SequenceDataset(
+                test_obsv, test_labels,
+                device=device, labels_dtype=torch.long
             )
+            test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=True)
 
         if val_data == ((), (), (),):
             val_set = None
@@ -90,20 +159,21 @@ def main(
             val_ids = tuple()
         else:
             val_obsv, val_labels, val_ids = val_data
-            val_set = seqtools.torchutils.SequenceDataset(val_obsv, val_labels, device=device)
-            val_loader = torch.utils.data.DataLoader(
-                val_set, batch_size=batch_size, shuffle=True, num_workers=2
+            val_set = seqtools.torchutils.SequenceDataset(
+                val_obsv, val_labels,
+                device=device, labels_dtype=torch.long
             )
+            val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 
         logger.info(
             f'CV fold {cv_index + 1}: {len(trial_ids)} total '
             f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
         )
-        logger.info(f'  test set: {test_ids}')
+        # logger.info(f'  test set: {test_ids}')
 
         input_dim = train_set.num_obsv_dims
         output_dim = train_set.num_label_types
-        model = torchutils.LinearClassifier(input_dim, output_dim)
+        model = torchutils.LinearClassifier(input_dim, output_dim).to(device=device)
 
         train_epoch_log = collections.defaultdict(list)
         val_epoch_log = collections.defaultdict(list)
@@ -132,16 +202,29 @@ def main(
             **train_params
         )
 
-        utils.saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
-        utils.saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
-        utils.saveVariable(val_ids, f'cvfold={cv_index}_val-ids')
-        utils.saveVariable(train_epoch_log, f'cvfold={cv_index}_{model_name}-train-epoch-log')
-        utils.saveVariable(val_epoch_log, f'cvfold={cv_index}_{model_name}-val-epoch-log')
-        utils.saveVariable(metric_dict, f'cvfold={cv_index}_{model_name}-metric-dict')
-        utils.saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
+        # Test model
+        metric_dict = copy.deepcopy(metric_dict)
+        _ = torchutils.predictSamples(
+            model.to(device=device), test_loader,
+            criterion=criterion, device=device,
+            metrics=metric_dict, data_labeled=True, update_model=False,
+            seq_as_batch=train_params['seq_as_batch']
+        )
+        for metric_name, metric in metric_dict.items():
+            val_epoch_log[metric_name].append(metric.evaluate())
+        metric_str = '  '.join(str(m) for m in metric_dict.values())
+        logger.info('[TST]  ' + metric_str)
+
+        saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
+        saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
+        saveVariable(val_ids, f'cvfold={cv_index}_val-ids')
+        saveVariable(train_epoch_log, f'cvfold={cv_index}_{model_name}-train-epoch-log')
+        saveVariable(val_epoch_log, f'cvfold={cv_index}_{model_name}-val-epoch-log')
+        saveVariable(metric_dict, f'cvfold={cv_index}_{model_name}-metric-dict')
+        saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
 
         model.load_state_dict(last_model_wts)
-        utils.saveVariable(model, f'cvfold={cv_index}_{model_name}-last')
+        saveVariable(model, f'cvfold={cv_index}_{model_name}-last')
 
         # Plot training performance
         subfig_size = (10, 2.5)
@@ -157,20 +240,6 @@ def main(
             torchutils.plotEpochLog(val_epoch_log, subfig_size=subfig_size, title=fig_title)
             notebookutils.saveExptFig(fig_dir, fig_title)
             plt.close()
-
-        # Test model
-        model, avg_loss, avg_acc, avg_prc, avg_rec = torchutils.epochValPhase(
-            model, criterion, optimizer_ft, exp_lr_scheduler, test_loader,
-            device=device, update_interval=None
-        )
-
-        fmt_str = '[{}]  Loss: {:.4f}   Acc: {:5.2f}%   Prc: {:5.2f}%   Rec: {:5.2f}%'
-        logger.info(
-            fmt_str.format(
-                'TEST', avg_loss,
-                avg_acc * 100, avg_prc * 100, avg_rec * 100
-            )
-        )
 
 
 if __name__ == "__main__":
