@@ -4,94 +4,11 @@ import collections
 
 import yaml
 import torch
-from matplotlib import pyplot as plt
 import joblib
 
 from mathtools import utils, torchutils, metrics
-from blocks.estimation import notebookutils
 import seqtools.torchutils
-
-
-def plot_prediction_eg(*args, fig_type=None, **kwargs):
-    if fig_type is None:
-        return plot_prediction_eg_standard(*args, **kwargs)
-    elif fig_type == 'array':
-        return plot_prediction_eg_array(*args, **kwargs)
-    elif fig_type == 'multi':
-        return plot_prediction_eg_multi(*args, **kwargs)
-
-
-def plot_prediction_eg_array(io_history, expt_out_path):
-    subplot_width = 12
-    subplot_height = 3
-
-    for fig_idx, io_sample in enumerate(io_history):
-        preds, inputs, true_labels = map(lambda x: x.squeeze().cpu().numpy().T, io_sample)
-        figsize = (subplot_width, 3 * subplot_height)
-        fig, axes = plt.subplots(3, figsize=figsize)
-        axes[0].imshow(preds, interpolation='none', aspect='auto')
-        axes[0].set_ylabel('Predicted')
-        axes[1].imshow(true_labels, interpolation='none', aspect='auto')
-        axes[1].set_ylabel('Ground truth')
-        axes[2].imshow(inputs, interpolation='none', aspect='auto')
-        axes[2].set_ylabel('Input')
-        plt.tight_layout()
-        fig_title = f'model-predictions-{fig_idx}.png'
-        notebookutils.saveExptFig(expt_out_path, fig_title=fig_title)
-        plt.close()
-
-
-def plot_prediction_eg_multi(io_history, expt_out_path):
-    subplot_width = 12
-    subplot_height = 2
-
-    for fig_idx, io_sample in enumerate(io_history):
-        preds, inputs, true_labels = map(lambda x: x.squeeze().cpu().numpy(), io_sample)
-        num_seqs = true_labels.shape[1]
-        figsize = (subplot_width, num_seqs * subplot_height)
-        fig, axes = plt.subplots(num_seqs, figsize=figsize)
-        if num_seqs == 1:
-            axes = (axes,)
-        for i in range(num_seqs):
-            axis = axes[i]
-            input_seq = inputs[:, [i, i + num_seqs]]
-            pred_seq = preds[:, i]
-            gt_seq = true_labels[:, i]
-            _ = notebookutils.plotImu(
-                (input_seq,), (pred_seq, gt_seq),
-                label_names=('preds', 'labels'), axis=axis
-            )
-        plt.tight_layout()
-        fig_title = f'model-predictions-{fig_idx}.png'
-        notebookutils.saveExptFig(expt_out_path, fig_title=fig_title)
-        plt.close()
-
-
-def plot_prediction_eg_standard(io_history, expt_out_path, num_samples_per_fig=8, fig_type=None):
-    subplot_width = 12
-    subplot_height = 2
-
-    s_idxs = tuple(range(0, len(io_history), num_samples_per_fig))
-    e_idxs = s_idxs[1:] + (len(io_history),)
-    io_histories = tuple(io_history[s_idx:e_idx] for s_idx, e_idx in zip(s_idxs, e_idxs))
-
-    for fig_idx, io_samples in enumerate(io_histories):
-        num_seqs = len(io_samples)
-        figsize = (subplot_width, num_seqs * subplot_height)
-        fig, axes = plt.subplots(num_seqs, figsize=figsize)
-        if num_seqs == 1:
-            axes = (axes,)
-        for axis, io_sample in zip(axes, io_samples):
-            preds, inputs, true_labels = map(lambda x: x.squeeze().cpu().numpy(), io_sample)
-            _ = notebookutils.plotImu(
-                (inputs,), (preds, true_labels),
-                label_names=('preds', 'labels'), axis=axis
-            )
-        plt.tight_layout()
-
-        fig_title = f'model-predictions-{fig_idx}.png'
-        notebookutils.saveExptFig(expt_out_path, fig_title=fig_title)
-        plt.close()
+from kinemparse import imu
 
 
 def main(
@@ -124,7 +41,7 @@ def main(
     device = torchutils.selectDevice(gpu_dev_id)
 
     # Define cross-validation folds
-    cv_folds = notebookutils.makeDataSplits(
+    cv_folds = utils.makeDataSplits(
         imu_sample_seqs, imu_label_seqs, trial_ids,
         **cv_params
     )
@@ -235,8 +152,8 @@ def main(
         )
         metric_str = '  '.join(str(m) for m in metric_dict.values())
         logger.info('[TST]  ' + metric_str)
-        # plot_prediction_eg(test_io_history, fig_dir)
-        plot_prediction_eg(test_io_history, fig_dir, fig_type=fig_type, **viz_params)
+
+        imu.plot_prediction_eg(test_io_history, fig_dir, fig_type=fig_type, **viz_params)
 
         saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
         saveVariable(test_ids, f'cvfold={cv_index}_test-ids')

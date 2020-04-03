@@ -22,6 +22,18 @@ def imuConnectionLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
     return imu_labels
 
 
+def imuActivityLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
+    action_seq = tuple(event for action in action_seq for event in action)
+    rgb_activity_labels = (
+        labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='object')
+        | labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='target')
+    )
+    imu_activity_labels = utils.resampleSeq(
+        rgb_activity_labels.T, rgb_timestamp_seq, imu_timestamp_seq
+    )
+    return imu_activity_labels
+
+
 def dictToArray(imu_seqs, transform=None):
     if transform is None:
         return np.hstack(tuple(imu_seqs[i] for i in range(len(imu_seqs))))
@@ -39,7 +51,10 @@ def makeTimestamps(*imu_dicts):
     return imu_timestamps.mean(axis=1)
 
 
-def main(out_dir=None, data_dir=None, independent_signals=None):
+def main(out_dir=None, data_dir=None, independent_signals=None, data=None, fig_type=None):
+    logger.info(f"Reading from: {data_dir}")
+    logger.info(f"Writing to: {out_dir}")
+
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
 
@@ -68,7 +83,6 @@ def main(out_dir=None, data_dir=None, independent_signals=None):
         def is_valid(d):
             return not any(np.isnan(x).any() for x in d.values())
         return np.array([is_valid(d) for d in seqs])
-
     imu_is_valid = validate_imu(accel_seqs) & validate_imu(gyro_seqs)
     logger.info(
         f"Ignoring {(~imu_is_valid).sum()} invalid IMU sequences "
@@ -77,7 +91,6 @@ def main(out_dir=None, data_dir=None, independent_signals=None):
 
     def chooseValid(seq):
         return tuple(x for x, is_valid in zip(seq, imu_is_valid) if is_valid)
-
     trial_ids = chooseValid(trial_ids)
     accel_seqs = chooseValid(accel_seqs)
     gyro_seqs = chooseValid(gyro_seqs)
@@ -88,20 +101,21 @@ def main(out_dir=None, data_dir=None, independent_signals=None):
         return np.linalg.norm(imu.getImuSamples(x), axis=1)[:, None]
     accel_mag_seqs = tuple(dictToArray(x, transform=norm) for x in accel_seqs)
     gyro_mag_seqs = tuple(dictToArray(x, transform=norm) for x in gyro_seqs)
-    accel_corr_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in accel_mag_seqs)
-    gyro_corr_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in gyro_mag_seqs)
+
+    if data == 'activity':
+        makeLabels = imuActivityLabels
+        accel_feat_seqs = accel_mag_seqs
+        gyro_feat_seqs = gyro_mag_seqs
+    elif data == 'connection':
+        makeLabels = imuConnectionLabels
+        accel_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in accel_mag_seqs)
+        gyro_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in gyro_mag_seqs)
+    else:
+        raise AssertionError()
+
     imu_timestamp_seqs = utils.batchProcess(makeTimestamps, accel_seqs, gyro_seqs)
-
-    # def blockResting(action_seq, rgb_timestamps):
-    #     action_seq = tuple(event for action in action_seq for event in action)
-    #     return labels.blockResting(
-    #         labels.blockActionSeq(action_seq, rgb_timestamps, action_type='object'),
-    #         labels.blockActionSeq(action_seq, rgb_timestamps, action_type='target'),
-    #     )
-    # imu_is_resting = utils.batchProcess(blockResting, action_seqs, rgb_timestamp_seqs)
-
     imu_label_seqs = utils.batchProcess(
-        imuConnectionLabels, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
+        makeLabels, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
     )
 
     if independent_signals:
@@ -109,7 +123,7 @@ def main(out_dir=None, data_dir=None, independent_signals=None):
 
         def validate(seqs):
             return all(seq.shape[1] == num_signals for seq in seqs)
-        all_valid = all(validate(x) for x in (accel_corr_seqs, gyro_corr_seqs, imu_label_seqs))
+        all_valid = all(validate(x) for x in (accel_feat_seqs, gyro_feat_seqs, imu_label_seqs))
         if not all_valid:
             raise AssertionError("IMU and labels don't all have the same number of sequences")
 
@@ -117,15 +131,19 @@ def main(out_dir=None, data_dir=None, independent_signals=None):
 
         def split(arrays):
             return tuple(itertools.chain(*((col for col in array.T) for array in arrays)))
-        accel_corr_seqs = split(accel_corr_seqs)
-        gyro_corr_seqs = split(gyro_corr_seqs)
+        accel_feat_seqs = split(accel_feat_seqs)
+        gyro_feat_seqs = split(gyro_feat_seqs)
         imu_label_seqs = split(imu_label_seqs)
 
         imu_sample_seqs = tuple(
-            np.column_stack(covs) for covs in zip(accel_corr_seqs, gyro_corr_seqs)
+            np.column_stack(covs) for covs in zip(accel_feat_seqs, gyro_feat_seqs)
         )
     else:
-        imu_sample_seqs = tuple(np.hstack(covs) for covs in zip(accel_corr_seqs, gyro_corr_seqs))
+        imu_sample_seqs = tuple(np.hstack(covs) for covs in zip(accel_feat_seqs, gyro_feat_seqs))
+        if fig_type is None:
+            fig_type = 'multi'
+
+    imu.plot_prediction_eg(tuple(zip(imu_sample_seqs, imu_label_seqs)), fig_dir, fig_type=fig_type)
 
     saveVariable(imu_sample_seqs, f'imu_sample_seqs')
     saveVariable(imu_label_seqs, f'imu_label_seqs')

@@ -323,7 +323,174 @@ def imuCovs(imu_seq, imu_is_resting=None, lower_tri_only=True):
     return covs
 
 
-# --=( VISUALIZATION: DEPRECATED? )=-------------------------------------------
+# --=( VISUALIZATION )=-------------------------------------------
+def unpack(io_sample):
+    def toNumpy(x):
+        if isinstance(x, np.ndarray):
+            return x
+        return x.squeeze().cpu().numpy()
+
+    ret = tuple(map(toNumpy, io_sample))
+
+    if len(ret) == 2:
+        inputs, true_labels = ret
+        labels = (true_labels,)
+        label_names = ('labels',)
+    elif len(ret) == 3:
+        preds, inputs, true_labels = ret
+        labels = (preds, true_labels)
+        label_names = ('preds', 'labels')
+    else:
+        raise AssertionError()
+
+    return inputs, labels, label_names
+
+
+def plot_prediction_eg(*args, fig_type=None, **kwargs):
+    if fig_type is None:
+        return plot_prediction_eg_standard(*args, **kwargs)
+    elif fig_type == 'array':
+        return plot_prediction_eg_array(*args, **kwargs)
+    elif fig_type == 'multi':
+        return plot_prediction_eg_multi(*args, **kwargs)
+
+
+def plot_prediction_eg_array(io_history, expt_out_path):
+    subplot_width = 12
+    subplot_height = 3
+
+    for fig_idx, io_sample in enumerate(io_history):
+        inputs, labels, label_names = unpack(io_sample)
+        axis_data = (inputs,) + labels
+        axis_labels = ('Input',) + label_names
+        num_axes = len(axis_data)
+
+        figsize = (subplot_width, num_axes * subplot_height)
+        fig, axes = plt.subplots(num_axes, figsize=figsize)
+        for axis, data, label in zip(axes, axis_data, axis_labels):
+            axis.imshow(data.T, interpolation='none', aspect='auto')
+            axis.set_ylabel(label)
+        plt.tight_layout()
+        fig_name = f'{fig_idx:03}.png'
+        plt.savefig(os.path.join(expt_out_path, fig_name))
+        plt.close()
+
+
+def plot_prediction_eg_multi(io_history, expt_out_path):
+    subplot_width = 12
+    subplot_height = 2
+
+    for fig_idx, io_sample in enumerate(io_history):
+        inputs, labels, label_names = unpack(io_sample)
+        num_seqs = labels[0].shape[1]
+        figsize = (subplot_width, num_seqs * subplot_height)
+        fig, axes = plt.subplots(num_seqs, figsize=figsize)
+        if num_seqs == 1:
+            axes = (axes,)
+        for i in range(num_seqs):
+            axis = axes[i]
+            input_seq = inputs[:, [i, i + num_seqs]]
+            label_seqs = tuple(x[:, i] for x in labels)
+            _ = plotImu((input_seq,), label_seqs, label_names=label_names, axis=axis)
+        plt.tight_layout()
+        fig_name = f'{fig_idx:03}.png'
+        plt.savefig(os.path.join(expt_out_path, fig_name))
+        plt.close()
+
+
+def plot_prediction_eg_standard(io_history, expt_out_path, num_samples_per_fig=8, fig_type=None):
+    subplot_width = 12
+    subplot_height = 2
+
+    s_idxs = tuple(range(0, len(io_history), num_samples_per_fig))
+    e_idxs = s_idxs[1:] + (len(io_history),)
+    io_histories = tuple(io_history[s_idx:e_idx] for s_idx, e_idx in zip(s_idxs, e_idxs))
+
+    for fig_idx, io_samples in enumerate(io_histories):
+        num_seqs = len(io_samples)
+        figsize = (subplot_width, num_seqs * subplot_height)
+        fig, axes = plt.subplots(num_seqs, figsize=figsize)
+        if num_seqs == 1:
+            axes = (axes,)
+        for axis, io_sample in zip(axes, io_samples):
+            inputs, labels, label_names = unpack(io_sample)
+            _ = plotImu((inputs,), labels, label_names=label_names, axis=axis)
+        plt.tight_layout()
+
+        fig_name = f'{fig_idx:03}.png'
+        plt.savefig(os.path.join(expt_out_path, fig_name))
+        plt.close()
+
+
+def plotImu(
+        imu_samples, imu_labels,
+        imu_timestamps=None, label_timestamps=None,
+        label_names=None, axis=None, measurement_name='gyro',
+        scale_labels=True):
+    """ Plot IMU samples and labels.
+
+    Parameters
+    ----------
+    imu_samples : iterable(numpy array, dype float)
+    imu_labels : iterable(iterable(int))
+    imu_timestamps : iterable(numpy array, dype float)
+    label_timestamps : iterable(numpy array, dype float)
+    label_names : iterable(str)
+    axis :
+    measurement_name : {'accel', 'gyro'}, optional
+        This argument is ignored for any element in imu_samples which has only
+        a single column.
+        If 'accel', plot first column of each element in `imu_samples`
+        If 'gyro', plot second column of each element in `imu_samples`
+    scale_labels : bool
+
+    Returns
+    -------
+    axis :
+    """
+
+    if axis is None:
+        axis = plt.gca()
+
+    if measurement_name == 'accel':
+        sl = slice(0, 1)
+    elif measurement_name == 'gyro':
+        sl = slice(1, 2)
+    else:
+        err_str = f'keyword argument measurement_name={measurement_name} is not supported'
+        raise ValueError(err_str)
+
+    scale_val = 1
+
+    for s in imu_samples:
+        if np.squeeze(imu_samples).ndim > 1:
+            sample_norms = s[:, sl]
+        else:
+            sample_norms = s
+
+        if imu_timestamps is not None:
+            axis.plot(imu_timestamps, sample_norms)
+        else:
+            axis.plot(sample_norms)
+
+        if scale_labels:
+            scale_val = max(scale_val, sample_norms.max())
+
+    for i, l in enumerate(imu_labels):
+        if label_names is not None:
+            label_name = label_names[i]
+        else:
+            label_name = ''
+        if label_timestamps is not None:
+            axis.plot(label_timestamps, l * scale_val, ':', label=label_name)
+        else:
+            axis.plot(l * scale_val, ':', label=label_name)
+        if label_names is not None:
+            axis.legend()
+
+    return axis
+
+
 def plotKinemNormSeqs(sample_dicts, trial_ids, base_path, label):
     f = functools.partial(plotKinemNormSeq, base_path=base_path, label=label)
     utils.evaluate(f, sample_dicts, trial_ids)
