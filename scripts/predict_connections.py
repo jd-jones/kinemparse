@@ -1,25 +1,103 @@
 import argparse
 import os
 import collections
-import itertools
-import copy
 
 import yaml
 import torch
-import numpy as np
 from matplotlib import pyplot as plt
 import joblib
 
 from mathtools import utils, torchutils, metrics
 from blocks.estimation import notebookutils
-from blocks.core import labels
 import seqtools.torchutils
+
+
+def plot_prediction_eg(*args, fig_type=None, **kwargs):
+    if fig_type is None:
+        return plot_prediction_eg_standard(*args, **kwargs)
+    elif fig_type == 'array':
+        return plot_prediction_eg_array(*args, **kwargs)
+    elif fig_type == 'multi':
+        return plot_prediction_eg_multi(*args, **kwargs)
+
+
+def plot_prediction_eg_array(io_history, expt_out_path):
+    subplot_width = 12
+    subplot_height = 3
+
+    for fig_idx, io_sample in enumerate(io_history):
+        preds, inputs, true_labels = map(lambda x: x.squeeze().cpu().numpy().T, io_sample)
+        figsize = (subplot_width, 3 * subplot_height)
+        fig, axes = plt.subplots(3, figsize=figsize)
+        axes[0].imshow(preds, interpolation='none', aspect='auto')
+        axes[0].set_ylabel('Predicted')
+        axes[1].imshow(true_labels, interpolation='none', aspect='auto')
+        axes[1].set_ylabel('Ground truth')
+        axes[2].imshow(inputs, interpolation='none', aspect='auto')
+        axes[2].set_ylabel('Input')
+        plt.tight_layout()
+        fig_title = f'model-predictions-{fig_idx}.png'
+        notebookutils.saveExptFig(expt_out_path, fig_title=fig_title)
+        plt.close()
+
+
+def plot_prediction_eg_multi(io_history, expt_out_path):
+    subplot_width = 12
+    subplot_height = 2
+
+    for fig_idx, io_sample in enumerate(io_history):
+        preds, inputs, true_labels = map(lambda x: x.squeeze().cpu().numpy(), io_sample)
+        num_seqs = true_labels.shape[1]
+        figsize = (subplot_width, num_seqs * subplot_height)
+        fig, axes = plt.subplots(num_seqs, figsize=figsize)
+        if num_seqs == 1:
+            axes = (axes,)
+        for i in range(num_seqs):
+            axis = axes[i]
+            input_seq = inputs[:, [i, i + num_seqs]]
+            pred_seq = preds[:, i]
+            gt_seq = true_labels[:, i]
+            _ = notebookutils.plotImu(
+                (input_seq,), (pred_seq, gt_seq),
+                label_names=('preds', 'labels'), axis=axis
+            )
+        plt.tight_layout()
+        fig_title = f'model-predictions-{fig_idx}.png'
+        notebookutils.saveExptFig(expt_out_path, fig_title=fig_title)
+        plt.close()
+
+
+def plot_prediction_eg_standard(io_history, expt_out_path, num_samples_per_fig=8, fig_type=None):
+    subplot_width = 12
+    subplot_height = 2
+
+    s_idxs = tuple(range(0, len(io_history), num_samples_per_fig))
+    e_idxs = s_idxs[1:] + (len(io_history),)
+    io_histories = tuple(io_history[s_idx:e_idx] for s_idx, e_idx in zip(s_idxs, e_idxs))
+
+    for fig_idx, io_samples in enumerate(io_histories):
+        num_seqs = len(io_samples)
+        figsize = (subplot_width, num_seqs * subplot_height)
+        fig, axes = plt.subplots(num_seqs, figsize=figsize)
+        if num_seqs == 1:
+            axes = (axes,)
+        for axis, io_sample in zip(axes, io_samples):
+            preds, inputs, true_labels = map(lambda x: x.squeeze().cpu().numpy(), io_sample)
+            _ = notebookutils.plotImu(
+                (inputs,), (preds, true_labels),
+                label_names=('preds', 'labels'), axis=axis
+            )
+        plt.tight_layout()
+
+        fig_title = f'model-predictions-{fig_idx}.png'
+        notebookutils.saveExptFig(expt_out_path, fig_title=fig_title)
+        plt.close()
 
 
 def main(
         out_dir=None, data_dir=None, model_name=None,
-        gpu_dev_id=None, batch_size=None, learning_rate=None, as_array=None,
-        cv_params={}, train_params={}):
+        gpu_dev_id=None, batch_size=None, learning_rate=None, independent_signals=None,
+        model_params={}, cv_params={}, train_params={}, viz_params={}):
 
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
@@ -38,96 +116,29 @@ def main(
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
-    device = torchutils.selectDevice(gpu_dev_id)
-
     # Load data
     trial_ids = loadVariable('trial_ids')
-    accel_seqs = loadVariable('accel_samples')
-    gyro_seqs = loadVariable('gyro_samples')
-    action_seqs = loadVariable('action_seqs')
-    orig_rgb_frame_timestamp_seqs = loadVariable('orig_rgb_timestamps')
+    imu_sample_seqs = loadVariable('imu_sample_seqs')
+    imu_label_seqs = loadVariable('imu_label_seqs')
 
-    # Reformat action_seqs
-    action_seqs = tuple(
-        tuple(event for action in action_seq for event in action)
-        for action_seq in action_seqs
-    )
-
-    # Compute signal magnitude
-    imu_sample_seqs, imu_timestamp_seqs = utils.batchProcess(
-        notebookutils.makeImuSeq,
-        accel_seqs, gyro_seqs,
-        static_kwargs={'mag_only': True},
-        unzip=True
-    )
-
-    # Compute block activity labels from action annotations
-    obj_label_seqs = utils.batchProcess(
-        labels.extractBlockActionSeq,
-        action_seqs, orig_rgb_frame_timestamp_seqs,
-        static_kwargs={
-            'split_samples': False,
-            'include_adj_target': False,
-            'action_type': 'object'
-        }
-    )
-
-    tgt_label_seqs = utils.batchProcess(
-        labels.extractBlockActionSeq,
-        action_seqs, orig_rgb_frame_timestamp_seqs,
-        static_kwargs={
-            'split_samples': False,
-            'include_adj_target': False,
-            'action_type': 'target'
-        }
-    )
-
-    imu_obj_label_seqs = utils.batchProcess(
-        notebookutils.makeImuLabelSeq,
-        obj_label_seqs, orig_rgb_frame_timestamp_seqs, imu_timestamp_seqs
-    )
-
-    imu_tgt_label_seqs = utils.batchProcess(
-        notebookutils.makeImuLabelSeq,
-        tgt_label_seqs, orig_rgb_frame_timestamp_seqs, imu_timestamp_seqs
-    )
-
-    # Post-process data
-    imu_is_resting = utils.batchProcess(
-        notebookutils.imuResting, imu_obj_label_seqs, imu_tgt_label_seqs
-    )
-
-    centered_imu_sample_seqs = utils.batchProcess(
-        notebookutils.centerSignals, imu_sample_seqs, imu_is_resting
-    )
-
-    label_seqs = utils.batchProcess(
-        notebookutils.makeImuActivityLabels,
-        centered_imu_sample_seqs, imu_obj_label_seqs, imu_tgt_label_seqs
-    )
-
-    if as_array:
-        def stackSeqs(seq_dict):
-            num_seqs = len(seq_dict)
-            return np.hstack(tuple(seq_dict[i] for i in range(num_seqs)))
-        centered_imu_sample_seqs = tuple(map(stackSeqs, centered_imu_sample_seqs))
-        # imu_timestamp_seqs = tuple(map(stackSeqs, imu_timestamp_seqs))
-        label_seqs = tuple(map(stackSeqs, label_seqs))
-    else:
-        def splitSeqs(seq_dict):
-            num_seqs = len(seq_dict)
-            return tuple(seq_dict[i] for i in range(num_seqs))
-        trial_ids = tuple(itertools.chain(
-            *((t_id,) * len(label_dict) for t_id, label_dict in zip(trial_ids, label_seqs))
-        ))
-        imu_sample_seqs = tuple(itertools.chain(*map(splitSeqs, centered_imu_sample_seqs)))
-        # imu_timestamp_seqs = itertools.chain(*map(splitSeqs, imu_timestamp_seqs))
-        label_seqs = tuple(itertools.chain(*map(splitSeqs, label_seqs)))
+    device = torchutils.selectDevice(gpu_dev_id)
 
     # Define cross-validation folds
-    cv_folds = notebookutils.makeDataSplits(imu_sample_seqs, label_seqs, trial_ids, **cv_params)
+    cv_folds = notebookutils.makeDataSplits(
+        imu_sample_seqs, imu_label_seqs, trial_ids,
+        **cv_params
+    )
 
     for cv_index, (train_data, val_data, test_data) in enumerate(cv_folds):
+        if independent_signals:
+            criterion = torch.nn.CrossEntropyLoss()
+            labels_dtype = torch.long
+            fig_type = None
+        else:
+            criterion = torch.nn.BCEWithLogitsLoss()
+            labels_dtype = torch.float
+            fig_type = 'multi'
+
         if train_data == ((), (), (),):
             train_set = None
             train_loader = None
@@ -135,7 +146,9 @@ def main(
         else:
             train_obsv, train_labels, train_ids = train_data
             train_set = seqtools.torchutils.SequenceDataset(
-                train_obsv, train_labels, device=device, labels_dtype=torch.long
+                train_obsv, train_labels,
+                device=device,
+                labels_dtype=labels_dtype
             )
             train_loader = torch.utils.data.DataLoader(
                 train_set, batch_size=batch_size, shuffle=True
@@ -149,7 +162,8 @@ def main(
             test_obsv, test_labels, test_ids = test_data
             test_set = seqtools.torchutils.SequenceDataset(
                 test_obsv, test_labels,
-                device=device, labels_dtype=torch.long
+                device=device,
+                labels_dtype=labels_dtype
             )
             test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=True)
 
@@ -161,7 +175,8 @@ def main(
             val_obsv, val_labels, val_ids = val_data
             val_set = seqtools.torchutils.SequenceDataset(
                 val_obsv, val_labels,
-                device=device, labels_dtype=torch.long
+                device=device,
+                labels_dtype=labels_dtype
             )
             val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 
@@ -169,11 +184,12 @@ def main(
             f'CV fold {cv_index + 1}: {len(trial_ids)} total '
             f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
         )
-        # logger.info(f'  test set: {test_ids}')
 
         input_dim = train_set.num_obsv_dims
         output_dim = train_set.num_label_types
-        model = torchutils.LinearClassifier(input_dim, output_dim).to(device=device)
+        model = torchutils.LinearClassifier(
+            input_dim, output_dim, **model_params
+        ).to(device=device)
 
         train_epoch_log = collections.defaultdict(list)
         val_epoch_log = collections.defaultdict(list)
@@ -185,7 +201,6 @@ def main(
             'F1': metrics.Fmeasure()
         }
 
-        criterion = torch.nn.CrossEntropyLoss()
         optimizer_ft = torch.optim.Adam(
             model.parameters(), lr=learning_rate,
             betas=(0.9, 0.999), eps=1e-08,
@@ -196,6 +211,7 @@ def main(
         model, last_model_wts = torchutils.trainModel(
             model, criterion, optimizer_ft, exp_lr_scheduler,
             train_loader, val_loader,
+            device=device,
             metrics=metric_dict,
             train_epoch_log=train_epoch_log,
             val_epoch_log=val_epoch_log,
@@ -203,17 +219,24 @@ def main(
         )
 
         # Test model
-        metric_dict = copy.deepcopy(metric_dict)
-        _ = torchutils.predictSamples(
+        metric_dict = {
+            'Avg Loss': metrics.AverageLoss(),
+            'Accuracy': metrics.Accuracy(),
+            'Precision': metrics.Precision(),
+            'Recall': metrics.Recall(),
+            'F1': metrics.Fmeasure()
+        }
+        test_io_history = torchutils.predictSamples(
             model.to(device=device), test_loader,
             criterion=criterion, device=device,
             metrics=metric_dict, data_labeled=True, update_model=False,
-            seq_as_batch=train_params['seq_as_batch']
+            seq_as_batch=train_params['seq_as_batch'],
+            return_io_history=True
         )
-        for metric_name, metric in metric_dict.items():
-            val_epoch_log[metric_name].append(metric.evaluate())
         metric_str = '  '.join(str(m) for m in metric_dict.values())
         logger.info('[TST]  ' + metric_str)
+        # plot_prediction_eg(test_io_history, fig_dir)
+        plot_prediction_eg(test_io_history, fig_dir, fig_type=fig_type, **viz_params)
 
         saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
         saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
@@ -226,20 +249,20 @@ def main(
         model.load_state_dict(last_model_wts)
         saveVariable(model, f'cvfold={cv_index}_{model_name}-last')
 
-        # Plot training performance
-        subfig_size = (10, 2.5)
-        fig_title = 'Training performance'
-        torchutils.plotEpochLog(train_epoch_log, subfig_size=subfig_size, title=fig_title)
-        notebookutils.saveExptFig(fig_dir, fig_title)
-        plt.close()
+        torchutils.plotEpochLog(
+            train_epoch_log,
+            subfig_size=(10, 2.5),
+            title='Training performance',
+            fn=os.path.join(fig_dir, 'train-plot.png')
+        )
 
         if val_epoch_log:
-            # Plot heldout performance
-            subfig_size = (10, 2.5)
-            fig_title = 'Heldout performance'
-            torchutils.plotEpochLog(val_epoch_log, subfig_size=subfig_size, title=fig_title)
-            notebookutils.saveExptFig(fig_dir, fig_title)
-            plt.close()
+            torchutils.plotEpochLog(
+                val_epoch_log,
+                subfig_size=(10, 2.5),
+                title='Heldout performance',
+                fn=os.path.join(fig_dir, 'val-plot.png')
+            )
 
 
 if __name__ == "__main__":
