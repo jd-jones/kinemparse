@@ -298,7 +298,7 @@ def centerSignals(imu_sample_seq, imu_is_resting=None):
 
 def imuCorr(signal, window_len=5, eps=1e-6, lower_tri_only=True):
     windows = utils.slidingWindow(signal, window_len, stride_len=1, padding='reflect', axis=0)
-    windows = windows - windows.mean(axis=-1, keepdims=True)
+    # windows = windows - windows.mean(axis=-1, keepdims=True)
 
     inner_prods = np.einsum('tiw,tjw->tij', windows, windows)
     norms = np.einsum('tiw,tiw->ti', windows, windows) ** 0.5

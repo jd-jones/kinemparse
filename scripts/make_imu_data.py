@@ -106,7 +106,7 @@ def main(out_dir=None, data_dir=None, independent_signals=None, data=None, fig_t
         makeLabels = imuActivityLabels
         accel_feat_seqs = accel_mag_seqs
         gyro_feat_seqs = gyro_mag_seqs
-    elif data == 'connection':
+    elif data == 'connections':
         makeLabels = imuConnectionLabels
         accel_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in accel_mag_seqs)
         gyro_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in gyro_mag_seqs)
