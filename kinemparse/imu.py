@@ -125,9 +125,29 @@ def reviseLabels(activity_labels, gyro_mag_signal):
     return revised_labels
 
 
+def all_array(*args):
+    is_array = map(lambda x: isinstance(x, np.ndarray), args)
+    return all(is_array)
+
+
 def makeImuActivityLabels(centered_imu_samples, imu_obj_label_seq, imu_tgt_label_seq):
     """ Filter and join IMU activity labels """
 
+    if all_array(centered_imu_samples, imu_obj_label_seq, imu_tgt_label_seq):
+        num_imus = centered_imu_samples.shape[1]
+
+        def revise(labels):
+            return np.column_stack(
+                tuple(
+                    reviseLabels(labels[:, i], centered_imu_samples[:, i])
+                    for i in range(num_imus)
+                )
+            )
+        return revise(imu_obj_label_seq) | revise(imu_tgt_label_seq)
+    else:
+        raise AssertionError()
+
+    # DEPRECATED
     revised_imu_obj_labels = {
         imu_id: reviseLabels(imu_obj_label_seq[imu_id], imu_samples)
         for imu_id, imu_samples in centered_imu_samples.items()
@@ -271,6 +291,8 @@ def centerSignals(imu_sample_seq, imu_is_resting=None):
     if isinstance(imu_sample_seq, np.ndarray):
         if imu_is_resting is None:
             imu_is_resting = np.array([deviceRestingFromSignal(seq) for seq in imu_sample_seq.T])
+            if imu_is_resting.all():
+                raise AssertionError()
         mean_imu_seq = imu_sample_seq[:, ~imu_is_resting].mean(axis=1)
         centered_imu_samples = imu_sample_seq - mean_imu_seq[:, None]
         return centered_imu_samples

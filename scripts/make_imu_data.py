@@ -22,14 +22,18 @@ def imuConnectionLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
     return imu_labels
 
 
-def imuActivityLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
+def imuActivityLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq, imu_samples):
     action_seq = tuple(event for action in action_seq for event in action)
-    rgb_activity_labels = (
-        labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='object')
-        | labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='target')
-    )
-    imu_activity_labels = utils.resampleSeq(
-        rgb_activity_labels.T, rgb_timestamp_seq, imu_timestamp_seq
+    imu_activity_labels = imu.makeImuActivityLabels(
+        imu_samples,
+        utils.resampleSeq(
+            labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='object').T,
+            rgb_timestamp_seq, imu_timestamp_seq
+        ),
+        utils.resampleSeq(
+            labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='target').T,
+            rgb_timestamp_seq, imu_timestamp_seq
+        )
     )
     return imu_activity_labels
 
@@ -51,7 +55,10 @@ def makeTimestamps(*imu_dicts):
     return imu_timestamps.mean(axis=1)
 
 
-def main(out_dir=None, data_dir=None, independent_signals=None, data=None, fig_type=None):
+def main(
+        out_dir=None, data_dir=None,
+        independent_signals=None, output_data=None, magnitude_centering=None,
+        fig_type=None):
     logger.info(f"Reading from: {data_dir}")
     logger.info(f"Writing to: {out_dir}")
 
@@ -98,25 +105,48 @@ def main(out_dir=None, data_dir=None, independent_signals=None, data=None, fig_t
     rgb_timestamp_seqs = chooseValid(rgb_timestamp_seqs)
 
     def norm(x):
-        return np.linalg.norm(imu.getImuSamples(x), axis=1)[:, None]
-    accel_mag_seqs = tuple(dictToArray(x, transform=norm) for x in accel_seqs)
-    gyro_mag_seqs = tuple(dictToArray(x, transform=norm) for x in gyro_seqs)
+        norm = np.linalg.norm(imu.getImuSamples(x), axis=1)[:, None]
+        return norm
+    accel_mag_seqs = tuple(map(lambda x: dictToArray(x, transform=norm), accel_seqs))
+    gyro_mag_seqs = tuple(map(lambda x: dictToArray(x, transform=norm), gyro_seqs))
 
-    if data == 'activity':
-        makeLabels = imuActivityLabels
-        accel_feat_seqs = accel_mag_seqs
-        gyro_feat_seqs = gyro_mag_seqs
-    elif data == 'connections':
-        makeLabels = imuConnectionLabels
-        accel_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in accel_mag_seqs)
-        gyro_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in gyro_mag_seqs)
-    else:
+    if magnitude_centering == 'across devices':
+        def resting(gyro_mag_seq):
+            device_is_resting = np.array(
+                [imu.deviceRestingFromSignal(seq) for seq in gyro_mag_seq.T]
+            )
+            if device_is_resting.all():
+                raise AssertionError()
+            return device_is_resting
+        imu_unused = tuple(map(resting, gyro_mag_seqs))
+        accel_mag_seqs = utils.batchProcess(
+            imu.centerSignals,
+            accel_mag_seqs, imu_unused
+        )
+        gyro_mag_seqs = utils.batchProcess(
+            imu.centerSignals,
+            gyro_mag_seqs, imu_unused
+        )
+    elif magnitude_centering is not None:
         raise AssertionError()
 
     imu_timestamp_seqs = utils.batchProcess(makeTimestamps, accel_seqs, gyro_seqs)
-    imu_label_seqs = utils.batchProcess(
-        makeLabels, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
-    )
+
+    if output_data == 'activity':
+        accel_feat_seqs = accel_mag_seqs
+        gyro_feat_seqs = gyro_mag_seqs
+        imu_label_seqs = utils.batchProcess(
+            imuActivityLabels,
+            action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs, gyro_mag_seqs
+        )
+    elif output_data == 'connections':
+        accel_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in accel_mag_seqs)
+        gyro_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in gyro_mag_seqs)
+        imu_label_seqs = utils.batchProcess(
+            imuConnectionLabels, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
+        )
+    else:
+        raise AssertionError()
 
     if independent_signals:
         num_signals = imu_label_seqs[0].shape[1]
