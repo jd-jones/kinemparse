@@ -10,6 +10,37 @@ from mathtools import utils, torchutils, metrics
 import seqtools.torchutils
 from kinemparse import imu
 
+import pdb
+
+class ConvClassifier(torch.nn.Module):
+    def __init__(self, input_dim, out_set_size, binary_labels=False):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.out_set_size = out_set_size
+        self.binary_labels = binary_labels
+
+        self.conv1d = torch.nn.Conv1d(self.input_dim, self.out_set_size, 3, padding=2)
+
+        logger.info(
+            f'Initialized 1D convolutional classifier. '
+            f'Input dim: {self.input_dim}, Output dim: {self.out_set_size}'
+        )
+
+    def forward(self, input_seq):
+        #pdb.set_trace()
+        input_seq = input_seq.transpose(1,2) #want (batch_size, num_channels, seq_length)
+        #pdb.set_trace()
+        #want (batch_size, num_channels, seq_length)
+        output_seq = self.conv1d(input_seq)
+        
+        return output_seq[0].transpose(0, 1)
+
+    def predict(self, outputs):
+        if self.binary_labels:
+            return (outputs > 0.5).float()
+        __, preds = torch.max(outputs, -1)
+        return preds
 
 def main(
         out_dir=None, data_dir=None, model_name=None,
@@ -104,9 +135,13 @@ def main(
 
         input_dim = train_set.num_obsv_dims
         output_dim = train_set.num_label_types
-        model = torchutils.LinearClassifier(
-            input_dim, output_dim, **model_params
-        ).to(device=device)
+        if model_name == 'linear':
+            model = torchutils.LinearClassifier(input_dim, output_dim, **model_params).to(device=device)
+        elif model_name == 'conv':
+            model = ConvClassifier(input_dim, output_dim, **model_params).to(device=device)
+            # = torch.nn.Conv1d(input_dim, output_dim, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros').to(device=device)
+        else:
+            raise AssertionError()
 
         train_epoch_log = collections.defaultdict(list)
         val_epoch_log = collections.defaultdict(list)
