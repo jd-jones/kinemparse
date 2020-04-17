@@ -12,15 +12,19 @@ from kinemparse import imu
 
 import pdb
 
+
 class ConvClassifier(torch.nn.Module):
-    def __init__(self, input_dim, out_set_size, kernel_size, binary_labels=False):
+    def __init__(self, input_dim, out_set_size, kernel_size=3, binary_labels=False):
         super().__init__()
 
         self.input_dim = input_dim
         self.out_set_size = out_set_size
         self.binary_labels = binary_labels
 
-        self.conv1d = torch.nn.Conv1d(self.input_dim, self.out_set_size, kernel_size, padding=2)
+        padding = kernel_size // 2
+        self.conv1d = torch.nn.Conv1d(
+            self.input_dim, self.out_set_size, kernel_size, padding=padding
+        )
 
         logger.info(
             f'Initialized 1D convolutional classifier. '
@@ -28,24 +32,18 @@ class ConvClassifier(torch.nn.Module):
         )
 
     def forward(self, input_seq):
-        #pdb.set_trace()
-        input_seq = input_seq.transpose(1,2) #want (batch_size, num_channels, seq_length)
-        #pdb.set_trace()
-        #want (batch_size, num_channels, seq_length)
+        # want (batch_size, num_channels, seq_length)
+        input_seq = input_seq.transpose(1, 2)
+        # want (batch_size, num_channels, seq_length)
         output_seq = self.conv1d(input_seq)
-
-<<<<<<< Updated upstream:scripts/predict_from_imu.py
-        return output_seq.transpose(1,2)
-
-=======
-        return output_seq[0].transpose(0, 1)
->>>>>>> Stashed changes:scripts/predict_connections.py
+        return output_seq.transpose(1, 2)
 
     def predict(self, outputs):
         if self.binary_labels:
             return (outputs > 0.5).float()
         __, preds = torch.max(outputs, -1)
         return preds
+
 
 def split(imu_feature_seqs, imu_label_seqs, trial_ids):
     num_signals = imu_label_seqs[0].shape[1]
@@ -169,7 +167,9 @@ def main(
         input_dim = train_set.num_obsv_dims
         output_dim = train_set.num_label_types
         if model_name == 'linear':
-            model = torchutils.LinearClassifier(input_dim, output_dim, **model_params).to(device=device)
+            model = torchutils.LinearClassifier(
+                input_dim, output_dim, **model_params
+            ).to(device=device)
         elif model_name == 'conv':
             model = ConvClassifier(input_dim, output_dim, **model_params).to(device=device)
         else:
