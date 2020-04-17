@@ -13,14 +13,14 @@ from kinemparse import imu
 import pdb
 
 class ConvClassifier(torch.nn.Module):
-    def __init__(self, input_dim, out_set_size, binary_labels=False):
+    def __init__(self, input_dim, out_set_size, kernel_size, binary_labels=False):
         super().__init__()
 
         self.input_dim = input_dim
         self.out_set_size = out_set_size
         self.binary_labels = binary_labels
 
-        self.conv1d = torch.nn.Conv1d(self.input_dim, self.out_set_size, 3, padding=1)
+        self.conv1d = torch.nn.Conv1d(self.input_dim, self.out_set_size, kernel_size, padding=2)
 
         logger.info(
             f'Initialized 1D convolutional classifier. '
@@ -36,6 +36,7 @@ class ConvClassifier(torch.nn.Module):
 
 <<<<<<< Updated upstream:scripts/predict_from_imu.py
         return output_seq.transpose(1,2)
+
 =======
         return output_seq[0].transpose(0, 1)
 >>>>>>> Stashed changes:scripts/predict_connections.py
@@ -171,7 +172,6 @@ def main(
             model = torchutils.LinearClassifier(input_dim, output_dim, **model_params).to(device=device)
         elif model_name == 'conv':
             model = ConvClassifier(input_dim, output_dim, **model_params).to(device=device)
-            # = torch.nn.Conv1d(input_dim, output_dim, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros').to(device=device)
         else:
             raise AssertionError()
 
