@@ -1,14 +1,40 @@
 import argparse
 import os
 import collections
+import itertools
 
 import yaml
 import torch
 import joblib
 
 from mathtools import utils, torchutils, metrics
-import seqtools.torchutils
 from kinemparse import imu
+
+
+def split(imu_feature_seqs, imu_label_seqs, trial_ids):
+    num_signals = imu_label_seqs[0].shape[1]
+
+    def validate(seqs):
+        return all(seq.shape[1] == num_signals for seq in seqs)
+    all_valid = all(validate(x) for x in (imu_feature_seqs, imu_label_seqs))
+    if not all_valid:
+        raise AssertionError("IMU and labels don't all have the same number of sequences")
+
+    trial_ids = tuple(
+        itertools.chain(
+            *(
+                tuple(t_id + 0.01 * (i + 1) for i in range(num_signals))
+                for t_id in trial_ids
+            )
+        )
+    )
+
+    def splitSeq(arrays):
+        return tuple(row for array in arrays for row in array)
+    imu_feature_seqs = splitSeq(map(lambda x: x.swapaxes(0, 1), imu_feature_seqs))
+    imu_label_seqs = splitSeq(map(lambda x: x.T, imu_label_seqs))
+
+    return imu_feature_seqs, imu_label_seqs, trial_ids
 
 
 def main(
@@ -51,6 +77,9 @@ def main(
             criterion = torch.nn.CrossEntropyLoss()
             labels_dtype = torch.long
             fig_type = None
+            train_data = split(*train_data)
+            val_data = split(*val_data)
+            test_data = split(*test_data)
         else:
             criterion = torch.nn.BCEWithLogitsLoss()
             labels_dtype = torch.float
@@ -62,10 +91,9 @@ def main(
             train_ids = tuple()
         else:
             train_obsv, train_labels, train_ids = train_data
-            train_set = seqtools.torchutils.SequenceDataset(
+            train_set = torchutils.SequenceDataset(
                 train_obsv, train_labels,
-                device=device,
-                labels_dtype=labels_dtype
+                device=device, labels_dtype=labels_dtype, seq_ids=train_ids
             )
             train_loader = torch.utils.data.DataLoader(
                 train_set, batch_size=batch_size, shuffle=True
@@ -77,12 +105,13 @@ def main(
             test_ids = tuple()
         else:
             test_obsv, test_labels, test_ids = test_data
-            test_set = seqtools.torchutils.SequenceDataset(
+            test_set = torchutils.SequenceDataset(
                 test_obsv, test_labels,
-                device=device,
-                labels_dtype=labels_dtype
+                device=device, labels_dtype=labels_dtype, seq_ids=test_ids
             )
-            test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=True)
+            test_loader = torch.utils.data.DataLoader(
+                test_set, batch_size=batch_size, shuffle=False
+            )
 
         if val_data == ((), (), (),):
             val_set = None
@@ -90,10 +119,9 @@ def main(
             val_ids = tuple()
         else:
             val_obsv, val_labels, val_ids = val_data
-            val_set = seqtools.torchutils.SequenceDataset(
+            val_set = torchutils.SequenceDataset(
                 val_obsv, val_labels,
-                device=device,
-                labels_dtype=labels_dtype
+                device=device, labels_dtype=labels_dtype, seq_ids=val_ids
             )
             val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 

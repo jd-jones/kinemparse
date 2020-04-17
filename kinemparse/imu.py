@@ -3,6 +3,7 @@ import os
 import functools
 
 import numpy as np
+import torch
 from matplotlib import pyplot as plt
 
 from mathtools import utils
@@ -244,21 +245,6 @@ def isActive(signal, min_thresh=0):
     return signal.mean() > min_thresh
 
 
-def activeDevices(imu_signals, check_dim='gyro'):
-    if check_dim == 'gyro':
-        i = 1
-        thresh = 1
-    elif check_dim == 'accel':
-        i = 0
-        thresh = 0.05
-
-    active_devices = {
-        k: signal for k, signal in imu_signals.items()
-        if not deviceRestingFromSignal(signal[:,i], std_thresh=thresh)}
-
-    return active_devices
-
-
 def deviceRestingFromSignal(imu_signal, std_thresh=1):
     """ Returns True if the standard deviation of `imu_signal` is below a threshold.
 
@@ -283,6 +269,18 @@ def deviceRestingFromSignal(imu_signal, std_thresh=1):
         std_dev = np.linalg.det(cov) ** 0.5
 
     return std_dev < std_thresh
+
+
+def restingDevices(action_label_seq):
+    action_label_seq = np.hstack(action_label_seq)
+    device_is_resting = np.ones(len(defn.blocks), dtype=bool)
+
+    obj_idxs = np.unique(action_label_seq['object'])
+    tgt_idxs = np.unique(action_label_seq['target'])
+    device_is_resting[obj_idxs[obj_idxs != -1]] = False
+    device_is_resting[tgt_idxs[tgt_idxs != -1]] = False
+
+    return device_is_resting
 
 
 def centerSignals(imu_sample_seq, imu_is_resting=None):
@@ -318,13 +316,30 @@ def centerSignals(imu_sample_seq, imu_is_resting=None):
     return centered_imu_samples
 
 
-def imuCorr(signal, window_len=5, eps=1e-6, lower_tri_only=True):
+def imuDiff(signal, lower_tri_only=True):
+    max_value = 200
+    diffs = max_value / 2 - np.abs(signal[..., None, :] - signal[..., None])
+    prods = np.einsum('ti,tj->tij', signal / max_value, signal / max_value)
+    diffs = diffs * prods
+
+    if lower_tri_only:
+        rows, cols = np.tril_indices(diffs.shape[1], k=-1)
+        diffs = diffs[:, rows, cols]
+
+    return diffs
+
+
+def imuCorr(signal, window_len=5, eps=1e-6, lower_tri_only=True, normalized=True):
     windows = utils.slidingWindow(signal, window_len, stride_len=1, padding='reflect', axis=0)
     # windows = windows - windows.mean(axis=-1, keepdims=True)
 
     inner_prods = np.einsum('tiw,tjw->tij', windows, windows)
-    norms = np.einsum('tiw,tiw->ti', windows, windows) ** 0.5
-    norm_prods = np.einsum('ti,tj->tij', norms, norms)
+    if normalized:
+        norms = np.einsum('tiw,tiw->ti', windows, windows) ** 0.5
+        norm_prods = np.einsum('ti,tj->tij', norms, norms)
+    else:
+        max_val = 200
+        norm_prods = np.ones_like(inner_prods) * window_len * max_val
     corrs = inner_prods / (norm_prods + eps)
 
     if lower_tri_only:
@@ -348,24 +363,24 @@ def imuCovs(imu_seq, imu_is_resting=None, lower_tri_only=True):
 # --=( VISUALIZATION )=-------------------------------------------
 def unpack(io_sample):
     def toNumpy(x):
-        if isinstance(x, np.ndarray):
-            return x
-        return x.squeeze().cpu().numpy()
+        if isinstance(x, torch.Tensor):
+            return x.squeeze().cpu().numpy()
+        return x
 
     ret = tuple(map(toNumpy, io_sample))
 
-    if len(ret) == 2:
-        inputs, true_labels = ret
+    if len(ret) == 3:
+        inputs, true_labels, ids = ret
         labels = (true_labels,)
         label_names = ('labels',)
-    elif len(ret) == 3:
-        preds, inputs, true_labels = ret
+    elif len(ret) == 4:
+        preds, inputs, true_labels, ids = ret
         labels = (preds, true_labels)
         label_names = ('preds', 'labels')
     else:
         raise AssertionError()
 
-    return inputs, labels, label_names
+    return inputs, labels, label_names, ids
 
 
 def plot_prediction_eg(*args, fig_type=None, **kwargs):
@@ -377,12 +392,12 @@ def plot_prediction_eg(*args, fig_type=None, **kwargs):
         return plot_prediction_eg_multi(*args, **kwargs)
 
 
-def plot_prediction_eg_array(io_history, expt_out_path):
+def plot_prediction_eg_array(io_history, expt_out_path, output_data=None):
     subplot_width = 12
     subplot_height = 3
 
     for fig_idx, io_sample in enumerate(io_history):
-        inputs, labels, label_names = unpack(io_sample)
+        inputs, labels, label_names, ids = unpack(io_sample)
         axis_data = (inputs,) + labels
         axis_labels = ('Input',) + label_names
         num_axes = len(axis_data)
@@ -398,12 +413,21 @@ def plot_prediction_eg_array(io_history, expt_out_path):
         plt.close()
 
 
-def plot_prediction_eg_multi(io_history, expt_out_path):
+def plot_prediction_eg_multi(io_history, expt_out_path, output_data=None):
     subplot_width = 12
     subplot_height = 2
+    num_blocks = 8
+
+    if output_data == 'activity':
+        # num_samples_per_fig = num_blocks
+        axis_ylabels = tuple(f'mag({i})' for i in range(num_blocks))
+    elif output_data == 'connections':
+        indices = np.column_stack(np.tril_indices(num_blocks, k=-1))
+        # num_samples_per_fig = indices.shape[0]
+        axis_ylabels = tuple(f'corr({i}, {j})' for i, j in indices)
 
     for fig_idx, io_sample in enumerate(io_history):
-        inputs, labels, label_names = unpack(io_sample)
+        inputs, labels, label_names, ids = unpack(io_sample)
         num_seqs = labels[0].shape[1]
         figsize = (subplot_width, num_seqs * subplot_height)
         fig, axes = plt.subplots(num_seqs, figsize=figsize)
@@ -411,18 +435,29 @@ def plot_prediction_eg_multi(io_history, expt_out_path):
             axes = (axes,)
         for i in range(num_seqs):
             axis = axes[i]
-            input_seq = inputs[:, [i, i + num_seqs]]
+            ylabel = axis_ylabels[i]
+            input_seq = inputs[:, i]
             label_seqs = tuple(x[:, i] for x in labels)
             _ = plotImu((input_seq,), label_seqs, label_names=label_names, axis=axis)
+            axis.set_ylabel(f'seq {ids}; ' + ylabel)
         plt.tight_layout()
         fig_name = f'{fig_idx:03}.png'
         plt.savefig(os.path.join(expt_out_path, fig_name))
         plt.close()
 
 
-def plot_prediction_eg_standard(io_history, expt_out_path, num_samples_per_fig=8, fig_type=None):
+def plot_prediction_eg_standard(io_history, expt_out_path, fig_type=None, output_data=None):
     subplot_width = 12
     subplot_height = 2
+    num_blocks = 8
+
+    if output_data == 'activity':
+        num_samples_per_fig = num_blocks
+        axis_ylabels = tuple(f'mag({i})' for i in range(num_blocks))
+    elif output_data == 'connections':
+        indices = np.column_stack(np.tril_indices(num_blocks, k=-1))
+        num_samples_per_fig = indices.shape[0]
+        axis_ylabels = tuple(f'corr({i}, {j})' for i, j in indices)
 
     s_idxs = tuple(range(0, len(io_history), num_samples_per_fig))
     e_idxs = s_idxs[1:] + (len(io_history),)
@@ -431,12 +466,13 @@ def plot_prediction_eg_standard(io_history, expt_out_path, num_samples_per_fig=8
     for fig_idx, io_samples in enumerate(io_histories):
         num_seqs = len(io_samples)
         figsize = (subplot_width, num_seqs * subplot_height)
-        fig, axes = plt.subplots(num_seqs, figsize=figsize)
+        fig, axes = plt.subplots(num_seqs, figsize=figsize)  # , sharex=True, sharey=True)
         if num_seqs == 1:
             axes = (axes,)
-        for axis, io_sample in zip(axes, io_samples):
-            inputs, labels, label_names = unpack(io_sample)
+        for axis, io_sample, ylabel in zip(axes, io_samples, axis_ylabels):
+            inputs, labels, label_names, ids = unpack(io_sample)
             _ = plotImu((inputs,), labels, label_names=label_names, axis=axis)
+            axis.set_ylabel(f'seq {ids}; ' + ylabel)
         plt.tight_layout()
 
         fig_name = f'{fig_idx:03}.png'
