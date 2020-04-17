@@ -20,7 +20,7 @@ class ConvClassifier(torch.nn.Module):
         self.out_set_size = out_set_size
         self.binary_labels = binary_labels
 
-        self.conv1d = torch.nn.Conv1d(self.input_dim, self.out_set_size, 3, padding=2)
+        self.conv1d = torch.nn.Conv1d(self.input_dim, self.out_set_size, 3, padding=1)
 
         logger.info(
             f'Initialized 1D convolutional classifier. '
@@ -33,8 +33,12 @@ class ConvClassifier(torch.nn.Module):
         #pdb.set_trace()
         #want (batch_size, num_channels, seq_length)
         output_seq = self.conv1d(input_seq)
-        
+
+<<<<<<< Updated upstream:scripts/predict_from_imu.py
+        return output_seq.transpose(1,2)
+=======
         return output_seq[0].transpose(0, 1)
+>>>>>>> Stashed changes:scripts/predict_connections.py
 
     def predict(self, outputs):
         if self.binary_labels:
