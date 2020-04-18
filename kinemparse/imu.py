@@ -205,6 +205,30 @@ def computeWindowMeans(signal, window_labels):
     return mean_signal
 
 
+# --=( ASSEMBLY PARSING )=-----------------------------------------------------
+def componentMeans(imu_mag_seq, assembly_components):
+    other_indices = {
+        block_index: component[:i] + component[i + 1:]
+        for component in assembly_components
+        for i, block_index in enumerate(component)
+    }
+
+    component_means = np.column_stack(
+        tuple(
+            imu_mag_seq[:, other_indices[i]].mean(axis=1)
+            for i in sorted(other_indices.values())
+        )
+    )
+
+    return component_means
+
+
+def error(imu_mag_seq, assembly_components):
+    prediction_seq = componentMeans(imu_mag_seq, assembly_components)
+    error = imu_mag_seq - prediction_seq
+    return error
+
+
 # --=( SIGNAL FEATURES )=------------------------------------------------------
 def makeImuSeq(accel_seq, gyro_seq, mag_only=False):
     """ Returns an array whose columns are IMU signals sampled from multiple devices.
