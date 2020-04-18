@@ -1,6 +1,5 @@
 import argparse
 import os
-import itertools
 
 import yaml
 import numpy as np
@@ -13,29 +12,29 @@ from kinemparse import imu
 
 def imuConnectionLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
     state_seq = labels.parseLabelSeq(None, timestamps=rgb_timestamp_seq, action_seq=action_seq)
-    connections = labels.blockConnectionsSeq(state_seq, lower_tri_only=True)
+    # connections = labels.blockConnectionsSeq(state_seq, lower_tri_only=True)
+    connections = labels.blockComponentSeq(state_seq, lower_tri_only=True)
     boundary_times = labels.boundaryTimestampSeq(
-        labels.stateBoundarySeq(state_seq, as_numpy=True),
+        labels.stateBoundarySeq(state_seq, from_action_start=True, as_numpy=True),
         rgb_timestamp_seq
     )
     imu_labels = labels.resampleLabels(connections, boundary_times, imu_timestamp_seq)
     return imu_labels
 
 
-def imuActivityLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq, imu_samples):
-    action_seq = tuple(event for action in action_seq for event in action)
-    imu_activity_labels = imu.makeImuActivityLabels(
-        imu_samples,
-        utils.resampleSeq(
-            labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='object').T,
-            rgb_timestamp_seq, imu_timestamp_seq
-        ),
-        utils.resampleSeq(
-            labels.blockActionSeq(action_seq, rgb_timestamp_seq, action_type='target').T,
-            rgb_timestamp_seq, imu_timestamp_seq
-        )
+def imuActivityLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq, action_type=None):
+    state_seq = labels.parseLabelSeq(
+        None, timestamps=rgb_timestamp_seq, action_seq=action_seq,
+        structure_change_only=True
     )
-    return imu_activity_labels
+    state_seq[-1].end_idx = len(rgb_timestamp_seq)
+    action_seq = np.hstack(action_seq)
+
+    rgb_activity = labels.blockActionSeq(
+        action_seq, rgb_timestamp_seq, state_seq=state_seq, action_type=None
+    ).T
+    imu_activity = utils.resampleSeq(rgb_activity, rgb_timestamp_seq, imu_timestamp_seq)
+    return imu_activity
 
 
 def dictToArray(imu_seqs, transform=None):
@@ -55,10 +54,24 @@ def makeTimestamps(*imu_dicts):
     return imu_timestamps.mean(axis=1)
 
 
+def beforeFirstTouch(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
+    for action in action_seq:
+        first_touch_indices = np.nonzero(action['action'] == 7)[0]
+        if first_touch_indices.size:
+            first_touch_idx = action['start'][first_touch_indices[0]]
+            break
+    else:
+        logger.warning('No first touch annotation')
+        return None
+
+    before_first_touch = imu_timestamp_seq <= rgb_timestamp_seq[first_touch_idx]
+    return before_first_touch
+
+
 def main(
         out_dir=None, data_dir=None,
-        independent_signals=None, output_data=None, magnitude_centering=None,
-        fig_type=None):
+        output_data=None, magnitude_centering=None, resting_from_gt=None,
+        remove_before_first_touch=None, fig_type=None):
     logger.info(f"Reading from: {data_dir}")
     logger.info(f"Writing to: {out_dir}")
 
@@ -78,6 +91,9 @@ def main(
 
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
+
+    if fig_type is None:
+        fig_type = 'multi'
 
     # Load data
     trial_ids = loadVariable('trial_ids')
@@ -111,14 +127,17 @@ def main(
     gyro_mag_seqs = tuple(map(lambda x: dictToArray(x, transform=norm), gyro_seqs))
 
     if magnitude_centering == 'across devices':
-        def resting(gyro_mag_seq):
-            device_is_resting = np.array(
-                [imu.deviceRestingFromSignal(seq) for seq in gyro_mag_seq.T]
-            )
-            if device_is_resting.all():
-                raise AssertionError()
-            return device_is_resting
-        imu_unused = tuple(map(resting, gyro_mag_seqs))
+        if resting_from_gt:
+            imu_unused = tuple(map(imu.restingDevices, action_seqs))
+        else:
+            def resting(gyro_mag_seq):
+                device_is_resting = np.array(
+                    [imu.deviceRestingFromSignal(seq) for seq in gyro_mag_seq.T]
+                )
+                if device_is_resting.all():
+                    raise AssertionError()
+                return device_is_resting
+            imu_unused = tuple(map(resting, gyro_mag_seqs))
         accel_mag_seqs = utils.batchProcess(
             imu.centerSignals,
             accel_mag_seqs, imu_unused
@@ -132,48 +151,69 @@ def main(
 
     imu_timestamp_seqs = utils.batchProcess(makeTimestamps, accel_seqs, gyro_seqs)
 
+    if remove_before_first_touch:
+        before_first_touch_seqs = utils.batchProcess(
+            beforeFirstTouch, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
+        )
+
+        def clip(signal, bool_array):
+            return signal[~bool_array, ...]
+        accel_mag_seqs = tuple(
+            clip(signal, b) for signal, b in zip(accel_mag_seqs, before_first_touch_seqs)
+            if b is not None
+        )
+        gyro_mag_seqs = tuple(
+            clip(signal, b) for signal, b in zip(gyro_mag_seqs, before_first_touch_seqs)
+            if b is not None
+        )
+        imu_timestamp_seqs = tuple(
+            clip(signal, b) for signal, b in zip(imu_timestamp_seqs, before_first_touch_seqs)
+            if b is not None
+        )
+        trial_ids = tuple(
+            x for x, b in zip(trial_ids, before_first_touch_seqs)
+            if b is not None
+        )
+        action_seqs = tuple(
+            x for x, b in zip(action_seqs, before_first_touch_seqs)
+            if b is not None
+        )
+        rgb_timestamp_seqs = tuple(
+            x for x, b in zip(rgb_timestamp_seqs, before_first_touch_seqs)
+            if b is not None
+        )
+
     if output_data == 'activity':
         accel_feat_seqs = accel_mag_seqs
         gyro_feat_seqs = gyro_mag_seqs
         imu_label_seqs = utils.batchProcess(
             imuActivityLabels,
-            action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs, gyro_mag_seqs
+            action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs,
+            static_kwargs={'action_type': None}
         )
     elif output_data == 'connections':
-        accel_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in accel_mag_seqs)
-        gyro_feat_seqs = tuple(imu.imuCorr(x, lower_tri_only=True) for x in gyro_mag_seqs)
+        accel_feat_seqs = tuple(
+            imu.imuDiff(x, lower_tri_only=True)
+            for x in accel_mag_seqs
+        )
+        gyro_feat_seqs = tuple(
+            imu.imuDiff(x, lower_tri_only=True)
+            for x in gyro_mag_seqs
+        )
         imu_label_seqs = utils.batchProcess(
             imuConnectionLabels, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
         )
     else:
         raise AssertionError()
 
-    if independent_signals:
-        num_signals = imu_label_seqs[0].shape[1]
+    imu_sample_seqs = tuple(
+        np.stack(covs, axis=-1) for covs in zip(accel_feat_seqs, gyro_feat_seqs)
+    )
 
-        def validate(seqs):
-            return all(seq.shape[1] == num_signals for seq in seqs)
-        all_valid = all(validate(x) for x in (accel_feat_seqs, gyro_feat_seqs, imu_label_seqs))
-        if not all_valid:
-            raise AssertionError("IMU and labels don't all have the same number of sequences")
-
-        trial_ids = tuple(itertools.chain(*((t_id,) * num_signals for t_id in trial_ids)))
-
-        def split(arrays):
-            return tuple(itertools.chain(*((col for col in array.T) for array in arrays)))
-        accel_feat_seqs = split(accel_feat_seqs)
-        gyro_feat_seqs = split(gyro_feat_seqs)
-        imu_label_seqs = split(imu_label_seqs)
-
-        imu_sample_seqs = tuple(
-            np.column_stack(covs) for covs in zip(accel_feat_seqs, gyro_feat_seqs)
-        )
-    else:
-        imu_sample_seqs = tuple(np.hstack(covs) for covs in zip(accel_feat_seqs, gyro_feat_seqs))
-        if fig_type is None:
-            fig_type = 'multi'
-
-    imu.plot_prediction_eg(tuple(zip(imu_sample_seqs, imu_label_seqs)), fig_dir, fig_type=fig_type)
+    imu.plot_prediction_eg(
+        tuple(zip(imu_sample_seqs, imu_label_seqs, trial_ids)), fig_dir,
+        fig_type=fig_type, output_data=output_data
+    )
 
     saveVariable(imu_sample_seqs, f'imu_sample_seqs')
     saveVariable(imu_label_seqs, f'imu_label_seqs')

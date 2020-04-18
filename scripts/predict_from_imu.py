@@ -1,14 +1,74 @@
 import argparse
 import os
 import collections
+import itertools
 
 import yaml
 import torch
 import joblib
 
 from mathtools import utils, torchutils, metrics
-import seqtools.torchutils
 from kinemparse import imu
+
+import pdb
+
+
+class ConvClassifier(torch.nn.Module):
+    def __init__(self, input_dim, out_set_size, kernel_size=3, binary_labels=False):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.out_set_size = out_set_size
+        self.binary_labels = binary_labels
+
+        padding = None  # FIXME
+        self.conv1d = torch.nn.Conv1d(
+            self.input_dim, self.out_set_size, kernel_size, padding=padding
+        )
+
+        logger.info(
+            f'Initialized 1D convolutional classifier. '
+            f'Input dim: {self.input_dim}, Output dim: {self.out_set_size}'
+        )
+
+    def forward(self, input_seq):
+        # want (batch_size, num_channels, seq_length)
+        input_seq = input_seq.transpose(1, 2)
+        # want (batch_size, num_channels, seq_length)
+        output_seq = self.conv1d(input_seq)
+        return output_seq.transpose(1, 2)
+
+    def predict(self, outputs):
+        if self.binary_labels:
+            return (outputs > 0.5).float()
+        __, preds = torch.max(outputs, -1)
+        return preds
+
+
+def split(imu_feature_seqs, imu_label_seqs, trial_ids):
+    num_signals = imu_label_seqs[0].shape[1]
+
+    def validate(seqs):
+        return all(seq.shape[1] == num_signals for seq in seqs)
+    all_valid = all(validate(x) for x in (imu_feature_seqs, imu_label_seqs))
+    if not all_valid:
+        raise AssertionError("IMU and labels don't all have the same number of sequences")
+
+    trial_ids = tuple(
+        itertools.chain(
+            *(
+                tuple(t_id + 0.01 * (i + 1) for i in range(num_signals))
+                for t_id in trial_ids
+            )
+        )
+    )
+
+    def splitSeq(arrays):
+        return tuple(row for array in arrays for row in array)
+    imu_feature_seqs = splitSeq(map(lambda x: x.swapaxes(0, 1), imu_feature_seqs))
+    imu_label_seqs = splitSeq(map(lambda x: x.T, imu_label_seqs))
+
+    return imu_feature_seqs, imu_label_seqs, trial_ids
 
 
 def main(
@@ -51,6 +111,9 @@ def main(
             criterion = torch.nn.CrossEntropyLoss()
             labels_dtype = torch.long
             fig_type = None
+            train_data = split(*train_data)
+            val_data = split(*val_data)
+            test_data = split(*test_data)
         else:
             criterion = torch.nn.BCEWithLogitsLoss()
             labels_dtype = torch.float
@@ -62,10 +125,9 @@ def main(
             train_ids = tuple()
         else:
             train_obsv, train_labels, train_ids = train_data
-            train_set = seqtools.torchutils.SequenceDataset(
+            train_set = torchutils.SequenceDataset(
                 train_obsv, train_labels,
-                device=device,
-                labels_dtype=labels_dtype
+                device=device, labels_dtype=labels_dtype, seq_ids=train_ids
             )
             train_loader = torch.utils.data.DataLoader(
                 train_set, batch_size=batch_size, shuffle=True
@@ -77,12 +139,13 @@ def main(
             test_ids = tuple()
         else:
             test_obsv, test_labels, test_ids = test_data
-            test_set = seqtools.torchutils.SequenceDataset(
+            test_set = torchutils.SequenceDataset(
                 test_obsv, test_labels,
-                device=device,
-                labels_dtype=labels_dtype
+                device=device, labels_dtype=labels_dtype, seq_ids=test_ids
             )
-            test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=True)
+            test_loader = torch.utils.data.DataLoader(
+                test_set, batch_size=batch_size, shuffle=False
+            )
 
         if val_data == ((), (), (),):
             val_set = None
@@ -90,10 +153,9 @@ def main(
             val_ids = tuple()
         else:
             val_obsv, val_labels, val_ids = val_data
-            val_set = seqtools.torchutils.SequenceDataset(
+            val_set = torchutils.SequenceDataset(
                 val_obsv, val_labels,
-                device=device,
-                labels_dtype=labels_dtype
+                device=device, labels_dtype=labels_dtype, seq_ids=val_ids
             )
             val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 
@@ -104,9 +166,14 @@ def main(
 
         input_dim = train_set.num_obsv_dims
         output_dim = train_set.num_label_types
-        model = torchutils.LinearClassifier(
-            input_dim, output_dim, **model_params
-        ).to(device=device)
+        if model_name == 'linear':
+            model = torchutils.LinearClassifier(
+                input_dim, output_dim, **model_params
+            ).to(device=device)
+        elif model_name == 'conv':
+            model = ConvClassifier(input_dim, output_dim, **model_params).to(device=device)
+        else:
+            raise AssertionError()
 
         train_epoch_log = collections.defaultdict(list)
         val_epoch_log = collections.defaultdict(list)
