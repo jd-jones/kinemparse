@@ -21,7 +21,7 @@ class ConvClassifier(torch.nn.Module):
         self.out_set_size = out_set_size
         self.binary_labels = binary_labels
 
-        padding = kernel_size // 2
+        padding = None  # FIXME
         self.conv1d = torch.nn.Conv1d(
             self.input_dim, self.out_set_size, kernel_size, padding=padding
         )
