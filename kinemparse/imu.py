@@ -208,18 +208,19 @@ def computeWindowMeans(signal, window_labels):
 # --=( ASSEMBLY PARSING )=-----------------------------------------------------
 def componentMeans(imu_mag_seq, assembly_components):
     other_indices = {
-        block_index: component[:i] + component[i + 1:]
-        for component in assembly_components
-        for i, block_index in enumerate(component)
+        block_index: tuple(component - frozenset((block_index,)))
+        for component in tuple(assembly_components)
+        for i, block_index in enumerate(tuple(component))
     }
 
-    component_means = np.column_stack(
-        tuple(
-            imu_mag_seq[:, other_indices[i]].mean(axis=1)
-            for i in sorted(other_indices.values())
-        )
-    )
+    def gen_columns(other_indices):
+        for i in sorted(other_indices.keys()):
+            if other_indices[i]:
+                yield imu_mag_seq[:, other_indices[i]].mean(axis=1)
+            else:
+                yield np.zeros_like(imu_mag_seq[:, i])
 
+    component_means = np.column_stack(tuple(gen_columns(other_indices)))
     return component_means
 
 
@@ -427,9 +428,17 @@ def plot_prediction_eg_array(io_history, expt_out_path, output_data=None):
         num_axes = len(axis_data)
 
         figsize = (subplot_width, num_axes * subplot_height)
-        fig, axes = plt.subplots(num_axes, figsize=figsize)
+        fig, axes = plt.subplots(num_axes, figsize=figsize, sharex=True)
         for axis, data, label in zip(axes, axis_data, axis_labels):
-            axis.imshow(data.T, interpolation='none', aspect='auto')
+            data = np.squeeze(data)
+            if len(data.shape) >= 2:
+                if len(data.shape) > 2:
+                    data = data.reshape(data.shape[0], -1)
+                axis.imshow(data.T, interpolation='none', aspect='auto')
+            elif len(data.shape) == 1:
+                axis.plot(data)
+            else:
+                raise AssertionError()
             axis.set_ylabel(label)
         plt.tight_layout()
         fig_name = f'{fig_idx:03}.png'
@@ -558,17 +567,20 @@ def plotImu(
         if scale_labels:
             scale_val = max(scale_val, sample_norms.max())
 
+    label_axis = axis.twinx()
     for i, l in enumerate(imu_labels):
         if label_names is not None:
             label_name = label_names[i]
         else:
             label_name = ''
         if label_timestamps is not None:
-            axis.plot(label_timestamps, l * scale_val, ':', label=label_name)
+            # axis.plot(label_timestamps, l * scale_val, ':', label=label_name)
+            label_axis.plot(label_timestamps, l, ':', label=label_name)
         else:
-            axis.plot(l * scale_val, ':', label=label_name)
+            # axis.plot(l * scale_val, ':', label=label_name)
+            label_axis.plot(l, ':', label=label_name)
         if label_names is not None:
-            axis.legend()
+            label_axis.legend()
 
     return axis
 

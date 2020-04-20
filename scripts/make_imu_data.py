@@ -12,7 +12,6 @@ from kinemparse import imu
 
 def imuConnectionLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
     state_seq = labels.parseLabelSeq(None, timestamps=rgb_timestamp_seq, action_seq=action_seq)
-    # connections = labels.blockConnectionsSeq(state_seq, lower_tri_only=True)
     connections = labels.blockComponentSeq(state_seq, lower_tri_only=True)
     boundary_times = labels.boundaryTimestampSeq(
         labels.stateBoundarySeq(state_seq, from_action_start=True, as_numpy=True),
@@ -35,6 +34,43 @@ def imuActivityLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq, action_t
     ).T
     imu_activity = utils.resampleSeq(rgb_activity, rgb_timestamp_seq, imu_timestamp_seq)
     return imu_activity
+
+
+def imuComponentLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq, unique_components):
+    assembly_seq = labels.parseLabelSeq(
+        None, timestamps=rgb_timestamp_seq, action_seq=action_seq,
+        structure_change_only=True
+    )
+    assembly_seq[-1].end_idx = len(rgb_timestamp_seq) - 1
+
+    # Convert segment indices from RGB video frames to IMU samples
+    segment_idxs_rgb = np.array(tuple(map(lambda x: x.getStartEndFrames(), assembly_seq)))
+    segment_times = rgb_timestamp_seq[segment_idxs_rgb]
+    segment_idxs_imu = np.column_stack(
+        tuple(utils.nearestIndices(imu_timestamp_seq, times) for times in segment_times.T)
+    )
+    segment_idxs_imu[-1, 1] = len(imu_timestamp_seq) - 1
+
+    # Overwrite old RGB start/end indices with new IMU start/end indices
+    for (start_idx, end_idx), assembly in zip(segment_idxs_imu, assembly_seq):
+        assembly.start_idx = start_idx
+        assembly.end_idx = end_idx
+
+    component_seq = tuple(x.getComponents(include_singleton_blocks=True) for x in assembly_seq)
+
+    def gen_labels(component_seq):
+        for component in component_seq:
+            component_index = unique_components.get(component, None)
+            if component_index is None:
+                component_index = max(unique_components.values()) + 1
+                unique_components[component] = component_index
+            yield component_index
+
+    label_seq = np.zeros(len(imu_timestamp_seq), dtype=int)
+    for (s_idx, e_idx), c_idx in zip(segment_idxs_imu, gen_labels(component_seq)):
+        label_seq[s_idx:e_idx + 1] = c_idx
+
+    return label_seq, assembly_seq
 
 
 def dictToArray(imu_seqs, transform=None):
@@ -71,7 +107,7 @@ def beforeFirstTouch(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
 def main(
         out_dir=None, data_dir=None,
         output_data=None, magnitude_centering=None, resting_from_gt=None,
-        remove_before_first_touch=None, fig_type=None):
+        remove_before_first_touch=None, include_signals=None, fig_type=None):
     logger.info(f"Reading from: {data_dir}")
     logger.info(f"Writing to: {out_dir}")
 
@@ -203,12 +239,27 @@ def main(
         imu_label_seqs = utils.batchProcess(
             imuConnectionLabels, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
         )
+    elif output_data == 'components':
+        accel_feat_seqs = accel_mag_seqs
+        gyro_feat_seqs = gyro_mag_seqs
+        unique_components = {frozenset(): 0}
+        imu_label_seqs, assembly_seqs = zip(
+            *tuple(
+                imuComponentLabels(*args, unique_components)
+                for args in zip(action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs)
+            )
+        )
+        saveVariable(assembly_seqs, f'assembly_seqs')
+        saveVariable(unique_components, f'unique_components')
     else:
         raise AssertionError()
 
-    imu_sample_seqs = tuple(
-        np.stack(covs, axis=-1) for covs in zip(accel_feat_seqs, gyro_feat_seqs)
-    )
+    signals = {'accel': accel_feat_seqs, 'gyro': gyro_feat_seqs}
+    if include_signals is None:
+        include_signals = tuple(signals.keys())
+    signals = tuple(signals[key] for key in include_signals)
+
+    imu_sample_seqs = tuple(np.stack(x, axis=-1) for x in zip(*signals))
 
     imu.plot_prediction_eg(
         tuple(zip(imu_sample_seqs, imu_label_seqs, trial_ids)), fig_dir,
