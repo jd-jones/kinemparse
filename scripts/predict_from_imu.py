@@ -69,7 +69,7 @@ def split(imu_feature_seqs, imu_label_seqs, trial_ids):
 
 
 def main(
-        out_dir=None, data_dir=None, model_name=None, plot_predictions=None, 
+        out_dir=None, data_dir=None, model_name=None, plot_predictions=None, results_file=None,
         gpu_dev_id=None, batch_size=None, learning_rate=None, independent_signals=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}):
 
@@ -216,6 +216,18 @@ def main(
         )
         metric_str = '  '.join(str(m) for m in metric_dict.values())
         logger.info('[TST]  ' + metric_str)
+        if results_file != None:
+            import csv
+            #fields = metric_dict.keys()
+            c=[]
+            for m in metric_dict.values():
+                k = str(m).find(':')+2
+                c.append(str(m)[k:])
+            filename=os.path.join(out_dir, results_file)
+            with open(filename, 'a', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(c)
+
 
         if plot_predictions:
             imu.plot_prediction_eg(test_io_history, fig_dir, fig_type=fig_type, **viz_params)
@@ -253,7 +265,7 @@ if __name__ == "__main__":
     parser.add_argument('--config_file')
     parser.add_argument('--out_dir')
     parser.add_argument('--model_params')
-    parser.add_argument('--data_dir')
+    parser.add_argument('--results_file')
 
     args = vars(parser.parse_args())
     args = {k: yaml.safe_load(v) for k, v in args.items() if v is not None}
