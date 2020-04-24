@@ -219,11 +219,14 @@ def main(
         if results_file != None:
             import csv
             #fields = metric_dict.keys()
-            c=[]
+            c=[model_params.get("kernel_size")]
             for m in metric_dict.values():
                 k = str(m).find(':')+2
                 c.append(str(m)[k:])
-            filename=os.path.join(out_dir, results_file)
+
+            output_dir = '~/repo/kinemparse/data/output/predict-activity'
+            filename=os.path.join(output_dir, results_file)
+            filename = os.path.expanduser(filename)
             with open(filename, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow(c)
