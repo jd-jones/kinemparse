@@ -27,57 +27,6 @@ def gaussianScore(x, mean, cov):
     return score
 
 
-def makeHistogram(
-        num_classes, samples, normalize=False, ignore_empty=True, backoff_counts=0):
-    """ Make a histogram representing the empirical distribution of the input.
-
-    Parameters
-    ----------
-    samples : numpy array of int, shape (num_samples,)
-        Array of outcome indices.
-    normalize : bool, optional
-        If True, the histogram is normalized to it sums to one (ie this
-        method returns a probability distribution). If False, this method
-        returns the class counts. Default is False.
-    ignore_empty : bool, optional
-        Can be useful when ``normalize == False`` and ``backoff_counts == 0``.
-        If True, this function doesn't try to normalize the histogram of an
-        empty input. Trying to normalize that histogram would lead to a
-        divide-by-zero error and an output of all ``NaN``.
-    backoff_counts : int or float, optional
-        This amount is added to all bins in the histogram before normalization
-        (if `normalize` is True). Non-integer backoff counts are allowed.
-
-    Returns
-    -------
-    class_histogram : numpy array of float, shape (num_clusters,)
-        Histogram representing the input data. If `normalize` is True, this is
-        a probability distribution (possibly smoothed via backoff). If not,
-        this is the number of times each cluster was encountered in the input,
-        plus any additional backoff counts.
-    """
-
-    hist = np.zeros(num_classes)
-
-    # Sometimes the input can be empty. We would rather return a vector of
-    # zeros than trying to normalize and get NaN.
-    if ignore_empty and not np.any(samples):
-        return hist
-
-    # Count occurrences of each class in the histogram
-    for index in range(num_classes):
-        class_count = np.sum(samples == index)
-        hist[index] = class_count
-
-    # Add in the backoff counts
-    hist += backoff_counts
-
-    if normalize:
-        hist /= hist.sum()
-
-    return hist
-
-
 def assignToModes(probs, mode_subset=None, log_domain=False):
     """ Hard-assign distributions to their modes.
 
@@ -1046,7 +995,7 @@ class FrameScorer(object):
             # FIXME: This could be modifying the argument in-place
             pixel_labels -= 1
 
-        class_histogram = makeHistogram(self.n_clusters, pixel_labels, **hist_kwargs)
+        class_histogram = utils.makeHistogram(self.n_clusters, pixel_labels, **hist_kwargs)
         return class_histogram
 
     def computeClassSnr(self, class_histogram):
@@ -1650,7 +1599,7 @@ class ImageLikelihood(object):
         if prior is None:
             num_components = self.base_gmm.means_.shape[0]
             rendered = self.getCanonicalTemplate(state_idx, comp_idx, img_type='label')
-            prior = makeHistogram(
+            prior = utils.makeHistogram(
                 num_components, rendered,
                 ignore_empty=False, normalize=True
             )
@@ -2315,7 +2264,7 @@ class EdgeHmm(Hmm):
             end_state_idxs = np.array(
                 tuple(self.getStateIndex(labels[-1]) for labels in label_seqs)
             )
-            self.final_probs = makeHistogram(self.num_states, end_state_idxs, normalize=True)
+            self.final_probs = utils.makeHistogram(self.num_states, end_state_idxs, normalize=True)
             self.final_scores = np.log(self.final_probs)
 
             # plt.figure()

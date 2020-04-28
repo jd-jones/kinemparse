@@ -205,6 +205,31 @@ def computeWindowMeans(signal, window_labels):
     return mean_signal
 
 
+# --=( ASSEMBLY PARSING )=-----------------------------------------------------
+def componentMeans(imu_mag_seq, assembly_components):
+    other_indices = {
+        block_index: tuple(component - frozenset((block_index,)))
+        for component in tuple(assembly_components)
+        for i, block_index in enumerate(tuple(component))
+    }
+
+    def gen_columns(other_indices):
+        for i in sorted(other_indices.keys()):
+            if other_indices[i]:
+                yield imu_mag_seq[:, other_indices[i]].mean(axis=1)
+            else:
+                yield np.zeros_like(imu_mag_seq[:, i])
+
+    component_means = np.column_stack(tuple(gen_columns(other_indices)))
+    return component_means
+
+
+def error(imu_mag_seq, assembly_components):
+    prediction_seq = componentMeans(imu_mag_seq, assembly_components)
+    error = imu_mag_seq - prediction_seq
+    return error
+
+
 # --=( SIGNAL FEATURES )=------------------------------------------------------
 def makeImuSeq(accel_seq, gyro_seq, mag_only=False):
     """ Returns an array whose columns are IMU signals sampled from multiple devices.
@@ -392,21 +417,44 @@ def plot_prediction_eg(*args, fig_type=None, **kwargs):
         return plot_prediction_eg_multi(*args, **kwargs)
 
 
-def plot_prediction_eg_array(io_history, expt_out_path, output_data=None):
+def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_names=None):
     subplot_width = 12
     subplot_height = 3
 
     for fig_idx, io_sample in enumerate(io_history):
         inputs, labels, label_names, ids = unpack(io_sample)
-        axis_data = (inputs,) + labels
-        axis_labels = ('Input',) + label_names
-        num_axes = len(axis_data)
+
+        if len(labels[0].shape) == 1:
+            num_axes = 2
+        elif len(labels[0].shape) == 2:
+            num_axes = 1 + len(labels)
+        else:
+            raise AssertionError()
 
         figsize = (subplot_width, num_axes * subplot_height)
-        fig, axes = plt.subplots(num_axes, figsize=figsize)
-        for axis, data, label in zip(axes, axis_data, axis_labels):
-            axis.imshow(data.T, interpolation='none', aspect='auto')
-            axis.set_ylabel(label)
+        fig, axes = plt.subplots(num_axes, figsize=figsize, sharex=True)
+
+        inputs = inputs.reshape(inputs.shape[0], -1)
+        # axes[-1].imshow(inputs.T, interpolation='none', aspect='auto')
+        axes[-1].imshow(inputs, interpolation='none', aspect='auto')
+        axes[-1].set_ylabel('Input')
+
+        if len(labels[0].shape) == 1:
+            for label, label_name in zip(labels, label_names):
+                axes[0].plot(label, label=label_name)
+                if tick_names is not None:
+                    axes[0].set_yticks(range(len(tick_names)))
+                    axes[0].set_yticklabels(tick_names)
+                axes[0].set_ylabel('Labels')
+                axes[0].legend()
+        elif len(labels[0].shape) == 2:
+            for i, (label, label_name) in enumerate(zip(labels, label_names)):
+                axes[i].imshow(label.T, interpolation='none', aspect='auto')
+                if tick_names is not None:
+                    axes[i].set_yticks(range(len(tick_names)))
+                    axes[i].set_yticklabels(tick_names)
+                axes[i].set_ylabel(label_name)
+
         plt.tight_layout()
         fig_name = f'{fig_idx:03}.png'
         plt.savefig(os.path.join(expt_out_path, fig_name))
@@ -534,17 +582,20 @@ def plotImu(
         if scale_labels:
             scale_val = max(scale_val, sample_norms.max())
 
+    label_axis = axis.twinx()
     for i, l in enumerate(imu_labels):
         if label_names is not None:
             label_name = label_names[i]
         else:
             label_name = ''
         if label_timestamps is not None:
-            axis.plot(label_timestamps, l * scale_val, ':', label=label_name)
+            # axis.plot(label_timestamps, l * scale_val, ':', label=label_name)
+            label_axis.plot(label_timestamps, l, ':', label=label_name)
         else:
-            axis.plot(l * scale_val, ':', label=label_name)
+            # axis.plot(l * scale_val, ':', label=label_name)
+            label_axis.plot(l, ':', label=label_name)
         if label_names is not None:
-            axis.legend()
+            label_axis.legend()
 
     return axis
 

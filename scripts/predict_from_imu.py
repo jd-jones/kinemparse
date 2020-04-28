@@ -2,6 +2,7 @@ import argparse
 import os
 import collections
 import itertools
+import functools
 
 import yaml
 import torch
@@ -9,8 +10,6 @@ import joblib
 
 from mathtools import utils, torchutils, metrics
 from kinemparse import imu
-
-import pdb
 
 
 class ConvClassifier(torch.nn.Module):
@@ -29,11 +28,7 @@ class ConvClassifier(torch.nn.Module):
         )
 
     def forward(self, input_seq):
-        # want (batch_size, num_channels, seq_length)
-        input_seq = input_seq.transpose(1, 2)
-        # want (batch_size, num_channels, seq_length)
-        output_seq = self.conv1d(input_seq)
-        return output_seq.transpose(1, 2)
+        return self.conv1d(input_seq)
 
     def predict(self, outputs):
         if self.binary_labels:
@@ -42,7 +37,37 @@ class ConvClassifier(torch.nn.Module):
         return preds
 
 
-def split(imu_feature_seqs, imu_label_seqs, trial_ids):
+class TcnClassifier(torch.nn.Module):
+    def __init__(
+            self, input_dim, out_set_size,
+            binary_labels=False, tcn_channels=None, **tcn_kwargs):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.out_set_size = out_set_size
+        self.binary_labels = binary_labels
+
+        self.TCN = torchutils.TemporalConvNet(input_dim, tcn_channels, **tcn_kwargs)
+        self.linear = torch.nn.Linear(tcn_channels[-1], self.out_set_size)
+
+        logger.info(
+            f'Initialized TCN classifier. '
+            f'Input dim: {self.input_dim}, Output dim: {self.out_set_size}'
+        )
+
+    def forward(self, input_seq):
+        tcn_out = self.TCN(input_seq).transpose(1, 2)
+        linear_out = self.linear(tcn_out)
+        return linear_out
+
+    def predict(self, outputs):
+        if self.binary_labels:
+            return (outputs > 0.5).float()
+        __, preds = torch.max(outputs, -1)
+        return preds
+
+
+def split(imu_feature_seqs, imu_label_seqs, trial_ids, active_only=False):
     num_signals = imu_label_seqs[0].shape[1]
 
     def validate(seqs):
@@ -65,13 +90,23 @@ def split(imu_feature_seqs, imu_label_seqs, trial_ids):
     imu_feature_seqs = splitSeq(map(lambda x: x.swapaxes(0, 1), imu_feature_seqs))
     imu_label_seqs = splitSeq(map(lambda x: x.T, imu_label_seqs))
 
+    if active_only:
+        is_active = tuple(map(lambda x: x.any(), imu_label_seqs))
+
+        def filterInactive(arrays):
+            return tuple(arr for arr, act in zip(arrays, is_active) if act)
+        return tuple(map(filterInactive, (imu_feature_seqs, imu_label_seqs, trial_ids)))
+
     return imu_feature_seqs, imu_label_seqs, trial_ids
 
 
 def main(
-        out_dir=None, data_dir=None, model_name=None, plot_predictions=None, results_file=None,
-        gpu_dev_id=None, batch_size=None, learning_rate=None, independent_signals=None,
-        model_params={}, cv_params={}, train_params={}, viz_params={}):
+        out_dir=None, data_dir=None, model_name=None,
+        gpu_dev_id=None, batch_size=None, learning_rate=None,
+        independent_signals=None, active_only=None,
+        model_params={}, cv_params={}, train_params={}, viz_params={},
+        plot_predictions=None, results_file=None,
+        label_mapping=None, eval_label_mapping=None):
 
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
@@ -97,6 +132,13 @@ def main(
 
     device = torchutils.selectDevice(gpu_dev_id)
 
+    if label_mapping is not None:
+        def map_labels(labels):
+            for i, j in label_mapping.items():
+                labels[labels == i] = j
+            return labels
+        imu_label_seqs = tuple(map(map_labels, imu_label_seqs))
+
     # Define cross-validation folds
     cv_folds = utils.makeDataSplits(
         imu_sample_seqs, imu_label_seqs, trial_ids,
@@ -107,14 +149,15 @@ def main(
         if independent_signals:
             criterion = torch.nn.CrossEntropyLoss()
             labels_dtype = torch.long
-            fig_type = None
-            train_data = split(*train_data)
-            val_data = split(*val_data)
-            test_data = split(*test_data)
+            # fig_type = None
+            split_ = functools.partial(split, active_only=active_only)
+            train_data = split_(*train_data)
+            val_data = split_(*val_data)
+            test_data = split_(*test_data)
         else:
             criterion = torch.nn.BCEWithLogitsLoss()
             labels_dtype = torch.float
-            fig_type = 'multi'
+            # fig_type = 'multi'
 
         if train_data == ((), (), (),):
             train_set = None
@@ -124,7 +167,8 @@ def main(
             train_obsv, train_labels, train_ids = train_data
             train_set = torchutils.SequenceDataset(
                 train_obsv, train_labels,
-                device=device, labels_dtype=labels_dtype, seq_ids=train_ids
+                device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
+                transpose_data=True
             )
             train_loader = torch.utils.data.DataLoader(
                 train_set, batch_size=batch_size, shuffle=True
@@ -138,7 +182,8 @@ def main(
             test_obsv, test_labels, test_ids = test_data
             test_set = torchutils.SequenceDataset(
                 test_obsv, test_labels,
-                device=device, labels_dtype=labels_dtype, seq_ids=test_ids
+                device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
+                transpose_data=True
             )
             test_loader = torch.utils.data.DataLoader(
                 test_set, batch_size=batch_size, shuffle=False
@@ -152,7 +197,8 @@ def main(
             val_obsv, val_labels, val_ids = val_data
             val_set = torchutils.SequenceDataset(
                 val_obsv, val_labels,
-                device=device, labels_dtype=labels_dtype, seq_ids=val_ids
+                device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
+                transpose_data=True
             )
             val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 
@@ -169,6 +215,8 @@ def main(
             ).to(device=device)
         elif model_name == 'conv':
             model = ConvClassifier(input_dim, output_dim, **model_params).to(device=device)
+        elif model_name == 'TCN':
+            model = TcnClassifier(input_dim, output_dim, **model_params)
         else:
             raise AssertionError()
 
@@ -231,9 +279,9 @@ def main(
                 writer = csv.writer(csvfile)
                 writer.writerow(c)
 
-
         if plot_predictions:
-            imu.plot_prediction_eg(test_io_history, fig_dir, fig_type=fig_type, **viz_params)
+            # imu.plot_prediction_eg(test_io_history, fig_dir, fig_type=fig_type, **viz_params)
+            imu.plot_prediction_eg(test_io_history, fig_dir, **viz_params)
 
         saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
         saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
@@ -260,6 +308,25 @@ def main(
                 title='Heldout performance',
                 fn=os.path.join(fig_dir, 'val-plot.png')
             )
+
+        if eval_label_mapping is not None:
+            metric_dict = {
+                'Avg Loss': metrics.AverageLoss(),
+                'Accuracy': metrics.Accuracy(),
+                'Precision': metrics.Precision(),
+                'Recall': metrics.Recall(),
+                'F1': metrics.Fmeasure()
+            }
+            test_io_history = torchutils.predictSamples(
+                model.to(device=device), test_loader,
+                criterion=criterion, device=device,
+                metrics=metric_dict, data_labeled=True, update_model=False,
+                seq_as_batch=train_params['seq_as_batch'],
+                return_io_history=True,
+                label_mapping=eval_label_mapping
+            )
+            metric_str = '  '.join(str(m) for m in metric_dict.values())
+            logger.info('[TST]  ' + metric_str)
 
 
 if __name__ == "__main__":
