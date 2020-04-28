@@ -417,29 +417,44 @@ def plot_prediction_eg(*args, fig_type=None, **kwargs):
         return plot_prediction_eg_multi(*args, **kwargs)
 
 
-def plot_prediction_eg_array(io_history, expt_out_path, output_data=None):
+def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_names=None):
     subplot_width = 12
     subplot_height = 3
 
     for fig_idx, io_sample in enumerate(io_history):
         inputs, labels, label_names, ids = unpack(io_sample)
-        axis_data = (inputs,) + labels
-        axis_labels = ('Input',) + label_names
-        num_axes = len(axis_data)
+
+        if len(labels[0].shape) == 1:
+            num_axes = 2
+        elif len(labels[0].shape) == 2:
+            num_axes = 1 + len(labels)
+        else:
+            raise AssertionError()
 
         figsize = (subplot_width, num_axes * subplot_height)
         fig, axes = plt.subplots(num_axes, figsize=figsize, sharex=True)
-        for axis, data, label in zip(axes, axis_data, axis_labels):
-            data = np.squeeze(data)
-            if len(data.shape) >= 2:
-                if len(data.shape) > 2:
-                    data = data.reshape(data.shape[0], -1)
-                axis.imshow(data.T, interpolation='none', aspect='auto')
-            elif len(data.shape) == 1:
-                axis.plot(data)
-            else:
-                raise AssertionError()
-            axis.set_ylabel(label)
+
+        inputs = inputs.reshape(inputs.shape[0], -1)
+        # axes[-1].imshow(inputs.T, interpolation='none', aspect='auto')
+        axes[-1].imshow(inputs, interpolation='none', aspect='auto')
+        axes[-1].set_ylabel('Input')
+
+        if len(labels[0].shape) == 1:
+            for label, label_name in zip(labels, label_names):
+                axes[0].plot(label, label=label_name)
+                if tick_names is not None:
+                    axes[0].set_yticks(range(len(tick_names)))
+                    axes[0].set_yticklabels(tick_names)
+                axes[0].set_ylabel('Labels')
+                axes[0].legend()
+        elif len(labels[0].shape) == 2:
+            for i, (label, label_name) in enumerate(zip(labels, label_names)):
+                axes[i].imshow(label.T, interpolation='none', aspect='auto')
+                if tick_names is not None:
+                    axes[i].set_yticks(range(len(tick_names)))
+                    axes[i].set_yticklabels(tick_names)
+                axes[i].set_ylabel(label_name)
+
         plt.tight_layout()
         fig_name = f'{fig_idx:03}.png'
         plt.savefig(os.path.join(expt_out_path, fig_name))

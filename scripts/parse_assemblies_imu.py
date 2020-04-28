@@ -20,16 +20,22 @@ def makeErrorSignal(imu_sample_seq, assembly_seq):
     return error_signal
 
 
-def makeLabelSignal(imu_sample_seq, assembly_seq):
+def makeLabelSignal(imu_sample_seq, assembly_seq, action=False):
     label_seq = np.zeros_like(imu_sample_seq, dtype=bool)
     for assembly in assembly_seq:
-        segment_slice = slice(*assembly.getStartEndFrames())
+        if action:
+            segment_slice = slice(*assembly.getActionStartEndFrames())
+        else:
+            segment_slice = slice(*assembly.getStartEndFrames())
         connected_indices = assembly.symmetrized_connections.any(axis=0).nonzero()[0]
         label_seq[segment_slice, connected_indices] = True
     return label_seq
 
 
-def plotError(trial_id, signal, error_signal, component_label_seq, block_label_seq, fn=None):
+def plotError(
+        trial_id, signal, error_signal,
+        component_label_seq, block_label_seq, block_action_label_seq,
+        fn=None):
     subplot_width = 12
     subplot_height = 2
 
@@ -43,7 +49,9 @@ def plotError(trial_id, signal, error_signal, component_label_seq, block_label_s
         axis.set_ylabel(f"IMU {i}")
         axis.plot(signal[:, i])
         axis.plot(error_signal[:, i])
-        axis.twinx().plot(block_label_seq[:, i], c='tab:green')
+        axis = axis.twinx()
+        axis.plot(block_action_label_seq[:, i], c='tab:red')
+        axis.plot(block_label_seq[:, i], c='tab:green')
 
     plt.tight_layout()
 
@@ -84,9 +92,20 @@ def main(
 
     imu_sample_seqs = tuple(map(np.squeeze, imu_sample_seqs))
     errors = utils.batchProcess(makeErrorSignal, imu_sample_seqs, assembly_seqs)
-    labels = utils.batchProcess(makeLabelSignal, imu_sample_seqs, assembly_seqs)
+    state_labels = utils.batchProcess(
+        makeLabelSignal, imu_sample_seqs, assembly_seqs,
+        static_kwargs={'action': False}
+    )
+    action_labels = utils.batchProcess(
+        makeLabelSignal, imu_sample_seqs, assembly_seqs,
+        static_kwargs={'action': True}
+    )
 
-    for args in zip(trial_ids, imu_sample_seqs, errors, imu_label_seqs, labels):
+    plot_args = zip(
+        trial_ids, imu_sample_seqs, errors,
+        imu_label_seqs, state_labels, action_labels
+    )
+    for args in plot_args:
         plotError(*args, fn=os.path.join(fig_dir, f"{args[0]}.png"))
 
 
