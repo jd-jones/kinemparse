@@ -20,7 +20,10 @@ class ConvClassifier(torch.nn.Module):
         self.out_set_size = out_set_size
         self.binary_labels = binary_labels
 
-        self.conv1d = torch.nn.Conv1d(self.input_dim, self.out_set_size, kernel_size, padding=(kernel_size//2))
+        self.conv1d = torch.nn.Conv1d(
+            self.input_dim, self.out_set_size, kernel_size,
+            padding=(kernel_size // 2)
+        )
 
         logger.info(
             f'Initialized 1D convolutional classifier. '
@@ -28,7 +31,7 @@ class ConvClassifier(torch.nn.Module):
         )
 
     def forward(self, input_seq):
-        return self.conv1d(input_seq)
+        return self.conv1d(input_seq).transpose(1, 2)
 
     def predict(self, outputs):
         if self.binary_labels:
@@ -264,17 +267,15 @@ def main(
         )
         metric_str = '  '.join(str(m) for m in metric_dict.values())
         logger.info('[TST]  ' + metric_str)
-        if results_file != None:
+        if results_file is not None:
             import csv
-            #fields = metric_dict.keys()
-            c=[model_params.get("kernel_size")]
+            # fields = metric_dict.keys()
+            c = [model_params.get("kernel_size")]
             for m in metric_dict.values():
-                k = str(m).find(':')+2
+                k = str(m).find(':') + 2
                 c.append(str(m)[k:])
 
-            output_dir = '~/repo/kinemparse/data/output/predict-activity'
-            filename=os.path.join(output_dir, results_file)
-            filename = os.path.expanduser(filename)
+            filename = os.path.expanduser(results_file)
             with open(filename, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow(c)
@@ -334,6 +335,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_file')
     parser.add_argument('--out_dir')
+    parser.add_argument('--data_dir')
     parser.add_argument('--model_params')
     parser.add_argument('--results_file')
 
@@ -350,7 +352,11 @@ if __name__ == "__main__":
         )
     with open(config_file_path, 'rt') as config_file:
         config = yaml.safe_load(config_file)
-    config.update(args)
+    for k, v in args.items():
+        if isinstance(v, dict) and k in config:
+            config[k].update(v)
+        else:
+            config[k] = v
 
     # Create output directory, instantiate log file and write config options
     out_dir = os.path.expanduser(config['out_dir'])

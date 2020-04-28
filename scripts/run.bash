@@ -1,24 +1,51 @@
 #!/bin/bash
 
 scripts_dir="$HOME/repo/kinemparse/scripts/"
-output_dir="~/repo/kinemparse/data/output/predict-activity"
+output_dir="~/repo/kinemparse/data/output/test-run"
 
-kernel_sizes=$@
+start_at="2"
+stop_after="10"
+
+data_dir="$output_dir/imu-data"
+
+num_trials=5
+param_name="kernel_size"
+param_values=(11 25)
 
 cd $scripts_dir
 
-echo "STAGE1: make data"
-#python make_imu_data.py  #comment out for testing
+if [ "$start_at" -le "1" ]; then
+    echo "STAGE 1: make data"
+    python make_imu_data.py \
+        --out_dir $data_dir
+fi
+if [ "$stop_after" -eq "1" ]; then
+    exit 1
+fi
 
-echo "STAGE2: predict_from_imu.py"
-for kernel_size in $kernel_sizes; do
-	for i in {1..5}; do
-	    python predict_from_imu.py\
-		--out_dir "$output_dir/predictions_k=$kernel_size trial=$i" \
-	 	--model_params "kernel_size: $kernel_size"\
-    		--results_file "results.csv"
-	done
-done
 
-echo "STAGE3: analyze data"
-python analysis.py
+if [ "$start_at" -le "2" ]; then
+    echo "STAGE 2: predict_from_imu.py"
+    for param_val in ${param_values[@]}; do
+        for i in $(seq 1 $num_trials); do
+            python predict_from_imu.py \
+                --out_dir "$output_dir/predictions_${param_name}=${param_val}_trial=$i" \
+                --data_dir "$data_dir/data" \
+                --model_params "$param_name: $param_val"\
+                --results_file "$output_dir/results.csv"
+        done
+    done
+fi
+if [ "$stop_after" -eq "2" ]; then
+    exit 1
+fi
+
+if [ "$start_at" -le "3" ]; then
+    echo "STAGE 3: analyze data"
+    python analysis.py \
+        --out_dir "$output_dir/analysis" \
+        --results_file "$output_dir/results.csv"
+fi
+if [ "$stop_after" -eq "3" ]; then
+    exit 1
+fi
