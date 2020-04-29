@@ -398,8 +398,8 @@ def unpack(io_sample):
         inputs, true_labels, ids = ret
         labels = (true_labels,)
         label_names = ('labels',)
-    elif len(ret) == 4:
-        preds, inputs, true_labels, ids = ret
+    elif len(ret) == 5:
+        preds, scores, inputs, true_labels, ids = ret
         labels = (preds, true_labels)
         label_names = ('preds', 'labels')
     else:
@@ -424,9 +424,11 @@ def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_n
     for fig_idx, io_sample in enumerate(io_history):
         inputs, labels, label_names, ids = unpack(io_sample)
 
-        if len(labels[0].shape) == 1:
+        # import pdb; pdb.set_trace()
+
+        if labels[0].ndim == 1:
             num_axes = 2
-        elif len(labels[0].shape) == 2:
+        elif labels[0].ndim == 2:
             num_axes = 1 + len(labels)
         else:
             raise AssertionError()
@@ -434,12 +436,12 @@ def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_n
         figsize = (subplot_width, num_axes * subplot_height)
         fig, axes = plt.subplots(num_axes, figsize=figsize, sharex=True)
 
-        inputs = inputs.reshape(inputs.shape[0], -1)
+        inputs = inputs.reshape(-1, inputs.shape[-1])
         # axes[-1].imshow(inputs.T, interpolation='none', aspect='auto')
         axes[-1].imshow(inputs, interpolation='none', aspect='auto')
         axes[-1].set_ylabel('Input')
 
-        if len(labels[0].shape) == 1:
+        if labels[0].ndim == 1:
             for label, label_name in zip(labels, label_names):
                 axes[0].plot(label, label=label_name)
                 if tick_names is not None:
@@ -447,16 +449,23 @@ def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_n
                     axes[0].set_yticklabels(tick_names)
                 axes[0].set_ylabel('Labels')
                 axes[0].legend()
-        elif len(labels[0].shape) == 2:
+        elif labels[0].ndim == 2:
             for i, (label, label_name) in enumerate(zip(labels, label_names)):
-                axes[i].imshow(label.T, interpolation='none', aspect='auto')
+                axes[i].imshow(label, interpolation='none', aspect='auto')
                 if tick_names is not None:
                     axes[i].set_yticks(range(len(tick_names)))
                     axes[i].set_yticklabels(tick_names)
                 axes[i].set_ylabel(label_name)
 
+        if isinstance(ids, int):
+            trial_id = ids
+        else:
+            if not all(i == ids[0] for i in ids):
+                raise AssertionError()
+            trial_id = ids[0]
+
         plt.tight_layout()
-        fig_name = f'{fig_idx:03}.png'
+        fig_name = f'trial-{trial_id:03}.png'
         plt.savefig(os.path.join(expt_out_path, fig_name))
         plt.close()
 
