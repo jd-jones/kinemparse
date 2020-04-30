@@ -45,8 +45,8 @@ fi
 if [ "$start_at" -le "3" ]; then
     echo "STAGE 3: analyze data"
     python analysis.py \
-        --out_dir "${output_dir}/predictions_torch-tcn_labels-01/analysis" \
-        --results_file "${output_dir}/predictions_torch-tcn_labels-01/results.csv"
+        --out_dir "${output_dir}/predictions_torch-tcn_labels-01a/analysis" \
+        --results_file "${output_dir}/predictions_torch-tcn_labels-01a/results.csv"
         # --out_dir "$output_dir/analysis" \
         # --results_file "$output_dir/results.csv" \
         # --sweep_param_name "${param_name}"

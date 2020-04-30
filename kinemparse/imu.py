@@ -205,6 +205,39 @@ def computeWindowMeans(signal, window_labels):
     return mean_signal
 
 
+def rgbIdxsToImuIdxs(assembly_seq, rgb_timestamp_seq, imu_timestamp_seq, action_idxs=False):
+    if action_idxs:
+        def getFrames(assembly):
+            return assembly.getActionStartEndFrames()
+
+        def setFrames(assembly, frames):
+            return assembly.setActionStartEndFrames(*frames)
+    else:
+        def getFrames(assembly):
+            return assembly.getStartEndFrames()
+
+        def setFrames(assembly, frames):
+            return assembly.setStartEndFrames(*frames)
+
+    # Convert segment indices from RGB video frames to IMU samples
+    segment_idxs_rgb = np.array(tuple(map(getFrames, assembly_seq)))
+    segment_times = rgb_timestamp_seq[segment_idxs_rgb]
+    segment_idxs_imu = np.column_stack(
+        tuple(utils.nearestIndices(imu_timestamp_seq, times) for times in segment_times.T)
+    )
+
+    if action_idxs:
+        segment_idxs_imu[0, :] = 0
+    else:
+        segment_idxs_imu[-1, 1] = len(imu_timestamp_seq) - 1
+
+    # Overwrite old RGB start/end indices with new IMU start/end indices
+    for frames, assembly in zip(segment_idxs_imu, assembly_seq):
+        setFrames(assembly, frames)
+
+    return segment_idxs_imu
+
+
 # --=( ASSEMBLY PARSING )=-----------------------------------------------------
 def componentMeans(imu_mag_seq, assembly_components):
     other_indices = {
@@ -383,6 +416,22 @@ def imuCovs(imu_seq, imu_is_resting=None, lower_tri_only=True):
         rows, cols = np.tril_indices(covs.shape[1], k=-1)
         covs = covs[:, rows, cols]
     return covs
+
+
+def pairwiseFeats(mag_seq):
+    mag_pairs = utils.lower_tri(
+        np.stack(
+            (
+                np.broadcast_to(mag_seq[:, :, None], mag_seq.shape + mag_seq.shape[-1:]),
+                np.broadcast_to(mag_seq[:, None, :], mag_seq.shape + mag_seq.shape[-1:])
+            ),
+            axis=1
+        )
+    ).swapaxes(1, 2)
+
+    mag_corrs = imuDiff(mag_seq, lower_tri_only=True)[..., None]
+    pairwise_feats = np.concatenate((mag_corrs, mag_pairs), axis=-1)
+    return pairwise_feats
 
 
 # --=( VISUALIZATION )=-------------------------------------------

@@ -17,134 +17,17 @@ def parseActions(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
     )
     assembly_seq[-1].end_idx = len(rgb_timestamp_seq) - 1
 
-    _ = rgbIdxsToImuIdxs(
+    _ = imu.rgbIdxsToImuIdxs(
         assembly_seq, rgb_timestamp_seq, imu_timestamp_seq,
         action_idxs=False
     )
 
-    _ = rgbIdxsToImuIdxs(
+    _ = imu.rgbIdxsToImuIdxs(
         assembly_seq, rgb_timestamp_seq, imu_timestamp_seq,
         action_idxs=True
     )
 
     return assembly_seq
-
-
-def rgbIdxsToImuIdxs(assembly_seq, rgb_timestamp_seq, imu_timestamp_seq, action_idxs=False):
-    if action_idxs:
-        def getFrames(assembly):
-            return assembly.getActionStartEndFrames()
-
-        def setFrames(assembly, frames):
-            return assembly.setActionStartEndFrames(*frames)
-    else:
-        def getFrames(assembly):
-            return assembly.getStartEndFrames()
-
-        def setFrames(assembly, frames):
-            return assembly.setStartEndFrames(*frames)
-
-    # Convert segment indices from RGB video frames to IMU samples
-    segment_idxs_rgb = np.array(tuple(map(getFrames, assembly_seq)))
-    segment_times = rgb_timestamp_seq[segment_idxs_rgb]
-    segment_idxs_imu = np.column_stack(
-        tuple(utils.nearestIndices(imu_timestamp_seq, times) for times in segment_times.T)
-    )
-
-    if action_idxs:
-        segment_idxs_imu[0, :] = 0
-    else:
-        segment_idxs_imu[-1, 1] = len(imu_timestamp_seq) - 1
-
-    # Overwrite old RGB start/end indices with new IMU start/end indices
-    for frames, assembly in zip(segment_idxs_imu, assembly_seq):
-        setFrames(assembly, frames)
-
-    return segment_idxs_imu
-
-
-def imuConnectionLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
-    state_seq = labels.parseLabelSeq(None, timestamps=rgb_timestamp_seq, action_seq=action_seq)
-    connections = labels.blockComponentSeq(state_seq, lower_tri_only=True)
-    boundary_times = labels.boundaryTimestampSeq(
-        labels.stateBoundarySeq(state_seq, from_action_start=True, as_numpy=True),
-        rgb_timestamp_seq
-    )
-    imu_labels = labels.resampleLabels(connections, boundary_times, imu_timestamp_seq)
-    return imu_labels
-
-
-def imuActivityLabels(action_seq, rgb_timestamp_seq, imu_timestamp_seq, action_type=None):
-    state_seq = labels.parseLabelSeq(
-        None, timestamps=rgb_timestamp_seq, action_seq=action_seq,
-        structure_change_only=True
-    )
-    state_seq[-1].end_idx = len(rgb_timestamp_seq)
-    action_seq = np.hstack(action_seq)
-
-    rgb_activity = labels.blockActionSeq(
-        action_seq, rgb_timestamp_seq, state_seq=state_seq, action_type=None
-    ).T
-    imu_activity = utils.resampleSeq(rgb_activity, rgb_timestamp_seq, imu_timestamp_seq)
-    return imu_activity
-
-
-def imuComponentLabels(assembly_seq, rgb_timestamp_seq, imu_timestamp_seq, unique_components):
-    component_seq = tuple(x.getComponents(include_singleton_blocks=True) for x in assembly_seq)
-
-    def gen_labels(component_seq):
-        for component in component_seq:
-            component_index = unique_components.get(component, None)
-            if component_index is None:
-                component_index = max(unique_components.values()) + 1
-                unique_components[component] = component_index
-            yield component_index
-
-    segment_idxs_imu = np.array(tuple(map(lambda x: x.getStartEndFrames, assembly_seq)))
-    label_seq = np.zeros(len(imu_timestamp_seq), dtype=int)
-    for (s_idx, e_idx), c_idx in zip(segment_idxs_imu, gen_labels(component_seq)):
-        label_seq[s_idx:e_idx + 1] = c_idx
-
-    return label_seq
-
-
-def pairwiseComponentLabels(assembly_seq, lower_tri_only=False):
-    """
-    Parameters
-    ----------
-
-    Returns
-    -------
-    label_seq :
-      0 : blocks are not in the same component (no action)
-      1 : blocks are in the same component (no action)
-      2 : blocks transition from different to same component (action)
-      3 : blocks transition from same to different component (action)
-      4 : blocks "transition" from same to same component (action)
-    """
-
-    num_objects = 8
-    num_samples = assembly_seq[-1].end_idx + 1
-    label_seq = np.zeros((num_samples, num_objects, num_objects), dtype=int)
-    for prev_assembly, cur_assembly in zip(assembly_seq[:-1], assembly_seq[1:]):
-        same_components_prev = labels.inSameComponent(prev_assembly)
-        same_components_cur = labels.inSameComponent(cur_assembly)
-        added = same_components_cur * ~same_components_prev
-        removed = same_components_prev * ~same_components_cur
-        in_same_and_unchanged = same_components_prev * same_components_cur
-        action_labels = (
-            2 * added.astype(int)
-            + 3 * removed.astype(int)
-            + 4 * in_same_and_unchanged.astype(int)
-        )
-        state_labels = same_components_cur.astype(int)
-        label_seq[cur_assembly.start_idx:cur_assembly.end_idx + 1] = state_labels
-        label_seq[cur_assembly.action_start_idx:cur_assembly.action_end_idx + 1] = action_labels
-
-    if lower_tri_only:
-        return utils.lower_tri(label_seq)
-
-    return label_seq
 
 
 def dictToArray(imu_seqs, transform=None):
@@ -176,22 +59,6 @@ def beforeFirstTouch(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
 
     before_first_touch = imu_timestamp_seq <= rgb_timestamp_seq[first_touch_idx]
     return before_first_touch
-
-
-def pairwiseFeats(mag_seq):
-    mag_pairs = utils.lower_tri(
-        np.stack(
-            (
-                np.broadcast_to(mag_seq[:, :, None], mag_seq.shape + mag_seq.shape[-1:]),
-                np.broadcast_to(mag_seq[:, None, :], mag_seq.shape + mag_seq.shape[-1:])
-            ),
-            axis=1
-        )
-    ).swapaxes(1, 2)
-
-    mag_corrs = imu.imuDiff(mag_seq, lower_tri_only=True)[..., None]
-    pairwise_feats = np.concatenate((mag_corrs, mag_pairs), axis=-1)
-    return pairwise_feats
 
 
 def main(
@@ -314,44 +181,24 @@ def main(
         action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
     )
 
-    if output_data == 'activity':
-        accel_feat_seqs = accel_mag_seqs
-        gyro_feat_seqs = gyro_mag_seqs
-        imu_label_seqs = utils.batchProcess(
-            imuActivityLabels,
-            action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs,
-            static_kwargs={'action_type': None}
-        )
-    elif output_data == 'connections':
-        accel_feat_seqs = tuple(
-            imu.imuDiff(x, lower_tri_only=True)
-            for x in accel_mag_seqs
-        )
-        gyro_feat_seqs = tuple(
-            imu.imuDiff(x, lower_tri_only=True)
-            for x in gyro_mag_seqs
-        )
-        imu_label_seqs = utils.batchProcess(
-            imuConnectionLabels, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
-        )
-    elif output_data == 'components':
+    if output_data == 'components':
         accel_feat_seqs = accel_mag_seqs
         gyro_feat_seqs = gyro_mag_seqs
         unique_components = {frozenset(): 0}
         imu_label_seqs = zip(
             *tuple(
-                imuComponentLabels(*args, unique_components)
+                labels.componentLabels(*args, unique_components)
                 for args in zip(action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs)
             )
         )
         saveVariable(unique_components, f'unique_components')
     elif output_data == 'pairwise components':
         imu_label_seqs = utils.batchProcess(
-            pairwiseComponentLabels, assembly_seqs,
+            labels.pairwiseComponentLabels, assembly_seqs,
             static_kwargs={'lower_tri_only': True}
         )
-        accel_feat_seqs = tuple(map(pairwiseFeats, accel_mag_seqs))
-        gyro_feat_seqs = tuple(map(pairwiseFeats, gyro_mag_seqs))
+        accel_feat_seqs = tuple(map(imu.pairwiseFeats, accel_mag_seqs))
+        gyro_feat_seqs = tuple(map(imu.pairwiseFeats, gyro_mag_seqs))
     else:
         raise AssertionError()
 

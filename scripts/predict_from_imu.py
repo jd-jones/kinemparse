@@ -125,8 +125,8 @@ def joinSeqs(batches):
 
             # i = int(vid_id) + seq_id / 100
             seq_id, trial_id = math.modf(i)
-            seq_id = int(seq_id * 100)
-            trial_id = int(trial_id)
+            seq_id = int(round(seq_id * 100))
+            trial_id = int(round(trial_id))
 
             all_seqs[trial_id][seq_id] = seqs
 
@@ -326,9 +326,9 @@ def main(
             imu.plot_prediction_eg(test_io_history, fig_dir, **viz_params)
 
         def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
-            saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
-            saveVariable(score_seq, f'trial={trial_id}_score-seq')
-            saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
+            saveVariable(pred_seq.cpu().numpy(), f'trial={trial_id}_pred-label-seq')
+            saveVariable(score_seq.cpu().numpy(), f'trial={trial_id}_score-seq')
+            saveVariable(label_seq.cpu().numpy(), f'trial={trial_id}_true-label-seq')
         for io in test_io_history:
             saveTrialData(*io)
 
