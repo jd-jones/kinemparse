@@ -5,6 +5,7 @@ import itertools
 import functools
 import math
 import csv
+import logging
 
 import yaml
 import torch
@@ -12,6 +13,9 @@ import joblib
 
 from mathtools import utils, torchutils, metrics
 from kinemparse import imu
+
+
+logger = logging.getlogger(__name__)
 
 
 class ConvClassifier(torch.nn.Module):
@@ -167,6 +171,10 @@ def main(
 
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     if results_file is None:
         results_file = os.path.join(out_dir, f'results.csv')
@@ -413,7 +421,6 @@ if __name__ == "__main__":
     out_dir = os.path.expanduser(config['out_dir'])
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
     with open(os.path.join(out_dir, config_fn), 'w') as outfile:
         yaml.dump(config, outfile)
     utils.copyFile(__file__, out_dir)

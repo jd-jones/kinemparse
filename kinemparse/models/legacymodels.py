@@ -1122,10 +1122,10 @@ def assignModelClusters(keyframe_model, colors):
     hsv_mean_img_saturated = hsv_mean_img.copy()
     hsv_mean_img_saturated[:, :, 1] = 1
     hsv_mean_img_saturated[:, :, 2] = 1
-    rgb_mean_img = imageprocessing.color.hsv2rgb(hsv_mean_img)
     rgb_mean_img_saturated = imageprocessing.color.hsv2rgb(hsv_mean_img_saturated)
-    imageprocessing.displayImage(rgb_mean_img)
-    imageprocessing.displayImage(rgb_mean_img_saturated)
+    # rgb_mean_img = imageprocessing.color.hsv2rgb(hsv_mean_img)
+    # imageprocessing.displayImage(rgb_mean_img)
+    # imageprocessing.displayImage(rgb_mean_img_saturated)
 
     rgb_means_saturated = rgb_mean_img_saturated.reshape(keyframe_model.n_clusters, 3)
 
