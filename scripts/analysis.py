@@ -8,7 +8,7 @@ import pandas as pd
 from mathtools import utils
 
 
-logger = logging.getlogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def main(out_dir=None, results_file=None, sweep_param_name=None):

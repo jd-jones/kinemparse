@@ -15,7 +15,7 @@ from mathtools import utils, torchutils, metrics
 from kinemparse import imu
 
 
-logger = logging.getlogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class ConvClassifier(torch.nn.Module):
