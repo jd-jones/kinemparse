@@ -780,7 +780,7 @@ class FrameScorer(object):
             )
 
         class_logprobs = tuple(
-            scipy.misc.logsumexp(cluster_logprobs, axis=1, b=self.clusterPrior(i))
+            scipy.special.logsumexp(cluster_logprobs, axis=1, b=self.clusterPrior(i))
             for i in class_index
         )
 
