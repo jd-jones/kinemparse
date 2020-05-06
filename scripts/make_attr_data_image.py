@@ -1,20 +1,11 @@
 import argparse
 import os
-import glob
 
 import yaml
 import joblib
 import numpy as np
 
 from mathtools import utils
-
-
-def getUniqueTrialIds(dir_path):
-    trial_ids = set(
-        int(os.path.basename(fn).split('-')[1].split('_')[0])
-        for fn in glob.glob(os.path.join(dir_path, f"trial-*.pkl"))
-    )
-    return sorted(tuple(trial_ids))
 
 
 def makeBasketLabels(action_label_seq, num_rgb_frames):
@@ -36,9 +27,14 @@ def makeBasketLabels(action_label_seq, num_rgb_frames):
 
 
 def main(out_dir=None, data_dir=None):
-
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
+
+    if not os.path.exists(data_dir):
+        raise AssertionError(f"{data_dir} does not exist")
+
+    logger.info(f"Reading from: {data_dir}")
+    logger.info(f"Writing to: {out_dir}")
 
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
@@ -54,7 +50,11 @@ def main(out_dir=None, data_dir=None):
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
-    trial_ids = getUniqueTrialIds(data_dir)
+    trial_ids = utils.getUniqueIds(data_dir)
+
+    if not trial_ids:
+        logger.warning(f"No recognizable data in {data_dir}")
+
     for i, trial_id in enumerate(trial_ids):
 
         trial_str = f"trial-{trial_id}"

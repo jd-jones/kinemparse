@@ -1,0 +1,10 @@
+out_dir: '~/repo/kinemparse/data/output/predict-joined/imu-data_gyro-only'
+data_dir: '~/repo/blocks/data/working/preprocess-all-data/child'
+# 'activity' or  'connections'
+output_data: 'pairwise components'
+remove_before_first_touch: True
+# magnitude_centering: 'across devices'
+resting_from_gt: True
+# 'array', 'multi', or None (ie comment out the line below)
+fig_type: 'array'
+include_signals: ['gyro']

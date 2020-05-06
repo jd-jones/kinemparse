@@ -103,5 +103,9 @@ venv.bak/
 # mypy
 .mypy_cache/
 
-# yaml
+# swap files while editing in vim
+*.swp
+
+# ignore yaml except in examples dir
 *.yaml
+!egs/*/*.yaml
