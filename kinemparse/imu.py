@@ -435,7 +435,7 @@ def pairwiseFeats(mag_seq):
 
 
 # --=( VISUALIZATION )=-------------------------------------------
-def unpack(io_sample):
+def unpack(io_sample, scores_as_inputs=False):
     def toNumpy(x):
         if isinstance(x, torch.Tensor):
             return x.squeeze().cpu().numpy()
@@ -454,6 +454,10 @@ def unpack(io_sample):
     else:
         raise AssertionError()
 
+    if scores_as_inputs:
+        inputs = scores.T
+        labels = tuple(l.T for l in labels)
+
     return inputs, labels, label_names, ids
 
 
@@ -466,14 +470,13 @@ def plot_prediction_eg(*args, fig_type=None, **kwargs):
         return plot_prediction_eg_multi(*args, **kwargs)
 
 
-def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_names=None):
+def plot_prediction_eg_array(
+        io_history, expt_out_path, output_data=None, tick_names=None, scores_as_inputs=False):
     subplot_width = 12
     subplot_height = 3
 
     for fig_idx, io_sample in enumerate(io_history):
-        inputs, labels, label_names, ids = unpack(io_sample)
-
-        # import pdb; pdb.set_trace()
+        inputs, labels, label_names, ids = unpack(io_sample, scores_as_inputs=scores_as_inputs)
 
         if labels[0].ndim == 1:
             num_axes = 2
@@ -509,9 +512,12 @@ def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_n
         if isinstance(ids, int):
             trial_id = ids
         else:
-            if not all(i == ids[0] for i in ids):
-                raise AssertionError()
-            trial_id = ids[0]
+            if ids.shape == ():
+                trial_id = int(ids)
+            else:
+                if not all(i == ids[0] for i in ids):
+                    raise AssertionError()
+                trial_id = ids[0]
 
         plt.tight_layout()
         fig_name = f'trial-{trial_id:03}.png'
