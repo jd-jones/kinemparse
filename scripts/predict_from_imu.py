@@ -4,7 +4,6 @@ import collections
 import itertools
 import functools
 import math
-import csv
 import logging
 
 import yaml
@@ -13,6 +12,8 @@ import joblib
 
 from mathtools import utils, torchutils, metrics
 from kinemparse import imu
+
+from seqtools import torch_lctm
 
 
 logger = logging.getLogger(__name__)
@@ -49,12 +50,12 @@ class ConvClassifier(torch.nn.Module):
 class TcnClassifier(torch.nn.Module):
     def __init__(
             self, input_dim, out_set_size,
-            binary_labels=False, tcn_channels=None, **tcn_kwargs):
+            binary_multiclass=False, tcn_channels=None, **tcn_kwargs):
         super().__init__()
 
         self.input_dim = input_dim
         self.out_set_size = out_set_size
-        self.binary_labels = binary_labels
+        self.binary_multiclass = binary_multiclass
 
         self.TCN = torchutils.TemporalConvNet(input_dim, tcn_channels, **tcn_kwargs)
         self.linear = torch.nn.Linear(tcn_channels[-1], self.out_set_size)
@@ -73,13 +74,43 @@ class TcnClassifier(torch.nn.Module):
         return linear_out
 
     def predict(self, outputs, return_scores=False):
-        if self.binary_labels:
+        if self.binary_multiclass:
             return (outputs > 0.5).float()
+
         __, preds = torch.max(outputs, -1)
 
         if return_scores:
             scores = torch.nn.softmax(outputs, dim=-1)
             return preds, scores
+        return preds
+
+
+class SegmentalTcnClassifier(TcnClassifier):
+    def __init__(self, max_segs, pw, *super_args, **super_kwargs):
+        super().__init__(*super_args, **super_kwargs)
+
+        self.max_segs = max_segs
+        self.pw = pw
+        self.test_mode = False
+
+    def predict(self, outputs, return_scores=False):
+        if self.binary_multiclass:
+            raise NotImplementedError()
+
+        if not self.test_mode:
+            return super().predict(outputs, return_scores=return_scores)
+
+        predict_segmental = functools.partial(
+            torch_lctm.segmental_inference,
+            max_segs=self.max_segs, pw=self.pw, return_scores=False
+        )
+
+        preds = torch.stack([predict_segmental(x) for x in outputs])
+
+        if return_scores:
+            scores = torch.nn.softmax(outputs, dim=-1)
+            return preds, scores
+
         return preds
 
 
@@ -138,27 +169,6 @@ def joinSeqs(batches):
         seqs = (seq_dict[k] for k in sorted(seq_dict.keys()))
         seqs = map(stack, zip(*seqs))
         yield tuple(seqs) + (trial_id,)
-
-
-def writeResults(results_file, metric_dict, sweep_param_name, model_params):
-    rows = []
-
-    if not os.path.exists(results_file):
-        header = [metric.name for metric in metric_dict.values()]
-        if sweep_param_name is not None:
-            header = [sweep_param_name] + header
-        rows.append(header)
-
-    row = [metric.value for metric in metric_dict.values()]
-    if sweep_param_name is not None:
-        param_val = model_params[sweep_param_name]
-        row = [param_val] + row
-    rows.append(row)
-
-    with open(results_file, 'a') as csvfile:
-        writer = csv.writer(csvfile)
-        for row in rows:
-            writer.writerow(row)
 
 
 def main(
@@ -231,8 +241,11 @@ def main(
             val_data = split_(*val_data)
             test_data = splitSeqs(*test_data, active_only=False)
         else:
-            criterion = torch.nn.BCEWithLogitsLoss()
-            labels_dtype = torch.float
+            # FIXME
+            # criterion = torch.nn.BCEWithLogitsLoss()
+            # labels_dtype = torch.float
+            criterion = torch.nn.CrossEntropyLoss()
+            labels_dtype = torch.long
 
         train_feats, train_labels, train_ids = train_data
         train_set = torchutils.SequenceDataset(
@@ -308,6 +321,7 @@ def main(
         )
 
         # Test model
+        model.test_mode = True
         metric_dict = {
             'Avg Loss': metrics.AverageLoss(),
             'Accuracy': metrics.Accuracy(),
@@ -324,16 +338,26 @@ def main(
         )
         if independent_signals:
             test_io_history = tuple(joinSeqs(test_io_history))
+
         metric_str = '  '.join(str(m) for m in metric_dict.values())
         logger.info('[TST]  ' + metric_str)
 
-        writeResults(results_file, metric_dict, sweep_param_name, model_params)
+        d = {k: v.value for k, v in metric_dict.items()}
+        utils.writeResults(results_file, d, sweep_param_name, model_params)
 
         if plot_predictions:
             # imu.plot_prediction_eg(test_io_history, fig_dir, fig_type=fig_type, **viz_params)
             imu.plot_prediction_eg(test_io_history, fig_dir, **viz_params)
 
         def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
+            if label_mapping is not None:
+                def dup_score_cols(scores):
+                    num_cols = scores.shape[-1] + len(label_mapping)
+                    col_idxs = torch.arange(num_cols)
+                    for i, j in label_mapping.items():
+                        col_idxs[i] = j
+                    return scores[..., col_idxs]
+                score_seq = dup_score_cols(score_seq)
             saveVariable(pred_seq.cpu().numpy(), f'trial={trial_id}_pred-label-seq')
             saveVariable(score_seq.cpu().numpy(), f'trial={trial_id}_score-seq')
             saveVariable(label_seq.cpu().numpy(), f'trial={trial_id}_true-label-seq')
@@ -387,6 +411,8 @@ def main(
             metric_str = '  '.join(str(m) for m in metric_dict.values())
             logger.info('[TST]  ' + metric_str)
 
+        model.test_mode = False
+
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -409,6 +435,8 @@ if __name__ == "__main__":
         config_file_path = os.path.join(
             os.path.expanduser('~'), 'repo', 'kinemparse', 'scripts', config_fn
         )
+    else:
+        config_fn = os.path.basename(config_file_path)
     with open(config_file_path, 'rt') as config_file:
         config = yaml.safe_load(config_file)
     for k, v in args.items():

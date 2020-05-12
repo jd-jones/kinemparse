@@ -4,9 +4,9 @@ import os
 import yaml
 import torch
 import joblib
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt
 
-from mathtools import utils, metrics
+from mathtools import utils  # , metrics
 from blocks.core import labels
 from kinemparse import imu
 
@@ -14,16 +14,22 @@ from kinemparse import imu
 def makeAssemblyLabels(assembly_id_seq, assembly_seq):
     label_seq = torch.zeros(assembly_seq[-1].end_idx + 1, dtype=torch.long)
     for assembly_id, assembly in zip(assembly_id_seq, assembly_seq):
-        label_seq[assembly.start_idx:assembly.end_idx + 1] = assembly_id
+        label_seq[assembly.action_start_idx:assembly.action_end_idx + 1] = 0
+        # label_seq[assembly.start_idx:assembly.end_idx + 1] = assembly_id
+        label_seq[assembly.start_idx:assembly.end_idx + 1] = 1
 
     return label_seq
 
 
-def make_features(feature_seq):
+def make_features(feature_seq, raw_scores=False):
+    if raw_scores:
+        feature_seq = feature_seq.swapaxes(0, 1)
+        feature_seq = feature_seq.reshape(feature_seq.shape[0], -1)
+        return feature_seq
+
     feature_seq = torch.tensor(feature_seq)
     feature_seq = 2 * torch.nn.functional.softmax(feature_seq, dim=-1) - 1
     feature_seq = feature_seq[..., 1]
-
     return feature_seq
 
 
@@ -44,7 +50,8 @@ def score(feature_seq, signatures):
 
 def predict(score_seq):
     idxs = score_seq.argmax(dim=0)
-    return idxs
+    return torch.zeros_like(idxs)
+    # return idxs
 
 
 def main(
@@ -83,28 +90,35 @@ def main(
         make_features(
             joblib.load(
                 os.path.join(attributes_dir, f'trial={trial_id}_score-seq.pkl')
-            )
+            ), raw_scores=True
         )
         for trial_id in trial_ids
     )
 
-    def equivalent(x, y):
+    def components_equivalent(x, y):
         return (labels.inSameComponent(x) == labels.inSameComponent(y)).all()
+
+    def printNumStates(assembly_seqs, name, eq_function=None):
+        unique_assemblies = []
+        for seq in assembly_seqs:
+            tuple(labels.gen_eq_classes(seq, unique_assemblies, equivalent=eq_function))
+        logger.info(f"{name}: {len(unique_assemblies)} unique states")
+
     unique_assemblies = []
     assembly_id_seqs = tuple(
-        labels.gen_eq_classes(seq, unique_assemblies, equivalent=equivalent)
+        labels.gen_eq_classes(seq, unique_assemblies, equivalent=components_equivalent)
         for seq in assembly_seqs
     )
     label_seqs = utils.batchProcess(makeAssemblyLabels, assembly_id_seqs, assembly_seqs)
-    signatures = make_signatures(unique_assemblies)
+    # signatures = make_signatures(unique_assemblies)
 
-    score_seqs = tuple(score(feature_seq, signatures) for feature_seq in feature_seqs)
-    pred_seqs = tuple(predict(score_seq) for score_seq in score_seqs)
+    # score_seqs = tuple(score(feature_seq, signatures) for feature_seq in feature_seqs)
+    # pred_seqs = tuple(predict(score_seq) for score_seq in score_seqs)
 
-    acc = metrics.Accuracy()
-    for pred_seq, gt_seq in zip(pred_seqs, label_seqs):
-        acc.accumulate(pred_seq, gt_seq, None)
-    logger.info(str(acc))
+    # acc = metrics.Accuracy()
+    # for pred_seq, gt_seq in zip(pred_seqs, label_seqs):
+    #     acc.accumulate(pred_seq, gt_seq, None)
+    # logger.info(str(acc))
 
     # Define cross-validation folds
     # dataset_size = len(trial_ids)
@@ -119,20 +133,21 @@ def main(
 
     # for cv_index, cv_splits in enumerate(cv_folds):
     #     train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
-    figsize = (12, 3)
-    fig, axis = plt.subplots(1, figsize=figsize)
-    axis.imshow(signatures.numpy().T, interpolation='none', aspect='auto')
-    plt.savefig(os.path.join(fig_dir, f"signatures.png"))
-    plt.close()
+    # figsize = (12, 3)
+    # fig, axis = plt.subplots(1, figsize=figsize)
+    # axis.imshow(signatures.numpy().T, interpolation='none', aspect='auto')
+    # plt.savefig(os.path.join(fig_dir, f"signatures.png"))
+    # plt.close()
 
-    def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
-        saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
-        saveVariable(score_seq, f'trial={trial_id}_score-seq')
-        saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
+    saveVariable(feature_seqs, f'imu_sample_seqs')
+    saveVariable(label_seqs, f'imu_label_seqs')
+    saveVariable(trial_ids, f'trial_ids')
 
-    test_io_history = tuple(zip(pred_seqs, score_seqs, feature_seqs, label_seqs, trial_ids))
-    if plot_predictions:
-        imu.plot_prediction_eg(test_io_history, fig_dir, **viz_params)
+    feature_seqs = tuple(f.T for f in feature_seqs)
+    imu.plot_prediction_eg(
+        tuple(zip(feature_seqs, label_seqs, trial_ids)), fig_dir, fig_type='array'
+    )
+
     # for io in test_io_history:
     #     saveTrialData(*io)
 

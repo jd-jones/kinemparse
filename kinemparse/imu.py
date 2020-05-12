@@ -478,12 +478,7 @@ def plot_prediction_eg_array(
     for fig_idx, io_sample in enumerate(io_history):
         inputs, labels, label_names, ids = unpack(io_sample, scores_as_inputs=scores_as_inputs)
 
-        if labels[0].ndim == 1:
-            num_axes = 2
-        elif labels[0].ndim == 2:
-            num_axes = 1 + len(labels)
-        else:
-            raise AssertionError()
+        num_axes = 1 + len(labels)
 
         figsize = (subplot_width, num_axes * subplot_height)
         fig, axes = plt.subplots(num_axes, figsize=figsize, sharex=True)
@@ -493,21 +488,18 @@ def plot_prediction_eg_array(
         axes[-1].imshow(inputs, interpolation='none', aspect='auto')
         axes[-1].set_ylabel('Input')
 
-        if labels[0].ndim == 1:
-            for label, label_name in zip(labels, label_names):
-                axes[0].plot(label, label=label_name)
+        for i, (label, label_name) in enumerate(zip(labels, label_names)):
+            if label.ndim == 1:
+                axes[i].plot(label, label=label_name)
                 if tick_names is not None:
-                    axes[0].set_yticks(range(len(tick_names)))
-                    axes[0].set_yticklabels(tick_names)
-                axes[0].set_ylabel('Labels')
-                axes[0].legend()
-        elif labels[0].ndim == 2:
-            for i, (label, label_name) in enumerate(zip(labels, label_names)):
+                    axes[i].set_yticks(range(len(tick_names)))
+                    axes[i].set_yticklabels(tick_names)
+            elif label.ndim == 2:
                 axes[i].imshow(label, interpolation='none', aspect='auto')
                 if tick_names is not None:
                     axes[i].set_yticks(range(len(tick_names)))
                     axes[i].set_yticklabels(tick_names)
-                axes[i].set_ylabel(label_name)
+            axes[i].set_ylabel(label_name)
 
         if isinstance(ids, int):
             trial_id = ids
