@@ -103,7 +103,7 @@ def main(
         depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
 
         logger.info(f"  Saving output...")
-        trial_str = f"trial-{trial_id}"
+        trial_str = f"trial={trial_id}"
         saveToWorkingDir(action_seq, f'{trial_str}_action-seq')
         saveToWorkingDir(rgb_frame_fn_seq, f'{trial_str}_rgb-frame-fn-seq')
         saveToWorkingDir(rgb_frame_timestamp_seq, f'{trial_str}_rgb-frame-timestamp-seq')

@@ -199,16 +199,19 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def loadVariable(var_name):
-        return joblib.load(os.path.join(data_dir, f'{var_name}.pkl'))
-
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
+    def loadAll(seq_ids, var_name, data_dir):
+        def loadOne(seq_id):
+            fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
+            return joblib.load(fn)
+        return tuple(map(loadOne, seq_ids))
+
     # Load data
-    trial_ids = loadVariable('trial_ids')
-    feature_seqs = loadVariable('imu_sample_seqs')
-    label_seqs = loadVariable('imu_label_seqs')
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
+    feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
+    label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
 
     device = torchutils.selectDevice(gpu_dev_id)
 

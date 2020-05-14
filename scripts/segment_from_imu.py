@@ -6,9 +6,9 @@ import yaml
 import joblib
 import numpy as np
 from sklearn import metrics
+from matplotlib import pyplot as plt
 
 from mathtools import utils
-# from seqtools import fsm
 
 
 logger = logging.getLogger(__name__)
@@ -73,14 +73,50 @@ def segmentFromLabels(label_seq, num_vals=2, min_seg_len=10):
     return seg_label_seq
 
 
+def plot_array(
+        gt_seg_label_seq, pred_seg_label_seq, imu_timestamp_seq, keyframe_timestamp_seq,
+        fn=None):
+    subplot_width = 12
+    subplot_height = 3
+
+    num_axes = 1
+
+    figsize = (subplot_width, num_axes * subplot_height)
+    fig, axis = plt.subplots(num_axes, figsize=figsize, sharex=True)
+
+    axis.plot(imu_timestamp_seq, gt_seg_label_seq)
+    axis.plot(imu_timestamp_seq, pred_seg_label_seq)
+    axis.scatter(keyframe_timestamp_seq, np.zeros_like(keyframe_timestamp_seq))
+
+    plt.tight_layout()
+    if fn is None:
+        plt.show()
+    else:
+        plt.savefig(fn)
+        plt.close()
+
+
+def retrievalMetrics(seg_keyframe_counts):
+    centered_counts = seg_keyframe_counts - 1
+    num_true_positives = np.sum(centered_counts == 0)
+    num_false_positives = np.sum(centered_counts < 0)
+    num_false_negatives = np.sum(centered_counts > 0)
+
+    precision = num_true_positives / (num_true_positives + num_false_positives)
+    recall = num_true_positives / (num_true_positives + num_false_negatives)
+    F1 = 2 * (precision * recall) / (precision + recall)
+
+    return precision, recall, F1
+
+
 def main(
-        out_dir=None, data_dir=None,
+        out_dir=None, predictions_dir=None, imu_data_dir=None, video_data_dir=None,
         model_name=None, model_params={},
         results_file=None, sweep_param_name=None,
         cv_params={}, viz_params={},
         plot_predictions=None):
 
-    data_dir = os.path.expanduser(data_dir)
+    predictions_dir = os.path.expanduser(predictions_dir)
     out_dir = os.path.expanduser(out_dir)
 
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
@@ -98,26 +134,19 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def loadVariable(var_name):
-        return joblib.load(os.path.join(data_dir, f'{var_name}.pkl'))
-
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
+    def loadAll(seq_ids, var_name, data_dir):
+        def loadOne(seq_id):
+            fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
+            return joblib.load(fn)
+        return tuple(map(loadOne, seq_ids))
+
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
-    feature_seqs = tuple(
-        joblib.load(
-            os.path.join(data_dir, f'trial={trial_id}_pred-label-seq.pkl')
-        )
-        for trial_id in trial_ids
-    )
-    label_seqs = tuple(
-        joblib.load(
-            os.path.join(data_dir, f'trial={trial_id}_true-label-seq.pkl')
-        )
-        for trial_id in trial_ids
-    )
+    trial_ids = utils.getUniqueIds(predictions_dir, prefix='trial=')
+    feature_seqs = loadAll(trial_ids, 'pred-label-seq.pkl', predictions_dir)
+    label_seqs = loadAll(trial_ids, 'true-label-seq.pkl', predictions_dir)
 
     # Define cross-validation folds
     dataset_size = len(trial_ids)
@@ -142,7 +171,10 @@ def main(
         )
 
         metric_dict = {
-            'adjusted_rand_score': [],
+            'ARI': [],
+            'kf_prec': [],
+            'kf_rec': [],
+            'kf_f1': []
         }
 
         for feature_seq, label_seq, trial_id in zip(*test_data):
@@ -150,21 +182,54 @@ def main(
             pred_label_seq = filterSegments(feature_seq)
             gt_seg_label_seq = segmentFromLabels(label_seq, num_vals=4)
             pred_seg_label_seq = segmentFromLabels(pred_label_seq, num_vals=4)
-            for name in metric_dict.keys():
-                value = getattr(metrics, name)(gt_seg_label_seq, pred_seg_label_seq)
-                metric_dict[name].append(value)
+            if imu_data_dir is not None and video_data_dir is not None:
+                imu_data_dir = os.path.expanduser(imu_data_dir)
+                imu_timestamp_seq = joblib.load(
+                    os.path.join(imu_data_dir, f'trial={trial_id}_timestamp-seq.pkl')
+                )
 
-            if plot_predictions:
-                fn = os.path.join(fig_dir, f'trial-{trial_id:03}.png')
-                labels = (gt_seg_label_seq, label_seq, pred_seg_label_seq, pred_label_seq)
-                label_names = ('gt segments', 'labels', 'pred segments', 'pred labels')
-                utils.plot_array(feature_seq, labels, label_names, fn=fn)
+                try:
+                    video_data_dir = os.path.expanduser(video_data_dir)
+                    timestamp_fn = f'trial={trial_id}_rgb-frame-timestamp-seq.pkl'
+                    keyframe_timestamp_seq = joblib.load(os.path.join(video_data_dir, timestamp_fn))
+                    # keyframe_fn = f'trial={trial_id}_rgb-frame-seq.pkl'
+                    # keyframe_seq = joblib.load(os.path.join(video_data_dir, keyframe_fn))
+                    # import pdb; pdb.set_trace()
+                except FileNotFoundError:
+                    continue
+
+                # find imu indices closes to keyframe timestamps
+                imu_keyframe_idxs = utils.nearestIndices(imu_timestamp_seq, keyframe_timestamp_seq)
+
+                keyframe_segments = pred_seg_label_seq[imu_keyframe_idxs]
+                num_segments = np.unique(pred_seg_label_seq).max() + 1
+                seg_keyframe_counts = utils.makeHistogram(num_segments, keyframe_segments)
+                prec, rec, f1 = retrievalMetrics(seg_keyframe_counts)
+                metric_dict['kf_prec'].append(prec)
+                metric_dict['kf_rec'].append(rec)
+                metric_dict['kf_f1'].append(f1)
+
+                if plot_predictions:
+                    fn = os.path.join(fig_dir, f'trial-{trial_id:03}_segs.png')
+                    plot_array(
+                        gt_seg_label_seq, pred_seg_label_seq,
+                        imu_timestamp_seq, keyframe_timestamp_seq, fn=fn
+                    )
+                # fn = os.path.join(fig_dir, f'trial-{trial_id:03}.png')
+                # labels = (gt_seg_label_seq, label_seq, pred_seg_label_seq, pred_label_seq)
+                # label_names = ('gt segments', 'labels', 'pred segments', 'pred labels')
+                # utils.plot_array(feature_seq, labels, label_names, fn=fn)
+
+            metric_dict['ARI'] = metrics.adjusted_rand_score(gt_seg_label_seq, pred_seg_label_seq)
+            # for name in metric_dict.keys():
+            #     value = getattr(metrics, name)(gt_seg_label_seq, pred_seg_label_seq)
+            #     metric_dict[name].append(value)
 
             # saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
             # saveVariable(score_seq, f'trial={trial_id}_score-seq')
             # saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
 
-        for name in metric_dict.keys():
+        for name, value in metric_dict.items():
             metric_dict[name] = np.array(value).mean()
         metric_str = '  '.join(f"{k}: {v * 100:.1f}%" for k, v in metric_dict.items())
         logger.info('[TST]  ' + metric_str)
@@ -181,7 +246,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_file')
     parser.add_argument('--out_dir')
-    parser.add_argument('--data_dir')
+    parser.add_argument('--predictions_dir')
+    parser.add_argument('--imu_data_dir')
+    parser.add_argument('--video_data_dir')
     parser.add_argument('--scores_dir')
     parser.add_argument('--model_params')
     parser.add_argument('--results_file')

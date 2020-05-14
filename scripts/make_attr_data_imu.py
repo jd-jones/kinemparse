@@ -206,17 +206,20 @@ def main(
     if include_signals is None:
         include_signals = tuple(signals.keys())
     signals = tuple(signals[key] for key in include_signals)
-    imu_sample_seqs = tuple(np.stack(x, axis=-1).squeeze(axis=-1) for x in zip(*signals))
+    imu_feature_seqs = tuple(np.stack(x, axis=-1).squeeze(axis=-1) for x in zip(*signals))
 
-    imu.plot_prediction_eg(
-        tuple(zip(imu_sample_seqs, imu_label_seqs, trial_ids)), fig_dir,
-        fig_type=fig_type, output_data=output_data
+    video_seqs = tuple(zip(imu_feature_seqs, imu_label_seqs, trial_ids))
+    imu.plot_prediction_eg(video_seqs, fig_dir, fig_type=fig_type, output_data=output_data)
+
+    video_seqs = tuple(
+        zip(assembly_seqs, imu_feature_seqs, imu_timestamp_seqs, imu_label_seqs, trial_ids)
     )
-
-    saveVariable(assembly_seqs, f'assembly_seqs')
-    saveVariable(imu_sample_seqs, f'imu_sample_seqs')
-    saveVariable(imu_label_seqs, f'imu_label_seqs')
-    saveVariable(trial_ids, f'trial_ids')
+    for assembly_seq, feature_seq, timestamp_seq, label_seq, trial_id in video_seqs:
+        id_string = f"trial={trial_id}"
+        saveVariable(assembly_seq, f'{id_string}_assembly-seq')
+        saveVariable(feature_seq, f'{id_string}_feature-seq')
+        saveVariable(timestamp_seq, f'{id_string}_timestamp-seq')
+        saveVariable(label_seq, f'{id_string}_label-seq')
 
 
 if __name__ == "__main__":
@@ -235,6 +238,8 @@ if __name__ == "__main__":
         config_file_path = os.path.join(
             os.path.expanduser('~'), 'repo', 'kinemparse', 'scripts', config_fn
         )
+    else:
+        config_fn = os.path.basename(config_file_path)
     with open(config_file_path, 'rt') as config_file:
         config = yaml.safe_load(config_file)
     config.update(args)

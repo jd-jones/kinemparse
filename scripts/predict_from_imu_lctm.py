@@ -221,9 +221,16 @@ def main(
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
     # Load data
-    trial_ids = loadVariable('trial_ids')
-    feature_seqs = loadVariable('imu_sample_seqs')
-    label_seqs = loadVariable('imu_label_seqs')
+    def loadAll(seq_ids, var_name, data_dir):
+        def loadOne(seq_id):
+            fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
+            return joblib.load(fn)
+        return tuple(map(loadOne, seq_ids))
+
+    # Load data
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
+    feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
+    label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
 
     if scores_dir is not None:
         scores_dir = os.path.expanduser(scores_dir)

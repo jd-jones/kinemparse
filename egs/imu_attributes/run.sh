@@ -9,7 +9,7 @@ output_dir="$HOME/repo/kinemparse/data/output/predict-joined"
 start_at="4"
 stop_after="4"
 
-data_dir="$output_dir/imu-data_gyro-only"
+data_dir="$output_dir/imu-data"
 scores_dir="$output_dir/predictions_tcn"
 smoothed_dir="$output_dir/predictions_sm-crf"
 seg_dir="$output_dir/segments"
@@ -63,7 +63,9 @@ if [ "$start_at" -le "4" ]; then
     python segment_from_imu.py \
         --config_file "${config_dir}/segment_from_imu.yaml" \
         --out_dir "${seg_dir}" \
-        --data_dir "${smoothed_dir}/data" \
+        --imu_data_dir "${data_dir}/data" \
+        --video_data_dir "~/repo/kinemparse/data/output/blocks_child_keyframes-only_2020-05-04/raw-data/data" \
+        --predictions_dir "${smoothed_dir}/data" \
         --results_file "${seg_dir}/results.csv"
     python analysis.py \
         --out_dir "${seg_dir}/system-performance" \
