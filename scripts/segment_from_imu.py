@@ -59,7 +59,8 @@ def segmentFromLabels(label_seq, num_vals=2, min_seg_len=10):
     row_nums = num_vals ** np.arange(label_seq.shape[0])
     reduced_label_seq = np.dot(row_nums, label_seq)
 
-    reduced_label_seq = removeSmallSegments(reduced_label_seq, min_seg_len=30)
+    if min_seg_len > 0:
+        reduced_label_seq = removeSmallSegments(reduced_label_seq, min_seg_len=30)
 
     seg_labels, seg_lens = utils.computeSegments(reduced_label_seq)
 
@@ -73,7 +74,7 @@ def segmentFromLabels(label_seq, num_vals=2, min_seg_len=10):
     return seg_label_seq
 
 
-def plot_array(
+def plot_labels(
         gt_seg_label_seq, pred_seg_label_seq, imu_timestamp_seq, keyframe_timestamp_seq,
         fn=None):
     subplot_width = 12
@@ -96,6 +97,34 @@ def plot_array(
         plt.close()
 
 
+def plot_arrays_simple(*arrays, labels=None, title=None, fn=None):
+    subplot_width = 12
+    subplot_height = 3
+
+    num_axes = len(arrays)
+
+    figsize = (subplot_width, num_axes * subplot_height)
+    fig, axes = plt.subplots(num_axes, figsize=figsize, sharex=True)
+
+    if num_axes == 1:
+        axes = [axes]
+
+    for i, (axis, array) in enumerate(zip(axes, arrays)):
+        axis.imshow(array, interpolation='none', aspect='auto')
+        if labels is not None:
+            axis.set_ylabel(labels[i])
+
+    if title is not None:
+        axes[0].set_title(title)
+
+    plt.tight_layout()
+    if fn is None:
+        plt.show()
+    else:
+        plt.savefig(fn)
+        plt.close()
+
+
 def retrievalMetrics(seg_keyframe_counts):
     centered_counts = seg_keyframe_counts - 1
     num_true_positives = np.sum(centered_counts == 0)
@@ -107,6 +136,51 @@ def retrievalMetrics(seg_keyframe_counts):
     F1 = 2 * (precision * recall) / (precision + recall)
 
     return precision, recall, F1
+
+
+def segments_from_gt(label_seq, seg_label_seq):
+    segment_labels = np.unique(seg_label_seq)
+    num_segments = segment_labels.shape[0]
+    num_samples, num_objects = label_seq.shape
+
+    sample_gt = np.zeros((num_samples, num_objects))
+    segment_gt = np.zeros((num_segments, num_objects))
+    for i in segment_labels:
+        in_segment = seg_label_seq == i
+
+        seg_labels = label_seq[in_segment]
+        if not np.all(seg_labels == seg_labels[0]):
+            raise AssertionError()
+        gt_classes = seg_labels[0]
+
+        gt_classes[gt_classes == 2] = 0
+        gt_classes[gt_classes == 3] = 0
+
+        sample_gt[in_segment] = gt_classes
+        segment_gt[i] = gt_classes
+
+    return segment_gt.T, sample_gt.T
+
+
+def segments_from_features(feature_seq, seg_label_seq):
+    segment_labels = np.unique(seg_label_seq)
+    num_segments = segment_labels.shape[0]
+    num_samples, num_objects, num_classes = feature_seq.shape
+
+    sample_preds = np.zeros((num_samples, num_objects))
+    segment_preds = np.zeros((num_segments, num_objects))
+    for i in segment_labels:
+        in_segment = seg_label_seq == i
+        mean_feat = feature_seq[in_segment].mean(axis=0)
+
+        pred_classes = mean_feat.argmax(axis=-1)
+        pred_classes[pred_classes == 2] = 0
+        pred_classes[pred_classes == 3] = 0
+
+        sample_preds[in_segment] = pred_classes
+        segment_preds[i] = pred_classes
+
+    return segment_preds.T, sample_preds.T
 
 
 def main(
@@ -145,7 +219,8 @@ def main(
 
     # Load data
     trial_ids = utils.getUniqueIds(predictions_dir, prefix='trial=')
-    feature_seqs = loadAll(trial_ids, 'pred-label-seq.pkl', predictions_dir)
+    feature_seqs = loadAll(trial_ids, 'score-seq.pkl', predictions_dir)
+    pred_label_seqs = loadAll(trial_ids, 'pred-label-seq.pkl', predictions_dir)
     label_seqs = loadAll(trial_ids, 'true-label-seq.pkl', predictions_dir)
 
     # Define cross-validation folds
@@ -155,7 +230,7 @@ def main(
     def getSplit(split_idxs):
         split_data = tuple(
             tuple(s[i] for i in split_idxs)
-            for s in (feature_seqs, label_seqs, trial_ids)
+            for s in (feature_seqs, pred_label_seqs, label_seqs, trial_ids)
         )
         return split_data
 
@@ -172,16 +247,42 @@ def main(
 
         metric_dict = {
             'ARI': [],
-            'kf_prec': [],
-            'kf_rec': [],
-            'kf_f1': []
+            # 'kf_prec': [],
+            # 'kf_rec': [],
+            # 'kf_f1': [],
+            'prec': [],
+            'rec': [],
+            'f1': []
         }
 
-        for feature_seq, label_seq, trial_id in zip(*test_data):
-            label_seq = filterSegments(label_seq)
-            pred_label_seq = filterSegments(feature_seq)
-            gt_seg_label_seq = segmentFromLabels(label_seq, num_vals=4)
-            pred_seg_label_seq = segmentFromLabels(pred_label_seq, num_vals=4)
+        for feature_seq, pred_label_seq, label_seq, trial_id in zip(*test_data):
+            gt_seg_label_seq = segmentFromLabels(label_seq, num_vals=4, min_seg_len=0)
+            segment_labels, sample_labels = segments_from_gt(label_seq.T, gt_seg_label_seq)
+
+            pred_seg_label_seq = segmentFromLabels(filterSegments(pred_label_seq), num_vals=4)
+            segment_preds, sample_preds = segments_from_features(
+                np.moveaxis(feature_seq, [0, 1, 2], [1, 2, 0]), pred_seg_label_seq
+            )
+
+            prec = metrics.precision_score(sample_labels.ravel(), sample_preds.ravel())
+            metric_dict['prec'].append(prec)
+            rec = metrics.recall_score(sample_labels.ravel(), sample_preds.ravel())
+            metric_dict['rec'].append(rec)
+            f1 = metrics.f1_score(sample_labels.ravel(), sample_preds.ravel())
+            metric_dict['f1'].append(f1)
+            metric_dict['ARI'] = metrics.adjusted_rand_score(gt_seg_label_seq, pred_seg_label_seq)
+
+            if plot_predictions:
+                fn = os.path.join(fig_dir, f'trial-{trial_id:03}_kf.png')
+                labels = ('ground truth', 'pred, segmented', 'pred, raw')
+                num_segs_pred = pred_seg_label_seq.max() + 1
+                num_segs_gt = gt_seg_label_seq.max() + 1
+                title = f"{num_segs_pred} pred segs, {num_segs_gt} gt segs"
+                plot_arrays_simple(
+                    sample_labels, sample_preds, pred_label_seq,
+                    labels=labels, title=title, fn=fn
+                )
+
             if imu_data_dir is not None and video_data_dir is not None:
                 imu_data_dir = os.path.expanduser(imu_data_dir)
                 imu_timestamp_seq = joblib.load(
@@ -200,7 +301,6 @@ def main(
 
                 # find imu indices closes to keyframe timestamps
                 imu_keyframe_idxs = utils.nearestIndices(imu_timestamp_seq, keyframe_timestamp_seq)
-
                 keyframe_segments = pred_seg_label_seq[imu_keyframe_idxs]
                 num_segments = np.unique(pred_seg_label_seq).max() + 1
                 seg_keyframe_counts = utils.makeHistogram(num_segments, keyframe_segments)
@@ -209,18 +309,38 @@ def main(
                 metric_dict['kf_rec'].append(rec)
                 metric_dict['kf_f1'].append(f1)
 
+                # keyframe_features = tuple(
+                #     feature_seq[:, pred_seg_label_seq == i] for i in keyframe_segments
+                # )
+
+                # keyframe_segments_gt = gt_seg_label_seq[imu_keyframe_idxs]
+                # keyframe_labels = tuple(
+                #     label_seq[:, gt_seg_label_seq == i] for i in keyframe_segments_gt
+                # )
+
+                # mean_kf_feats = np.stack(tuple(f.mean(axis=1) for f in keyframe_features))
+
+                mean_kf_feats = np.zeros_like(label_seq).T
+                for i in keyframe_segments:
+                    in_segment = pred_seg_label_seq == i
+                    mean_feat = feature_seq[in_segment].astype(float).mean(axis=0)
+                    mean_kf_feats[in_segment] = mean_feat.argmax(axis=-1)
+                mean_kf_feats = mean_kf_feats.T
+                mean_kf_feats[mean_kf_feats == 2] = 0
+                mean_kf_feats[mean_kf_feats == 3] = 0
+                # mean_kf_labels = np.stack(tuple(l.mean(axis=1) for l in keyframe_labels))
                 if plot_predictions:
                     fn = os.path.join(fig_dir, f'trial-{trial_id:03}_segs.png')
-                    plot_array(
+                    plot_labels(
                         gt_seg_label_seq, pred_seg_label_seq,
                         imu_timestamp_seq, keyframe_timestamp_seq, fn=fn
                     )
+
                 # fn = os.path.join(fig_dir, f'trial-{trial_id:03}.png')
                 # labels = (gt_seg_label_seq, label_seq, pred_seg_label_seq, pred_label_seq)
                 # label_names = ('gt segments', 'labels', 'pred segments', 'pred labels')
                 # utils.plot_array(feature_seq, labels, label_names, fn=fn)
 
-            metric_dict['ARI'] = metrics.adjusted_rand_score(gt_seg_label_seq, pred_seg_label_seq)
             # for name in metric_dict.keys():
             #     value = getattr(metrics, name)(gt_seg_label_seq, pred_seg_label_seq)
             #     metric_dict[name].append(value)
