@@ -272,6 +272,8 @@ def main(
             metric_dict['f1'].append(f1)
             metric_dict['ARI'] = metrics.adjusted_rand_score(gt_seg_label_seq, pred_seg_label_seq)
 
+            saveVariable(pred_seg_label_seq, f'trial={trial_id}_pred-segment-seq')
+
             if plot_predictions:
                 fn = os.path.join(fig_dir, f'trial-{trial_id:03}_kf.png')
                 labels = ('ground truth', 'pred, segmented', 'pred, raw')
