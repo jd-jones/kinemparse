@@ -4,7 +4,7 @@ set -ue
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
-output_dir="~/repo/kinemparse/data/output/blocks_easy_2020-04-10"
+output_dir="~/repo/kinemparse/data/output/blocks_child_2020-05-04"
 
 start_at="4"
 stop_after="4"
@@ -19,7 +19,7 @@ decode_dir="$output_dir/decode"
 cd $scripts_dir
 
 if [ "$start_at" -le "1" ]; then
-    echo "STAGE 1: Downloading video data"
+    echo "STAGE 1: Download video data"
     python download_blocks_videos.py \
         --config_file "$config_dir/download_blocks_videos.yaml" \
         --out_dir "$data_dir"
@@ -29,7 +29,7 @@ if [ "$stop_after" -eq "1" ]; then
 fi
 
 if [ "$start_at" -le "2" ]; then
-    echo "STAGE 2: Pre-processing videos"
+    echo "STAGE 2: Pre-process videos"
     python preprocess_blocks_videos.py \
         --config_file "$config_dir/preprocess_blocks_videos.yaml" \
         --out_dir "$preprocess_dir" \
@@ -40,7 +40,7 @@ if [ "$stop_after" -eq "2" ]; then
 fi
 
 if [ "$start_at" -le "3" ]; then
-    echo "STAGE 3: Detecting objects"
+    echo "STAGE 3: Detect objects"
     python detect_objects.py \
         --config_file "$config_dir/detect_objects.yaml" \
         --out_dir "$detections_dir" \
@@ -52,19 +52,20 @@ if [ "$stop_after" -eq "3" ]; then
 fi
 
 if [ "$start_at" -le "4" ]; then
-    echo "STAGE 4: Selecting keyframes"
+    echo "STAGE 4: Select keyframes"
     python select_keyframes.py \
         --config_file "$config_dir/select_keyframes.yaml" \
         --out_dir "$keyframes_dir" \
         --data_dir "$data_dir/data" \
-        --preprocess_dir "$preprocess_dir/data"
+        --preprocess_dir "$preprocess_dir/data" \
+        --segments_dir "~/repo/kinemparse/data/output/predict-joined/segments/data"
 fi
 if [ "$stop_after" -eq "4" ]; then
     exit 1
 fi
 
 if [ "$start_at" -le "5" ]; then
-    echo "STAGE 5: Registering templates"
+    echo "STAGE 5: Register templates"
     python decode_keyframes.py \
         --config_file "$config_dir/decode_keyframes_register.yaml" \
         --out_dir "$register_dir" \
@@ -82,7 +83,7 @@ if [ "$stop_after" -eq "5" ]; then
 fi
 
 if [ "$start_at" -le "6" ]; then
-    echo "STAGE 6: Decoding best paths"
+    echo "STAGE 6: Decode best paths"
     python decode_keyframes.py \
         --config_file "$config_dir/decode_keyframes.yaml" \
         --out_dir "$decode_dir" \

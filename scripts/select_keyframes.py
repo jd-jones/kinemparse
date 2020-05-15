@@ -1,14 +1,17 @@
 import os
 import argparse
-import glob
 
 from matplotlib import pyplot as plt
 import numpy as np
 import joblib
 import yaml
 
-from blocks.core import utils, labels, duplocorpus
-from blocks.estimation import imageprocessing, videoprocessing, models, rawdata
+from mathtools import utils
+# FIXME: remove dependency on blocks
+# from blocks.estimation import imageprocessing, videoprocessing, models
+from blocks.estimation import models
+from kinemparse import videoprocessing  # , models
+from visiontools import imageprocessing
 
 
 def monkeyPatchKeyframeModel(keyframe_model):
@@ -41,23 +44,17 @@ def plotScores(frame_scores, keyframe_idxs, fn):
     plt.close()
 
 
-def getUniqueTrialIds(dir_path):
-    trial_ids = set(
-        int(os.path.basename(fn).split('-')[1].split('_')[0])
-        for fn in glob.glob(os.path.join(dir_path, f"trial-*.pkl"))
-    )
-    return sorted(tuple(trial_ids))
-
-
 def main(
-        out_dir=None, data_dir=None, preprocess_dir=None, keyframe_model_fn=None,
-        corpus_name=None, max_seqs=None, subsample_period=None,
+        out_dir=None, data_dir=None, preprocess_dir=None, segments_dir=None,
+        keyframe_model_fn=None, max_seqs=None, subsample_period=None,
         frame_scoring_options={}, frame_selection_options={}):
 
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
     preprocess_dir = os.path.expanduser(preprocess_dir)
     keyframe_model_fn = os.path.expanduser(keyframe_model_fn)
+    if segments_dir is not None:
+        segments_dir = os.path.expanduser(segments_dir)
 
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
@@ -67,8 +64,8 @@ def main(
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
 
-    def loadFromDataDir(var_name):
-        return joblib.load(os.path.join(data_dir, f"{var_name}.pkl"))
+    def loadFromDir(var_name, dir_name):
+        return joblib.load(os.path.join(dir_name, f"{var_name}.pkl"))
 
     def loadFromPreprocessDir(var_name):
         return joblib.load(os.path.join(preprocess_dir, f"{var_name}.pkl"))
@@ -76,7 +73,7 @@ def main(
     def saveToWorkingDir(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f"{var_name}.pkl"))
 
-    trial_ids = getUniqueTrialIds(preprocess_dir)
+    trial_ids = utils.getUniqueIds(preprocess_dir, prefix='trial-', suffix='.pkl')
     # keyframe_model = monkeyPatchKeyframeModel(joblib.load(keyframe_model_fn))
     keyframe_model = joblib.load(keyframe_model_fn)
     models.visualizeKeyframeModel(keyframe_model, fn=os.path.join(fig_dir, 'keyframe-model.png'))
@@ -84,35 +81,43 @@ def main(
     if max_seqs is not None:
         trial_ids = trial_ids[:max_seqs]
 
-    corpus = duplocorpus.DuploCorpus(corpus_name)
     for seq_idx, trial_id in enumerate(trial_ids):
+        logger.info(f"Processing video {seq_idx + 1} / {len(trial_ids)}  (trial {trial_id})")
 
-        logger.info(f"Processing video {seq_idx} / {len(trial_ids)}  (trial {trial_id})")
-
-        logger.info(f"Loading data...")
+        logger.info(f"  Loading data...")
         trial_str = f"trial-{trial_id}"
-        rgb_frame_seq = loadFromDataDir(f'{trial_str}_rgb-frame-seq')
-        segment_seq = loadFromPreprocessDir(f'{trial_str}_segment-frame-seq')
+        rgb_frame_seq = loadFromDir(f'{trial_str}_rgb-frame-seq', data_dir)
+        segment_frame_seq = loadFromDir(f'{trial_str}_segment-frame-seq', preprocess_dir)
 
-        logger.info(f"Scoring frames...")
+        if segments_dir is not None:
+            fn = f'trial={trial_id}_pred-segment-seq-rgb'
+            try:
+                segments_seq = loadFromDir(fn, segments_dir)
+            except FileNotFoundError:
+                logger.info(f"  File not found: {fn}")
+                continue
+        else:
+            segments_seq = None
+
+        logger.info(f"  Scoring frames...")
         frame_scores = videoprocessing.scoreFrames(
             keyframe_model,
-            rgb_frame_seq, segment_seq,
+            rgb_frame_seq, segment_frame_seq,
             score_kwargs=frame_scoring_options
         )
 
         segment_keyframe_idxs = videoprocessing.selectSegmentKeyframes(
-            frame_scores, **frame_selection_options
+            frame_scores, segment_labels=segments_seq, **frame_selection_options
         )
 
-        logger.info(f"Saving output...")
+        logger.info(f"  Saving output...")
 
         fn = os.path.join(fig_dir, f'{trial_str}_scores-plot.png')
         plotScores(frame_scores, segment_keyframe_idxs, fn)
 
         def saveFrames(indices, label):
             best_rgb = rgb_frame_seq[indices]
-            best_seg = segment_seq[indices]
+            best_seg = segment_frame_seq[indices]
             rgb_quantized = np.stack(
                 tuple(
                     videoprocessing.quantizeImage(keyframe_model, rgb_img, segment_img)
@@ -126,18 +131,6 @@ def main(
 
         saveFrames(segment_keyframe_idxs, 'segment')
 
-        if corpus_name == 'child':
-            annotator = 'Jonathan'
-            gt_keyframe_idxs = labels.loadKeyframeIndices(corpus, annotator, trial_id)
-            rgb_frame_fns = corpus.getRgbFrameFns(trial_id)
-            rgb_timestamps = corpus.readRgbTimestamps(trial_id, times_only=True)
-            rgb_frames = rawdata.loadRgbFrameSeq(rgb_frame_fns, rgb_timestamps)
-            rgb_keyframes = tuple(rgb_frames[i] for i in gt_keyframe_idxs)
-            imageprocessing.displayImages(
-                *rgb_keyframes,
-                file_path=os.path.join(out_dir, f'{trial_str}_best-frames-gt.png')
-            )
-
         # Save intermediate results
         saveToWorkingDir(frame_scores, f'{trial_str}_frame-scores')
         saveToWorkingDir(segment_keyframe_idxs, f'{trial_str}_keyframe-idxs')
@@ -150,6 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('--out_dir')
     parser.add_argument('--data_dir')
     parser.add_argument('--preprocess_dir')
+    parser.add_argument('--segments_dir')
     args = vars(parser.parse_args())
     args = {k: v for k, v in args.items() if v is not None}
 

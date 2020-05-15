@@ -7,7 +7,7 @@ import scipy
 
 from mathtools import utils
 from visiontools import imageprocessing, render
-from blocks.estimation import rawdata
+from . import primesense
 
 
 """
@@ -34,8 +34,8 @@ def loadVideo(
         err_str = f'{num_rgb} RGB frames != {num_depth} depth frames'
         raise ValueError(err_str)
 
-    rgb_frame_seq = rawdata.loadRgbFrameSeq(rgb_frame_fn_seq, rgb_frame_timestamp_seq)
-    depth_frame_seq = rawdata.loadDepthFrameSeq(depth_frame_fn_seq, depth_frame_timestamp_seq)
+    rgb_frame_seq = primesense.loadRgbFrameSeq(rgb_frame_fn_seq, rgb_frame_timestamp_seq)
+    depth_frame_seq = primesense.loadDepthFrameSeq(depth_frame_fn_seq, depth_frame_timestamp_seq)
 
     return rgb_frame_seq, depth_frame_seq
 
@@ -104,6 +104,9 @@ def quantizeImage(pixel_classifier, rgb_img, segment_img):
         The model's predictions for the pixels of the input image.
     """
 
+    if not segment_img.any():
+        return np.zeros_like(rgb_img)
+
     pixels = imageprocessing.foregroundPixels(
         rgb_img, segment_img,
         image_transform=skimage.color.rgb2hsv, background_class_index=0
@@ -155,7 +158,9 @@ def pixelClasses(
         pixel_classes = pixel_classifier.predict(pixels)
     else:
         pixel_snrs = pixel_classifier.pixelwiseSnr(pixels, log_domain=True, **classifier_kwargs)
-        pixel_classes = (pixel_snrs < 0).astype(int)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "invalid value encountered")
+            pixel_classes = (pixel_snrs < 0).astype(int)
 
     # Convert back to image shape
     pixel_class_img = imageprocessing.imageFromForegroundPixels(
@@ -264,7 +269,9 @@ def segmentImage(
     pixel_classes : numpy array of int, shape (img_height, img_width)
     """
 
-    is_foreground = skimage.morphology.remove_small_objects(is_foreground, min_size=64)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "Only one label was provided")
+        is_foreground = skimage.morphology.remove_small_objects(is_foreground, min_size=64)
     foreground_segs, n_labels = skimage.morphology.label(is_foreground, return_num=True)
 
     if target_removal_method is not None:
@@ -289,7 +296,9 @@ def segmentImage(
     return foreground_segs
 
 
-def filterSegments(segments, pixel_classes, depth_classes, thresh=0.9):
+def filterSegments(
+        segments, pixel_classes, depth_classes, thresh=0.9,
+        remove_skin=False, remove_white=False, remove_blocks=False):
     """ Remove small segments and segments that are mostly nuisance pixels.
 
     Parameters
@@ -323,11 +332,16 @@ def filterSegments(segments, pixel_classes, depth_classes, thresh=0.9):
         if num_bad_pixels / num_pixels > thresh:
             filtered_segments[segment_mask] = 0
 
-    # Ignore skin pixels
-    # filtered_segments[pixel_classes == 1] = 0
+    # Ignore skin pixels and pixels too close to the camera
+    if remove_skin:
+        filtered_segments[pixel_classes == 1] = 0
+        filtered_segments[depth_classes == 1] = 0
 
-    # Ignore pixels too close to the camera
-    # filtered_segments[depth_classes == 1] = 0
+    if remove_white:
+        filtered_segments[pixel_classes == 2] = 0
+
+    if remove_blocks:
+        filtered_segments[pixel_classes == 3] = 0
 
     # Create new segments out of the contiguous parts of the new foreground
     is_foreground = filtered_segments > 0
@@ -335,7 +349,9 @@ def filterSegments(segments, pixel_classes, depth_classes, thresh=0.9):
 
     # Remove any of the new segments that are too small, then relabel so the
     # returned segments are enumerated sequentially
-    filtered_segments = skimage.morphology.remove_small_objects(filtered_segments, min_size=64)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "Only one label was provided")
+        filtered_segments = skimage.morphology.remove_small_objects(filtered_segments, min_size=64)
     filtered_segments = skimage.segmentation.relabel_sequential(filtered_segments)[0]
 
     return filtered_segments
@@ -450,7 +466,7 @@ def scoreFrames(pixel_classifier, rgb_frame_seq, segment_seq, score_kwargs=None)
         imageprocessing.foregroundPixels,
         rgb_frame_seq, segment_seq,
         static_kwargs={
-            'image_transform': skimage.color.rgb2hsv,
+            'image_transform': lambda x: skimage.color.rgb2hsv(skimage.img_as_float(x)),
             'background_class_index': 0
         }
     )
@@ -464,7 +480,77 @@ def scoreFrames(pixel_classifier, rgb_frame_seq, segment_seq, score_kwargs=None)
     return np.array(scores)
 
 
-def selectSegmentKeyframes(scores, score_thresh=0, prepend_first=False):
+# FIXME: Move to rawdata or utils
+def extractWindows(signal, window_size=10, return_window_indices=False):
+    """ Reshape a signal into a series of non-overlapping windows.
+
+    Parameters
+    ----------
+    signal : numpy array, shape (num_samples,)
+    window_size : int, optional
+    return_window_indices : bool, optional
+
+    Returns
+    -------
+    windows : numpy array, shape (num_windows, window_size)
+    window_indices : numpy array of int, shape (num_windows, window_size)
+    """
+
+    tail_len = signal.shape[0] % window_size
+    pad_arr = np.full(window_size - tail_len, np.nan)
+    signal_padded = np.concatenate((signal, pad_arr))
+    windows = signal_padded.reshape((-1, window_size))
+
+    if not return_window_indices:
+        return windows
+
+    indices = np.arange(signal_padded.shape[0])
+    window_indices = indices.reshape((-1, window_size))
+
+    return windows, window_indices
+
+
+# FIXME: move to rawdata or utils
+def nanargmax(signal, axis=1):
+    """ Select the greatest non-Nan entry from each row.
+
+    If a row does not contain at least one non-NaN entry, it does not have a
+    corresponding output.
+
+    Parameters
+    ----------
+    signal : numpy array, shape (num_rows, num_cols)
+        The reference signal for argmax. This is usually an array constructed
+        by windowing a univariate signal. Each row is a window of the signal.
+    axis : int, optional
+        Axis along which to compute the argmax. Not implemented yet.
+
+    Returns
+    -------
+    non_nan_row_idxs : numpy array of int, shape (num_non_nan_rows,)
+        An array of the row indices in `signal` that have at least one non-NaN
+        entry, arranged in increasing order.
+    non_nan_argmax : numpy array of int, shape (num_non_nan_rows,)
+        An array of the greatest non-NaN entry in `signal` for each of the rows
+        in `non_nan_row_idxs`.
+    """
+
+    if axis != 1:
+        err_str = 'Only axis 1 is supported right now'
+        raise NotImplementedError(err_str)
+
+    # Determine which rows contain all NaN
+    row_is_all_nan = np.isnan(signal).all(axis=1)
+    non_nan_row_idxs = np.nonzero(~row_is_all_nan)[0]
+
+    # Find the (non-NaN) argmax of each row with at least one non-NaN value
+    non_nan_rows = signal[~row_is_all_nan, :]
+    non_nan_argmax = np.nanargmax(non_nan_rows, axis=1)
+
+    return non_nan_row_idxs, non_nan_argmax
+
+
+def selectSegmentKeyframes(scores, segment_labels=None, score_thresh=0, prepend_first=False):
     """ Identify segments in a score sequence, then choose the highest-scoring frame in each.
 
     Parameters
@@ -479,27 +565,28 @@ def selectSegmentKeyframes(scores, score_thresh=0, prepend_first=False):
     keyframe_idxs : numpy array of int, shape (num_segments,)
     """
 
-    # > throws a warning if any values are NaN. We can ignore it because the
-    # default behavior works for us---NaN returns False for any comparison
-    # other than == or !=.
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", "invalid value encountered")
-        is_peak = scores > score_thresh
+    if segment_labels is None:
+        # > throws a warning if any values are NaN. We can ignore it because the
+        # default behavior works for us---NaN returns False for any comparison
+        # other than == or !=.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "invalid value encountered")
+            is_peak = scores > score_thresh
 
-    seg_labels, num_labels = scipy.ndimage.label(is_peak)
-    trough_seg_label = seg_labels[~is_peak][0]
+        segment_labels, num_labels = scipy.ndimage.label(is_peak)
+        # trough_seg_label = segment_labels[~is_peak][0]
 
-    unique_labels = np.unique(seg_labels)
-    unique_labels = unique_labels[unique_labels != trough_seg_label]
+    unique_labels = np.unique(segment_labels)
+    # unique_labels = unique_labels[unique_labels != trough_seg_label]
     num_unique_labels = unique_labels.shape[0]
 
     best_idxs = np.zeros(num_unique_labels, dtype=int)
     for i, label in enumerate(unique_labels):
         l_scores = scores.copy()
-        if np.sum(seg_labels == label) < 2:
+        if np.sum(segment_labels == label) < 2:
             best_idx = -1
         else:
-            l_scores[seg_labels != label] = np.nan
+            l_scores[segment_labels != label] = np.nan
             best_idx = np.nanargmax(l_scores)
         best_idxs[i] = best_idx
     best_idxs = best_idxs[best_idxs > -1]
@@ -527,11 +614,11 @@ def selectWindowKeyframes(scores, window_size=10):
     window_idxs :
     """
 
-    score_windows, window_indices = utils.extractWindows(
+    score_windows, window_indices = extractWindows(
         scores, window_size=window_size, return_window_indices=True
     )
 
-    row_idxs, col_argmax = utils.nanargmax(score_windows)
+    row_idxs, col_argmax = nanargmax(score_windows)
 
     keyframe_idxs = window_indices[row_idxs, col_argmax]
 

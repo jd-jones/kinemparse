@@ -63,6 +63,8 @@ if [ "$start_at" -le "4" ]; then
     python segment_from_imu.py \
         --config_file "${config_dir}/segment_from_imu.yaml" \
         --out_dir "${seg_dir}" \
+        --imu_data_dir "${data_dir}/data" \
+        --video_data_dir "~/repo/kinemparse/data/output/blocks_child_2020-05-04/raw-data/data" \
         --predictions_dir "${smoothed_dir}/data" \
         --results_file "${seg_dir}/results.csv"
     python analysis.py \

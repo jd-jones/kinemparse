@@ -4,12 +4,12 @@ import functools
 import numpy as np
 from skimage import io, color, img_as_float
 
-from blocks import definitions as defn
+from blocks.core import definitions as defn
 from mathtools import utils
-import imageprocessing
+from visiontools import imageprocessing
 
 
-logger = logging.getlogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def checkSeqTime(frame_timestamp_seq):

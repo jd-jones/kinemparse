@@ -272,7 +272,7 @@ def main(
             metric_dict['f1'].append(f1)
             metric_dict['ARI'] = metrics.adjusted_rand_score(gt_seg_label_seq, pred_seg_label_seq)
 
-            saveVariable(pred_seg_label_seq, f'trial={trial_id}_pred-segment-seq')
+            saveVariable(pred_seg_label_seq, f'trial={trial_id}_pred-segment-seq-imu')
 
             if plot_predictions:
                 fn = os.path.join(fig_dir, f'trial-{trial_id:03}_kf.png')
@@ -293,63 +293,36 @@ def main(
 
                 try:
                     video_data_dir = os.path.expanduser(video_data_dir)
-                    timestamp_fn = f'trial={trial_id}_rgb-frame-timestamp-seq.pkl'
-                    keyframe_timestamp_seq = joblib.load(os.path.join(video_data_dir, timestamp_fn))
+                    rgb_timestamp_fn = f'trial-{trial_id}_rgb-frame-timestamp-seq.pkl'
+                    rgb_frame_timestamp_seq = joblib.load(
+                        os.path.join(video_data_dir, rgb_timestamp_fn)
+                    )
                     # keyframe_fn = f'trial={trial_id}_rgb-frame-seq.pkl'
                     # keyframe_seq = joblib.load(os.path.join(video_data_dir, keyframe_fn))
                     # import pdb; pdb.set_trace()
                 except FileNotFoundError:
+                    logger.info(f"File not found: {rgb_timestamp_fn}")
                     continue
 
-                # find imu indices closes to keyframe timestamps
-                imu_keyframe_idxs = utils.nearestIndices(imu_timestamp_seq, keyframe_timestamp_seq)
-                keyframe_segments = pred_seg_label_seq[imu_keyframe_idxs]
-                num_segments = np.unique(pred_seg_label_seq).max() + 1
-                seg_keyframe_counts = utils.makeHistogram(num_segments, keyframe_segments)
-                prec, rec, f1 = retrievalMetrics(seg_keyframe_counts)
-                metric_dict['kf_prec'].append(prec)
-                metric_dict['kf_rec'].append(rec)
-                metric_dict['kf_f1'].append(f1)
+                # find imu indices closest to rgb frame timestamps
+                imu_frame_idxs = utils.nearestIndices(imu_timestamp_seq, rgb_frame_timestamp_seq)
+                pred_seg_label_seq_rgb = pred_seg_label_seq[imu_frame_idxs]
+                saveVariable(pred_seg_label_seq_rgb, f'trial={trial_id}_pred-segment-seq-rgb')
 
-                # keyframe_features = tuple(
-                #     feature_seq[:, pred_seg_label_seq == i] for i in keyframe_segments
-                # )
+                if False:
+                    num_segments = np.unique(pred_seg_label_seq).max() + 1
+                    seg_keyframe_counts = utils.makeHistogram(num_segments, pred_seg_label_seq_rgb)
+                    prec, rec, f1 = retrievalMetrics(seg_keyframe_counts)
+                    metric_dict['kf_prec'].append(prec)
+                    metric_dict['kf_rec'].append(rec)
+                    metric_dict['kf_f1'].append(f1)
 
-                # keyframe_segments_gt = gt_seg_label_seq[imu_keyframe_idxs]
-                # keyframe_labels = tuple(
-                #     label_seq[:, gt_seg_label_seq == i] for i in keyframe_segments_gt
-                # )
-
-                # mean_kf_feats = np.stack(tuple(f.mean(axis=1) for f in keyframe_features))
-
-                mean_kf_feats = np.zeros_like(label_seq).T
-                for i in keyframe_segments:
-                    in_segment = pred_seg_label_seq == i
-                    mean_feat = feature_seq[in_segment].astype(float).mean(axis=0)
-                    mean_kf_feats[in_segment] = mean_feat.argmax(axis=-1)
-                mean_kf_feats = mean_kf_feats.T
-                mean_kf_feats[mean_kf_feats == 2] = 0
-                mean_kf_feats[mean_kf_feats == 3] = 0
-                # mean_kf_labels = np.stack(tuple(l.mean(axis=1) for l in keyframe_labels))
-                if plot_predictions:
-                    fn = os.path.join(fig_dir, f'trial-{trial_id:03}_segs.png')
-                    plot_labels(
-                        gt_seg_label_seq, pred_seg_label_seq,
-                        imu_timestamp_seq, keyframe_timestamp_seq, fn=fn
-                    )
-
-                # fn = os.path.join(fig_dir, f'trial-{trial_id:03}.png')
-                # labels = (gt_seg_label_seq, label_seq, pred_seg_label_seq, pred_label_seq)
-                # label_names = ('gt segments', 'labels', 'pred segments', 'pred labels')
-                # utils.plot_array(feature_seq, labels, label_names, fn=fn)
-
-            # for name in metric_dict.keys():
-            #     value = getattr(metrics, name)(gt_seg_label_seq, pred_seg_label_seq)
-            #     metric_dict[name].append(value)
-
-            # saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
-            # saveVariable(score_seq, f'trial={trial_id}_score-seq')
-            # saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
+                    if plot_predictions:
+                        fn = os.path.join(fig_dir, f'trial-{trial_id:03}_segs.png')
+                        plot_labels(
+                            gt_seg_label_seq, pred_seg_label_seq,
+                            imu_timestamp_seq, rgb_frame_timestamp_seq, fn=fn
+                        )
 
         for name, value in metric_dict.items():
             metric_dict[name] = np.array(value).mean()
