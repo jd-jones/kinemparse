@@ -6,13 +6,14 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="$HOME/repo/kinemparse/data/output/predict-joined"
 
-start_at="4"
-stop_after="4"
+start_at="5"
+stop_after="5"
 
 data_dir="$output_dir/imu-data"
 scores_dir="$output_dir/predictions_tcn"
 smoothed_dir="$output_dir/predictions_sm-crf"
 seg_dir="$output_dir/segments"
+prune_dir="$output_dir/prune"
 
 cd $scripts_dir
 
@@ -72,5 +73,22 @@ if [ "$start_at" -le "4" ]; then
         --results_file "${seg_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "4" ]; then
+    exit 1
+fi
+
+if [ "$start_at" -le "5" ]; then
+    echo "STAGE 5: Score attributes"
+    python score_attributes.py \
+        --config_file "${config_dir}/score_attributes.yaml" \
+        --out_dir "${prune_dir}" \
+        --data_dir "${data_dir}/data" \
+        --attributes_dir "${scores_dir}/data" \
+        --segments_dir "${seg_dir}/data" \
+        --results_file "${prune_dir}/results.csv"
+    python analysis.py \
+        --out_dir "${prune_dir}/system-performance" \
+        --results_file "${prune_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "5" ]; then
     exit 1
 fi

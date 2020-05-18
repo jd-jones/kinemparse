@@ -34,6 +34,7 @@ if [ "$start_at" -le "2" ]; then
         --config_file "$config_dir/preprocess_blocks_videos.yaml" \
         --out_dir "$preprocess_dir" \
         --data_dir "$data_dir/data"
+        # --start_from 50
 fi
 if [ "$stop_after" -eq "2" ]; then
     exit 1

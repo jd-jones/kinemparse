@@ -4,7 +4,6 @@ set -ue
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
-# output_dir="~/repo/kinemparse/data/output/blocks_child_2020-05-04"
 output_dir="~/repo/kinemparse/data/output/blocks_child_keyframes-only_2020-05-04"
 
 start_at="1"

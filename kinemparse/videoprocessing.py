@@ -587,7 +587,10 @@ def selectSegmentKeyframes(scores, segment_labels=None, score_thresh=0, prepend_
             best_idx = -1
         else:
             l_scores[segment_labels != label] = np.nan
-            best_idx = np.nanargmax(l_scores)
+            try:
+                best_idx = np.nanargmax(l_scores)
+            except ValueError:
+                best_idx = 0
         best_idxs[i] = best_idx
     best_idxs = best_idxs[best_idxs > -1]
 

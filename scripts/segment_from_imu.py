@@ -46,10 +46,6 @@ def removeSmallSegments(labels, min_seg_len=10):
 
 def filterSegments(label_seq, **filter_args):
     label_seq = label_seq.copy()
-    label_seq[label_seq == 2] = 0
-    label_seq[label_seq == 3] = 0
-
-    label_seq = label_seq.copy()
     for i in range(label_seq.shape[0]):
         label_seq[i] = removeSmallSegments(label_seq[i], **filter_args)
     return label_seq
@@ -139,53 +135,42 @@ def retrievalMetrics(seg_keyframe_counts):
 
 
 def segments_from_gt(label_seq, seg_label_seq):
-    segment_labels = np.unique(seg_label_seq)
-    num_segments = segment_labels.shape[0]
-    num_samples, num_objects = label_seq.shape
+    def reduction(segment):
+        reduced = utils.reduce_all_equal(segment)
+        return reduced
 
-    sample_gt = np.zeros((num_samples, num_objects))
-    segment_gt = np.zeros((num_segments, num_objects))
-    for i in segment_labels:
-        in_segment = seg_label_seq == i
-
-        seg_labels = label_seq[in_segment]
-        if not np.all(seg_labels == seg_labels[0]):
-            raise AssertionError()
-        gt_classes = seg_labels[0]
-
-        gt_classes[gt_classes == 2] = 0
-        gt_classes[gt_classes == 3] = 0
-
-        sample_gt[in_segment] = gt_classes
-        segment_gt[i] = gt_classes
-
+    segment_gt, sample_gt = utils.reduce_over_segments(
+        label_seq, seg_label_seq,
+        reduction=reduction
+    )
     return segment_gt.T, sample_gt.T
 
 
 def segments_from_features(feature_seq, seg_label_seq):
-    segment_labels = np.unique(seg_label_seq)
-    num_segments = segment_labels.shape[0]
-    num_samples, num_objects, num_classes = feature_seq.shape
+    def reduction(segment):
+        reduced = segment.mean(axis=0).argmax(axis=-1)
+        reduced[reduced == 2] = 0
+        reduced[reduced == 3] = 0
+        return reduced
 
-    sample_preds = np.zeros((num_samples, num_objects))
-    segment_preds = np.zeros((num_segments, num_objects))
-    for i in segment_labels:
-        in_segment = seg_label_seq == i
-        mean_feat = feature_seq[in_segment].mean(axis=0)
-
-        pred_classes = mean_feat.argmax(axis=-1)
-        pred_classes[pred_classes == 2] = 0
-        pred_classes[pred_classes == 3] = 0
-
-        sample_preds[in_segment] = pred_classes
-        segment_preds[i] = pred_classes
+    segment_preds, sample_preds = utils.reduce_over_segments(
+        feature_seq, seg_label_seq,
+        reduction=reduction
+    )
 
     return segment_preds.T, sample_preds.T
 
 
+def remapLabels(labels, remap_dict):
+    remapped = labels.copy()
+    for k, v in remap_dict.items():
+        remapped[labels == k] = v
+    return remapped
+
+
 def main(
         out_dir=None, predictions_dir=None, imu_data_dir=None, video_data_dir=None,
-        model_name=None, model_params={},
+        use_gt_segments=None, model_name=None, model_params={},
         results_file=None, sweep_param_name=None,
         cv_params={}, viz_params={},
         plot_predictions=None):
@@ -256,10 +241,13 @@ def main(
         }
 
         for feature_seq, pred_label_seq, label_seq, trial_id in zip(*test_data):
-            gt_seg_label_seq = segmentFromLabels(label_seq, num_vals=4, min_seg_len=0)
+            label_seq = remapLabels(label_seq, {2: 0, 3: 0})
+            pred_label_seq = remapLabels(pred_label_seq, {2: 0, 3: 0})
+
+            gt_seg_label_seq = segmentFromLabels(label_seq, num_vals=2, min_seg_len=0)
             segment_labels, sample_labels = segments_from_gt(label_seq.T, gt_seg_label_seq)
 
-            pred_seg_label_seq = segmentFromLabels(filterSegments(pred_label_seq), num_vals=4)
+            pred_seg_label_seq = segmentFromLabels(filterSegments(pred_label_seq), num_vals=2)
             segment_preds, sample_preds = segments_from_features(
                 np.moveaxis(feature_seq, [0, 1, 2], [1, 2, 0]), pred_seg_label_seq
             )
@@ -272,7 +260,10 @@ def main(
             metric_dict['f1'].append(f1)
             metric_dict['ARI'] = metrics.adjusted_rand_score(gt_seg_label_seq, pred_seg_label_seq)
 
-            saveVariable(pred_seg_label_seq, f'trial={trial_id}_pred-segment-seq-imu')
+            if use_gt_segments:
+                saveVariable(gt_seg_label_seq, f'trial={trial_id}_segment-seq-imu')
+            else:
+                saveVariable(pred_seg_label_seq, f'trial={trial_id}_segment-seq-imu')
 
             if plot_predictions:
                 fn = os.path.join(fig_dir, f'trial-{trial_id:03}_kf.png')
@@ -306,8 +297,12 @@ def main(
 
                 # find imu indices closest to rgb frame timestamps
                 imu_frame_idxs = utils.nearestIndices(imu_timestamp_seq, rgb_frame_timestamp_seq)
-                pred_seg_label_seq_rgb = pred_seg_label_seq[imu_frame_idxs]
-                saveVariable(pred_seg_label_seq_rgb, f'trial={trial_id}_pred-segment-seq-rgb')
+                if use_gt_segments:
+                    gt_seg_label_seq_rgb = gt_seg_label_seq[imu_frame_idxs]
+                    saveVariable(gt_seg_label_seq_rgb, f'trial={trial_id}_segment-seq-rgb')
+                else:
+                    pred_seg_label_seq_rgb = pred_seg_label_seq[imu_frame_idxs]
+                    saveVariable(pred_seg_label_seq_rgb, f'trial={trial_id}_segment-seq-rgb')
 
                 if False:
                     num_segments = np.unique(pred_seg_label_seq).max() + 1
