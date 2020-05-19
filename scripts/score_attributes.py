@@ -13,22 +13,18 @@ from blocks.core import labels
 def makeAssemblyLabels(assembly_id_seq, assembly_seq):
     label_seq = torch.zeros(assembly_seq[-1].end_idx + 1, dtype=torch.long)
     for assembly_id, assembly in zip(assembly_id_seq, assembly_seq):
-        # label_seq[assembly.action_start_idx:assembly.action_end_idx + 1] = 0
         label_seq[assembly.start_idx:assembly.end_idx + 1] = assembly_id
-        # label_seq[assembly.start_idx:assembly.end_idx + 1] = 1
 
     return label_seq
 
 
 def make_features(feature_seq, raw_scores=False):
-    feature_seq = feature_seq.swapaxes(0, 1)
-    feature_seq = torch.tensor(feature_seq)
+    if raw_scores:
+        raise NotImplementedError()
 
-    if not raw_scores:
-        feature_seq = 2 * torch.nn.functional.softmax(feature_seq[..., 0:2], dim=-1) - 1
-        feature_seq = feature_seq[..., 1]
+    feature_seq = 2 * torch.nn.functional.softmax(feature_seq[..., 0:2], dim=-1) - 1
+    feature_seq = feature_seq[..., 1]
 
-    feature_seq = feature_seq.reshape(feature_seq.shape[0], -1)
     return feature_seq
 
 
@@ -57,7 +53,8 @@ def components_equivalent(x, y):
 
 
 def main(
-        out_dir=None, data_dir=None, attributes_dir=None, segments_dir=None,
+        out_dir=None, data_dir=None, attributes_dir=None,
+        use_gt_segments=None, segments_dir=None,
         gpu_dev_id=None,
         plot_predictions=None, results_file=None, sweep_param_name=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}):
@@ -93,15 +90,7 @@ def main(
     # Load data
     trial_ids = utils.getUniqueIds(attributes_dir, prefix='trial=')
     assembly_seqs = loadAll(trial_ids, 'assembly-seq.pkl', data_dir)
-    attr_score_seqs = loadAll(trial_ids, 'score-seq.pkl', attributes_dir)
-
-    # Extract features, etc
-    feature_seqs = tuple(
-        # FIXME: implement consistent array shapes across scripts
-        #   (samples along rows)
-        make_features(scores.swapaxes(0, 1), raw_scores=False)
-        for scores in attr_score_seqs
-    )
+    feature_seqs = loadAll(trial_ids, 'score-seq.pkl', attributes_dir)
 
     unique_assemblies = []
     assembly_id_seqs = tuple(
@@ -148,20 +137,15 @@ def main(
         # TEST PHASE
         acc = metrics.Accuracy()
         for feature_seq, gt_seq, trial_id in zip(*test_data):
-            score_seq = score(feature_seq, signatures)
-            pred_seq = unique_train_labels[predict(score_seq)]
+            # FIXME: implement consistent data dimensions during serialization
+            #   (ie samples along rows)
+            # feature_seq shape is (pairs, samples, classes)
+            # should be (samples, pairs, classes)
+            feature_seq = torch.tensor(feature_seq, dtype=torch.float)
 
-            acc.accumulate(pred_seq, gt_seq, None)
-
-            if plot_predictions:
-                fn = os.path.join(fig_dir, f'trial-{trial_id:03}.png')
-                utils.plot_array(
-                    feature_seq, (pred_seq.numpy(), gt_seq.numpy()), ('pred', 'gt'),
-                    fn=fn
-                )
-
-            score_seq = score_seq.numpy().T
-            if segments_dir is not None:
+            if use_gt_segments:
+                segments = utils.makeSegmentLabels(gt_seq)
+            elif segments_dir is not None:
                 var_name = 'segment-seq-imu.pkl'
                 fn = os.path.join(segments_dir, f'trial={trial_id}_{var_name}')
                 try:
@@ -169,14 +153,38 @@ def main(
                 except FileNotFoundError:
                     logger.info(f"File not found: {fn}")
                     continue
-                score_seq, _ = utils.reduce_over_segments(
-                    score_seq, segments,
+            else:
+                segments = None
+
+            if segments is not None:
+                feature_seq = feature_seq.transpose(0, 1)
+
+                feature_seq, _ = utils.reduce_over_segments(
+                    feature_seq.numpy(), segments,
                     reduction=lambda x: x.mean(axis=0)
                 )
-            saveVariable(score_seq, f'trial={trial_id}_attr-score-seq-rgb')
+                feature_seq = torch.tensor(feature_seq.swapaxes(0, 1), dtype=torch.float)
+
+                gt_seq, _ = utils.reduce_over_segments(gt_seq.numpy(), segments)
+                gt_seq = torch.tensor(gt_seq, dtype=torch.long)
+
+            feature_seq = make_features(feature_seq)
+            score_seq = score(feature_seq, signatures)
+            pred_seq = unique_train_labels[predict(score_seq)]
+
+            acc.accumulate(pred_seq, gt_seq, None)
+            saveVariable(score_seq, f'trial={trial_id}_attr-score-seq')
+
+            if plot_predictions:
+                fn = os.path.join(fig_dir, f'trial-{trial_id:03}.png')
+                utils.plot_array(
+                    feature_seq,
+                    (gt_seq.numpy(), pred_seq.numpy(), score_seq.numpy()),
+                    ('gt', 'pred', 'scores'),
+                    fn=fn
+                )
 
         logger.info('  ' + str(acc))
-
         metric_dict = {'Accuracy': acc.value}
         utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 

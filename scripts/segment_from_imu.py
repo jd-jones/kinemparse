@@ -58,17 +58,8 @@ def segmentFromLabels(label_seq, num_vals=2, min_seg_len=10):
     if min_seg_len > 0:
         reduced_label_seq = removeSmallSegments(reduced_label_seq, min_seg_len=30)
 
-    seg_labels, seg_lens = utils.computeSegments(reduced_label_seq)
-
-    seg_label_seq = np.zeros_like(reduced_label_seq)
-    start_index = 0
-    for i, seg_len in enumerate(seg_lens):
-        end_index = start_index + seg_len
-        seg_label_seq[start_index:end_index] = i
-        start_index = end_index
-
+    seg_label_seq = utils.makeSegmentLabels(reduced_label_seq)
     return seg_label_seq
-
 
 def plot_labels(
         gt_seg_label_seq, pred_seg_label_seq, imu_timestamp_seq, keyframe_timestamp_seq,

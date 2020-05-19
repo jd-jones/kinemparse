@@ -83,7 +83,6 @@ if [ "$start_at" -le "5" ]; then
         --out_dir "${prune_dir}" \
         --data_dir "${data_dir}/data" \
         --attributes_dir "${scores_dir}/data" \
-        --segments_dir "${seg_dir}/data" \
         --results_file "${prune_dir}/results.csv"
     python analysis.py \
         --out_dir "${prune_dir}/system-performance" \

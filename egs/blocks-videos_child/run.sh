@@ -6,8 +6,8 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/repo/kinemparse/data/output/blocks_child_2020-05-04"
 
-start_at="4"
-stop_after="4"
+start_at="2"
+stop_after="2"
 
 data_dir="$output_dir/raw-data"
 preprocess_dir="$output_dir/preprocess"
@@ -33,8 +33,8 @@ if [ "$start_at" -le "2" ]; then
     python preprocess_blocks_videos.py \
         --config_file "$config_dir/preprocess_blocks_videos.yaml" \
         --out_dir "$preprocess_dir" \
-        --data_dir "$data_dir/data"
-        # --start_from 50
+        --data_dir "$data_dir/data" \
+        --start_from "50"
 fi
 if [ "$stop_after" -eq "2" ]; then
     exit 1
