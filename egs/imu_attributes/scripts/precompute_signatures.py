@@ -1,0 +1,1 @@
+../../../scripts/precompute_signatures.py
