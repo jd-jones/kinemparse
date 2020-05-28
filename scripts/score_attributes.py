@@ -40,7 +40,7 @@ def make_signatures(unique_assemblies):
 
 
 def score(feature_seq, signatures):
-    score_seq = signatures @ feature_seq
+    score_seq = torch.nn.functional.softmax(signatures @ feature_seq, dim=0).log()
     return score_seq
 
 

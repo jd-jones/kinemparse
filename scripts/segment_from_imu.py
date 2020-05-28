@@ -61,6 +61,7 @@ def segmentFromLabels(label_seq, num_vals=2, min_seg_len=10):
     seg_label_seq = utils.makeSegmentLabels(reduced_label_seq)
     return seg_label_seq
 
+
 def plot_labels(
         gt_seg_label_seq, pred_seg_label_seq, imu_timestamp_seq, keyframe_timestamp_seq,
         fn=None):

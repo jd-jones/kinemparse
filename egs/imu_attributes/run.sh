@@ -13,7 +13,7 @@ attr_smoothed_dir="$output_dir/predict-attributes_sm-crf"
 seg_dir="$output_dir/segments"
 state_scores_dir="$output_dir/predict-assemblies_attr"
 # state_fused_dir="$output_dir/predict-assemblies_rgb-only"
-state_fused_dir="$output_dir/predict-assemblies_fused"
+state_fused_dir="$output_dir/predict-assemblies_fused_standardized"
 keyframe_decode_scores_dir="$output_dir/register-keyframes"
 
 # EXTERNAL DATA DIRS
@@ -121,7 +121,8 @@ if [ "$start_at" -le "6" ]; then
         --data_dir "${data_dir}/data" \
         --cv_data_dir "${keyframe_decode_scores_dir}/data" \
         --results_file "${state_fused_dir}/results.csv" \
-        --score_dirs "[${state_scores_dir}/data, ${keyframe_decode_scores_dir}/data]"
+        --score_dirs "[${state_scores_dir}/data, ${keyframe_decode_scores_dir}/data]" \
+        --plot_predictions "False"
         # --score_dirs "[${keyframe_decode_scores_dir}/data]"
     python analysis.py \
         --out_dir "${state_fused_dir}/system-performance" \
