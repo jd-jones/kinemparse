@@ -1,6 +1,7 @@
 import argparse
 import os
 import inspect
+import pdb
 
 import yaml
 import joblib
@@ -9,10 +10,11 @@ import numpy as np
 from mathtools import utils
 
 
-def main(out_dir=None, data_dir=None):
-
+def main(out_dir=None, data_dir=None, detections_dir=None, modality=None):
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
+    if detections_dir is not None:
+        detections_dir = os.path.expanduser(detections_dir)
 
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
@@ -73,7 +75,21 @@ def main(out_dir=None, data_dir=None):
         for trial_id in trial_ids[test_idxs]:
             # true_state_seqs = loadVariable('trial-{trial_id}_true-state-seq-orig', trial_ids)
             saved_predictions = loadVariable(f'trial-{trial_id}_pred-state-seq')
+            # shape: (num_states, num_samples)
             data_scores = loadVariable(f'trial-{trial_id}_data-scores')
+
+            if detections_dir is not None:
+                fn = f'trial-{trial_id}_class-label-frame-seq.pkl'
+                pixel_label_frame_seq = joblib.load(os.path.join(detections_dir, fn))
+                for i, label_frame in enumerate(pixel_label_frame_seq):
+                    # px_is_unoccluded = (label_frame == 0) + (label_frame == 3)
+                    px_is_blocks = label_frame == 3
+                    denominator = px_is_blocks.sum()
+                    if modality == 'RGB':
+                        denominator *= 3
+                    else:
+                        raise NotImplementedError(f"Modality {modality} not recognized")
+                    data_scores[:, i] /= denominator
 
             # Validate the loaded data
             pred_assembly_idxs = data_scores.argmax(axis=0)

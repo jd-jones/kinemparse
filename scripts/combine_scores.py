@@ -118,6 +118,7 @@ def prune(scores, k=1):
 
 def main(
         out_dir=None, data_dir=None, cv_data_dir=None, score_dirs=[],
+        prune_imu=None, standardize=None,
         plot_predictions=None, results_file=None, sweep_param_name=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}):
 
@@ -246,12 +247,14 @@ def main(
         # TEST PHASE
         accuracies = []
         for feature_seq, gt_assembly_seq, trial_id in zip(*getSplit(test_idxs)):
-            feature_seq = np.log(scipy.special.softmax(
-                (feature_seq - train_mean) / train_std,
-                axis=1
-            ))
+            if standardize:
+                feature_seq = np.log(scipy.special.softmax(
+                    (feature_seq - train_mean) / train_std,
+                    axis=1
+                ))
 
-            feature_seq[0] = prune(feature_seq[0], k=3)
+            if prune_imu:
+                feature_seq[0] = prune(feature_seq[0], k=3)
 
             gt_seq = np.array(list(
                 labels.gen_eq_classes(gt_assembly_seq, test_assemblies, equivalent=None)

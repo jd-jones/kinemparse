@@ -13,12 +13,13 @@ attr_smoothed_dir="$output_dir/predict-attributes_sm-crf"
 seg_dir="$output_dir/segments"
 state_scores_dir="$output_dir/predict-assemblies_attr"
 # state_fused_dir="$output_dir/predict-assemblies_rgb-only"
-state_fused_dir="$output_dir/predict-assemblies_fused_standardized"
+state_fused_dir="$output_dir/predict-assemblies_fused"
 keyframe_decode_scores_dir="$output_dir/register-keyframes"
 
 # EXTERNAL DATA DIRS
 blocks_dir="$HOME/repo/blocks/data/output/blocks_child_keyframes-only_2020-01-26"
 rgb_state_scores_dir="$blocks_dir/register_rgb"
+rgb_detections_dir="$blocks_dir/detections"
 
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
@@ -30,8 +31,10 @@ cd $scripts_dir
 if [ "$start_at" -le "0" ]; then
     echo "STAGE 0: Convert decode_keyframes output"
     python restructure_output_decode_keyframes.py \
-        --data_dir "${rgb_state_scores_dir}/data/" \
-        --out_dir $keyframe_decode_scores_dir
+        --data_dir "${rgb_state_scores_dir}/data" \
+        --out_dir $keyframe_decode_scores_dir \
+        --detections_dir "${rgb_detections_dir}/data" \
+        --modality "RGB"
 fi
 if [ "$stop_after" -eq "0" ]; then
     exit 1
@@ -122,7 +125,9 @@ if [ "$start_at" -le "6" ]; then
         --cv_data_dir "${keyframe_decode_scores_dir}/data" \
         --results_file "${state_fused_dir}/results.csv" \
         --score_dirs "[${state_scores_dir}/data, ${keyframe_decode_scores_dir}/data]" \
-        --plot_predictions "False"
+        --prune_imu "False" \
+        --standardize "False" \
+        --plot_predictions "True"
         # --score_dirs "[${keyframe_decode_scores_dir}/data]"
     python analysis.py \
         --out_dir "${state_fused_dir}/system-performance" \
