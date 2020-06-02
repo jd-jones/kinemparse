@@ -12,14 +12,7 @@ attr_scores_dir="$output_dir/predict-attributes_tcn"
 attr_smoothed_dir="$output_dir/predict-attributes_sm-crf"
 seg_dir="$output_dir/segments"
 state_scores_dir="$output_dir/predict-assemblies_attr"
-# state_fused_dir="$output_dir/predict-assemblies_rgb-only"
-state_fused_dir="$output_dir/predict-assemblies_fused"
 keyframe_decode_scores_dir="$output_dir/register-keyframes"
-
-# EXTERNAL DATA DIRS
-blocks_dir="$HOME/repo/blocks/data/output/blocks_child_keyframes-only_2020-01-26"
-rgb_state_scores_dir="$blocks_dir/register_rgb"
-rgb_detections_dir="$blocks_dir/detections"
 
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
@@ -27,32 +20,22 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 cd $scripts_dir
 
+STAGE=0
 
-if [ "$start_at" -le "0" ]; then
-    echo "STAGE 0: Convert decode_keyframes output"
-    python restructure_output_decode_keyframes.py \
-        --data_dir "${rgb_state_scores_dir}/data" \
-        --out_dir $keyframe_decode_scores_dir \
-        --detections_dir "${rgb_detections_dir}/data" \
-        --modality "RGB"
-fi
-if [ "$stop_after" -eq "0" ]; then
-    exit 1
-fi
-
-if [ "$start_at" -le "1" ]; then
+if [ "$start_at" -le $STAGE ]; then
     echo "STAGE 1: Make data"
     python make_attr_data_imu.py \
         --config_file "${config_dir}/make_attr_data_imu.yaml" \
         --out_dir $data_dir
 fi
-if [ "$stop_after" -eq "1" ]; then
+if [ "$stop_after" -eq $STAGE ]; then
     exit 1
 fi
+((++STAGE))
 
 
-if [ "$start_at" -le "2" ]; then
-    echo "STAGE 2: Predict attributes"
+if [ "$start_at" -le $STAGE ]; then
+    echo "STAGE ${STAGE}: Predict attributes"
     python predict_from_imu.py \
         --config_file "${config_dir}/predict_from_imu.yaml" \
         --out_dir "${attr_scores_dir}" \
@@ -62,12 +45,13 @@ if [ "$start_at" -le "2" ]; then
         --out_dir "${attr_scores_dir}/system-performance" \
         --results_file "${attr_scores_dir}/results.csv"
 fi
-if [ "$stop_after" -eq "2" ]; then
+if [ "$stop_after" -eq $STAGE ]; then
     exit 1
 fi
+((++STAGE))
 
-if [ "$start_at" -le "3" ]; then
-    echo "STAGE 3: Smooth attribute predictions"
+if [ "$start_at" -le $STAGE ]; then
+    echo "STAGE ${STAGE}: Smooth attribute predictions"
     python predict_from_imu_lctm.py \
         --config_file "${config_dir}/predict_from_imu_lctm.yaml" \
         --out_dir "${attr_smoothed_dir}" \
@@ -78,12 +62,13 @@ if [ "$start_at" -le "3" ]; then
         --out_dir "${attr_smoothed_dir}/system-performance" \
         --results_file "${attr_smoothed_dir}/results.csv"
 fi
-if [ "$stop_after" -eq "3" ]; then
+if [ "$stop_after" -eq $STAGE ]; then
     exit 1
 fi
+((++STAGE))
 
-if [ "$start_at" -le "4" ]; then
-    echo "STAGE 4: Segment signal"
+if [ "$start_at" -le $STAGE ]; then
+    echo "STAGE ${STAGE}: Segment signal"
     python segment_from_imu.py \
         --config_file "${config_dir}/segment_from_imu.yaml" \
         --out_dir "${seg_dir}" \
@@ -95,12 +80,13 @@ if [ "$start_at" -le "4" ]; then
         --out_dir "${seg_dir}/system-performance" \
         --results_file "${seg_dir}/results.csv"
 fi
-if [ "$stop_after" -eq "4" ]; then
+if [ "$stop_after" -eq $STAGE ]; then
     exit 1
 fi
+((++STAGE))
 
-if [ "$start_at" -le "5" ]; then
-    echo "STAGE 5: Predict assemblies"
+if [ "$start_at" -le $STAGE ]; then
+    echo "STAGE ${STAGE}: Predict assemblies"
     python score_attributes.py \
         --config_file "${config_dir}/score_attributes.yaml" \
         --out_dir "${state_scores_dir}" \
@@ -112,27 +98,7 @@ if [ "$start_at" -le "5" ]; then
         --out_dir "${state_scores_dir}/system-performance" \
         --results_file "${state_scores_dir}/results.csv"
 fi
-if [ "$stop_after" -eq "5" ]; then
+if [ "$stop_after" -eq $STAGE ]; then
     exit 1
 fi
-
-if [ "$start_at" -le "6" ]; then
-    echo "STAGE 6: Fuse assembly predictions"
-    python combine_scores.py \
-        --config_file "${config_dir}/combine_scores.yaml" \
-        --out_dir "${state_fused_dir}" \
-        --data_dir "${data_dir}/data" \
-        --cv_data_dir "${keyframe_decode_scores_dir}/data" \
-        --results_file "${state_fused_dir}/results.csv" \
-        --score_dirs "[${state_scores_dir}/data, ${keyframe_decode_scores_dir}/data]" \
-        --prune_imu "False" \
-        --standardize "False" \
-        --plot_predictions "True"
-        # --score_dirs "[${keyframe_decode_scores_dir}/data]"
-    python analysis.py \
-        --out_dir "${state_fused_dir}/system-performance" \
-        --results_file "${state_fused_dir}/results.csv"
-fi
-if [ "$stop_after" -eq "6" ]; then
-    exit 1
-fi
+((++STAGE))

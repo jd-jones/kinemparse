@@ -118,7 +118,7 @@ def prune(scores, k=1):
 
 def main(
         out_dir=None, data_dir=None, cv_data_dir=None, score_dirs=[],
-        prune_imu=None, standardize=None,
+        fusion_method='sum', prune_imu=None, standardize=None, decode=None,
         plot_predictions=None, results_file=None, sweep_param_name=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}):
 
@@ -210,9 +210,6 @@ def main(
             logger.info(f"  Skipping fold: missing test data")
             continue
 
-        # saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
-        # saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
-
         # TRAIN PHASE
         if cv_data_dir is None:
             train_idxs = np.array([trial_ids.index(i) for i in train_ids])
@@ -220,10 +217,14 @@ def main(
             train_assemblies = []
             for seq in train_assembly_seqs:
                 list(labels.gen_eq_classes(seq, train_assemblies, equivalent=None))
+            model = None
         else:
-            fn = os.path.join(cv_data_dir, f'cvfold={cv_index}_train-assemblies.pkl')
-            train_assemblies = joblib.load(fn)
+            fn = f'cvfold={cv_index}_train-assemblies.pkl'
+            train_assemblies = joblib.load(os.path.join(cv_data_dir, fn))
             train_idxs = [i for i in range(len(trial_ids)) if i not in test_idxs]
+
+            fn = f'cvfold={cv_index}_model.pkl'
+            model = joblib.load(os.path.join(cv_data_dir, fn))
 
         train_features, _, _ = getSplit(train_idxs)
         train_scores = np.hstack(tuple(x.reshape(x.shape[0], -1) for x in train_features))
@@ -277,8 +278,22 @@ def main(
             gt_scores.append(feature_seq[:, score_idxs, sample_idxs])
             all_scores.append(feature_seq.reshape(feature_seq.shape[0], -1))
 
-            score_seq = feature_seq.sum(axis=0)
-            pred_seq = score_seq.argmax(axis=0)
+            if fusion_method == 'sum':
+                score_seq = feature_seq.sum(axis=0)
+            elif fusion_method == 'rgb_only':
+                score_seq = feature_seq[1] * 2
+            elif fusion_method == 'imu_only':
+                score_seq = feature_seq[0]
+            else:
+                raise NotImplementedError()
+
+            if model is None:
+                pred_seq = score_seq.argmax(axis=0)
+            else:
+                dummy_samples = np.arange(score_seq.shape[1])
+                pred_seq, _, _, _ = model.viterbi(
+                    dummy_samples, log_likelihoods=score_seq, ml_decode=(not decode)
+                )
 
             pred_assemblies = [train_assemblies[i] for i in pred_seq]
             gt_assemblies = [test_assemblies[i] for i in gt_seq]
@@ -323,7 +338,7 @@ def main(
                 f"{num_correctable_errors} correctable from IMU ({prop_correctable * 100:.1f}%)"
             )
 
-            saveVariable(score_seq, f'trial={trial_id}_attr-score-seq')
+            saveVariable(score_seq, f'trial={trial_id}_data-scores')
 
             if plot_predictions:
                 io_figs_dir = os.path.join(fig_dir, 'system-io')

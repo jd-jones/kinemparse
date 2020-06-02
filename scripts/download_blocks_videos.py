@@ -9,21 +9,21 @@ from blocks.estimation import rawdata
 from mathtools import utils
 
 
-def fixStartEndIndices(assembly_seq, rgb_frame_timestamp_seq, selected_frame_indices):
+def fixStartEndIndices(action_seq, rgb_frame_timestamp_seq, selected_frame_indices):
     new_times = rgb_frame_timestamp_seq[selected_frame_indices]
-    start_times = rgb_frame_timestamp_seq[assembly_seq['start']]
-    end_times = rgb_frame_timestamp_seq[assembly_seq['end']]
+    start_times = rgb_frame_timestamp_seq[action_seq['start']]
+    end_times = rgb_frame_timestamp_seq[action_seq['end']]
 
-    assembly_seq['start'] = utils.nearestIndices(new_times, start_times)
-    assembly_seq['end'] = utils.nearestIndices(new_times, end_times)
+    action_seq['start'] = utils.nearestIndices(new_times, start_times)
+    action_seq['end'] = utils.nearestIndices(new_times, end_times)
 
-    return assembly_seq
+    return action_seq
 
 
 def main(
         out_dir=None, corpus_name=None, default_annotator=None,
         start_from=None, stop_at=None,
-        start_video_from_first_touch=None,
+        start_video_from_first_touch=None, load_video_frames=True,
         use_annotated_keyframes=None, subsample_period=None):
 
     out_dir = os.path.expanduser(out_dir)
@@ -85,32 +85,32 @@ def main(
 
         action_seq, _ = corpus.readLabels(trial_id, default_annotator)
 
-        rgb_frame_seq = rawdata.loadRgbFrameSeq(
-            rgb_frame_fn_seq, rgb_frame_timestamp_seq,
-            stack_frames=True
-        )
-        depth_frame_seq = rawdata.loadDepthFrameSeq(
-            depth_frame_fn_seq, depth_frame_timestamp_seq,
-            stack_frames=True
-        )
-
         action_seq = fixStartEndIndices(
             action_seq, rgb_frame_timestamp_seq, selected_frame_indices
         )
-        rgb_frame_seq = rgb_frame_seq[selected_frame_indices]
         rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
-        depth_frame_seq = depth_frame_seq[selected_frame_indices]
         depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
 
         logger.info(f"  Saving output...")
         trial_str = f"trial={trial_id}"
         saveToWorkingDir(action_seq, f'{trial_str}_action-seq')
-        saveToWorkingDir(rgb_frame_fn_seq, f'{trial_str}_rgb-frame-fn-seq')
-        saveToWorkingDir(rgb_frame_timestamp_seq, f'{trial_str}_rgb-frame-timestamp-seq')
-        saveToWorkingDir(rgb_frame_seq, f'{trial_str}_rgb-frame-seq')
-        saveToWorkingDir(depth_frame_fn_seq, f'{trial_str}_depth-frame-fn-seq')
-        saveToWorkingDir(depth_frame_timestamp_seq, f'{trial_str}_depth-frame-timestamp-seq')
-        saveToWorkingDir(depth_frame_seq, f'{trial_str}_depth-frame-seq')
+        # saveToWorkingDir(rgb_frame_fn_seq, f'{trial_str}_rgb-frame-fn-seq')
+        # saveToWorkingDir(rgb_frame_timestamp_seq, f'{trial_str}_rgb-frame-timestamp-seq')
+        # saveToWorkingDir(depth_frame_fn_seq, f'{trial_str}_depth-frame-fn-seq')
+        # saveToWorkingDir(depth_frame_timestamp_seq, f'{trial_str}_depth-frame-timestamp-seq')
+
+        if load_video_frames:
+            logger.info(f"  Loading and saving video data...")
+            rgb_frame_seq = rawdata.loadRgbFrameSeq(
+                rgb_frame_fn_seq, rgb_frame_timestamp_seq,
+                stack_frames=True
+            )[selected_frame_indices]
+            depth_frame_seq = rawdata.loadDepthFrameSeq(
+                depth_frame_fn_seq, depth_frame_timestamp_seq,
+                stack_frames=True
+            )[selected_frame_indices]
+            saveToWorkingDir(rgb_frame_seq, f'{trial_str}_rgb-frame-seq')
+            saveToWorkingDir(depth_frame_seq, f'{trial_str}_depth-frame-seq')
 
 
 if __name__ == "__main__":

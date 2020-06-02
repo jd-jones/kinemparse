@@ -15,7 +15,7 @@ features_dir="$output_dir/features_alt"
 
 cd $scripts_dir
 
-if [ "$start_at" -le "1" ]; then
+if [ "$start_at" -le "$STAGE" ]; then
     echo "STAGE 1: Downloading videos"
     python download_blocks_videos.py \
         --config_file "$config_dir/download_blocks_videos.yaml" \
@@ -25,7 +25,7 @@ if [ "$stop_after" -eq "1" ]; then
     exit 1
 fi
 
-if [ "$start_at" -le "2" ]; then
+if [ "$start_at" -le "$STAGE" ]; then
     echo "STAGE 2: Preprocessing videos"
     python preprocess_blocks_videos.py \
         --config_file "$config_dir/preprocess_blocks_videos.yaml" \
@@ -37,7 +37,7 @@ if [ "$stop_after" -eq "2" ]; then
     exit 1
 fi
 
-if [ "$start_at" -le "3" ]; then
+if [ "$start_at" -le "$STAGE" ]; then
     echo "STAGE 3: Making attribute data"
     python make_attr_data_image.py \
         --config_file "$config_dir/make_attr_data_image.yaml" \

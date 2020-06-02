@@ -1,7 +1,6 @@
 import argparse
 import os
 import inspect
-import pdb
 
 import yaml
 import joblib
@@ -71,6 +70,7 @@ def main(out_dir=None, data_dir=None, detections_dir=None, modality=None):
         train_assemblies = hmm.states
 
         saveVariable(train_assemblies, f"cvfold={cv_index}_train-assemblies")
+        saveVariable(hmm, f"cvfold={cv_index}_model")
 
         for trial_id in trial_ids[test_idxs]:
             # true_state_seqs = loadVariable('trial-{trial_id}_true-state-seq-orig', trial_ids)

@@ -97,13 +97,13 @@ def main(
     foreground_mask_seqs = []
     for seq_idx, trial_id in enumerate(trial_ids):
         try:
-            trial_str = f"trial-{trial_id}"
-
+            trial_str = f"trial={trial_id}"
             rgb_frame_seq = loadFromDataDir(f'{trial_str}_rgb-frame-seq')
             depth_frame_seq = loadFromDataDir(f'{trial_str}_depth-frame-seq')
             rgb_timestamp_seq = loadFromDataDir(f'{trial_str}_rgb-frame-timestamp-seq')
             action_seq = loadFromDataDir(f'{trial_str}_action-seq')
 
+            trial_str = f"trial-{trial_id}"
             foreground_mask_seq = loadFromPreprocessDir(
                 f'{trial_str}_foreground-mask-seq_no-ref-model'
             )
@@ -119,13 +119,16 @@ def main(
             label_frame_seq = loadFromDetectionsDir(f'{trial_str}_class-label-frame-seq')
 
             assembly_seq = labels.parseLabelSeq(action_seq, timestamps=rgb_timestamp_seq)
+            if len(assembly_seq) < 2:
+                logger.info(f"Skipping trial {trial_id} --- error parsing state seq")
+                continue
             assembly_seq[-1].end_idx = len(rgb_frame_seq) - 1
         except FileNotFoundError as e:
             logger.warning(e)
             logger.info(f"Skipping trial {trial_id} --- no data in {scores_run_name}")
             continue
 
-        task_id = corpus.getTaskIndex(trial_id)
+        task_id = None  # corpus.getTaskIndex(trial_id) (FIXME: getTaskIndex is broken)
         assembly_seqs.append(assembly_seq)
 
         if keyframes_dir is not None:
@@ -212,9 +215,13 @@ def main(
             foreground_mask_seq = foreground_mask_seqs[test_index]
 
             if data_scores_dir is not None:
-                data_scores = joblib.load(
-                    os.path.join(data_scores_dir, f"trial-{trial_id}_data-scores.pkl")
-                )
+                try:
+                    data_scores = joblib.load(
+                        os.path.join(data_scores_dir, f"trial={trial_id}_data-scores.pkl")
+                    )
+                except FileNotFoundError:
+                    logger.info("  Skipping trial {trial_id} --- scores file not found")
+                    continue
             else:
                 data_scores = None
 
