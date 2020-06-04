@@ -5,11 +5,12 @@ import inspect
 import yaml
 import joblib
 import numpy as np
+import scipy
 
 from mathtools import utils
 
 
-def main(out_dir=None, data_dir=None, detections_dir=None, modality=None):
+def main(out_dir=None, data_dir=None, detections_dir=None, modality=None, normalization=None):
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
     if detections_dir is not None:
@@ -83,13 +84,24 @@ def main(out_dir=None, data_dir=None, detections_dir=None, modality=None):
                 pixel_label_frame_seq = joblib.load(os.path.join(detections_dir, fn))
                 for i, label_frame in enumerate(pixel_label_frame_seq):
                     # px_is_unoccluded = (label_frame == 0) + (label_frame == 3)
-                    px_is_blocks = label_frame == 3
-                    denominator = px_is_blocks.sum()
-                    if modality == 'RGB':
-                        denominator *= 3
+                    if normalization is None:
+                        pass
+                    if normalization == 'per-pixel':
+                        px_is_blocks = label_frame == 3
+                        denominator = px_is_blocks.sum()
+                        if modality == 'RGB':
+                            denominator *= 3
+                        else:
+                            raise NotImplementedError(f"Modality {modality} not recognized")
+                        data_scores[:, i] /= denominator
+                    elif normalization == 'marginal':
+                        # This scalar value is broadcast to a uniform (log) prior
+                        log_prior = -np.log(data_scores.shape[0])
+                        joint_probs = data_scores + log_prior
+                        data_marginals = scipy.special.logsumexp(joint_probs, axis=0)
+                        data_scores = joint_probs - data_marginals
                     else:
-                        raise NotImplementedError(f"Modality {modality} not recognized")
-                    data_scores[:, i] /= denominator
+                        raise NotImplementedError()
 
             # Validate the loaded data
             pred_assembly_idxs = data_scores.argmax(axis=0)

@@ -1,17 +1,56 @@
 import argparse
 import os
 import inspect
+import collections
 
 import yaml
 import numpy as np
 import joblib
 from matplotlib import pyplot as plt
 import graphviz as gv
-import scipy
+# import scipy
+import torch
+import pandas as pd
 
-from mathtools import utils, metrics
+from mathtools import utils, metrics, torchutils
+from seqtools import torchutils as sequtils
 from blocks.core import labels
 from blocks.analysis import assemblystats
+
+
+class FusionClassifier(torch.nn.Module):
+    def __init__(self, num_sources=None):
+        super().__init__()
+
+        self.num_sources = num_sources
+
+        self.linear = torch.nn.Linear(self.num_sources, 1)
+
+        logger.info(
+            f'Initialized fusion classifier. '
+            f'Sources: {self.num_sources}'
+        )
+
+    def forward(self, input_seq):
+        """
+        Parameters
+        ----------
+        input_seq : torch.tensor of float, shape (batch, num_sources, num_classes, num_samples)
+
+        Returns
+        -------
+        output_seq : torch.tensor of float, shape ()
+        """
+        output_seq = self.linear(input_seq.transpose(1, 3)).squeeze(dim=-1)
+        return output_seq
+
+    def predict(self, outputs):
+        __, preds = torch.max(outputs, -1)
+        return preds
+
+
+class FusionCRF(FusionClassifier, sequtils.LinearChainScorer):
+    pass
 
 
 def drawPaths(paths, fig_fn, base_path, state_img_dir, path_scores=None, img_ext='png'):
@@ -118,8 +157,10 @@ def prune(scores, k=1):
 
 def main(
         out_dir=None, data_dir=None, cv_data_dir=None, score_dirs=[],
+        metadata_file=None,
         fusion_method='sum', prune_imu=None, standardize=None, decode=None,
         plot_predictions=None, results_file=None, sweep_param_name=None,
+        gpu_dev_id=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}):
 
     data_dir = os.path.expanduser(data_dir)
@@ -127,6 +168,10 @@ def main(
     score_dirs = tuple(map(os.path.expanduser, score_dirs))
     if cv_data_dir is not None:
         cv_data_dir = os.path.expanduser(cv_data_dir)
+
+    if metadata_file is not None:
+        metadata_file = os.path.expanduser(metadata_file)
+        metadata = pd.read_csv(metadata_file, index_col=0)
 
     if results_file is None:
         results_file = os.path.join(out_dir, f'results.csv')
@@ -150,6 +195,8 @@ def main(
             return joblib.load(fn)
         return tuple(map(loadOne, seq_ids))
 
+    device = torchutils.selectDevice(gpu_dev_id)
+
     # Load data
     dir_trial_ids = tuple(set(utils.getUniqueIds(d, prefix='trial=')) for d in score_dirs)
     dir_trial_ids += (set(utils.getUniqueIds(data_dir, prefix='trial=')),)
@@ -167,6 +214,10 @@ def main(
     idxs, feature_seqs = tuple(zip(*ret))
     trial_ids = trial_ids[list(idxs)]
     assembly_seqs = tuple(assembly_seqs[i] for i in idxs)
+
+    SMALL_NUMBER = -1e9
+    for feat in feature_seqs:
+        feat[np.isinf(feat)] = SMALL_NUMBER
 
     # Define cross-validation folds
     if cv_data_dir is None:
@@ -226,11 +277,48 @@ def main(
             fn = f'cvfold={cv_index}_model.pkl'
             model = joblib.load(os.path.join(cv_data_dir, fn))
 
-        train_features, _, _ = getSplit(train_idxs)
-        train_scores = np.hstack(tuple(x.reshape(x.shape[0], -1) for x in train_features))
-        train_scores = train_scores[~np.isinf(train_scores)]
-        train_mean = train_scores.mean(axis=-1)
-        train_std = train_scores.std(axis=-1)
+        train_features, train_assembly_seqs, train_ids = getSplit(train_idxs)
+        train_labels = tuple(
+            np.array(
+                list(labels.gen_eq_classes(assembly_seq, train_assemblies, equivalent=None)),
+            )
+            for assembly_seq in train_assembly_seqs
+        )
+
+        train_set = torchutils.SequenceDataset(
+            train_features, train_labels, seq_ids=train_ids,
+            device=device
+        )
+        train_loader = torch.utils.data.DataLoader(
+            train_set, batch_size=1, shuffle=True
+        )
+
+        model = FusionClassifier(num_sources=train_features[0].shape[0])
+
+        train_epoch_log = collections.defaultdict(list)
+        # val_epoch_log = collections.defaultdict(list)
+        metric_dict = {
+            'Avg Loss': metrics.AverageLoss(),
+            'Accuracy': metrics.Accuracy()
+        }
+
+        criterion = torch.nn.CrossEntropyLoss()
+        optimizer_ft = torch.optim.Adam(
+            model.parameters(), lr=1e-3,
+            betas=(0.9, 0.999), eps=1e-08,
+            weight_decay=0, amsgrad=False
+        )
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=1.00)
+
+        model, last_model_wts = torchutils.trainModel(
+            model, criterion, optimizer_ft, lr_scheduler,
+            train_loader,  # val_loader,
+            device=device,
+            metrics=metric_dict,
+            train_epoch_log=train_epoch_log,
+            # val_epoch_log=val_epoch_log,
+            **train_params
+        )
 
         test_assemblies = train_assemblies.copy()
         for feature_seq, gt_assembly_seq, trial_id in zip(*getSplit(test_idxs)):
@@ -248,15 +336,6 @@ def main(
         # TEST PHASE
         accuracies = []
         for feature_seq, gt_assembly_seq, trial_id in zip(*getSplit(test_idxs)):
-            if standardize:
-                feature_seq = np.log(scipy.special.softmax(
-                    (feature_seq - train_mean) / train_std,
-                    axis=1
-                ))
-
-            if prune_imu:
-                feature_seq[0] = prune(feature_seq[0], k=3)
-
             gt_seq = np.array(list(
                 labels.gen_eq_classes(gt_assembly_seq, test_assemblies, equivalent=None)
             ))
@@ -281,14 +360,21 @@ def main(
             if fusion_method == 'sum':
                 score_seq = feature_seq.sum(axis=0)
             elif fusion_method == 'rgb_only':
-                score_seq = feature_seq[1] * 2
+                score_seq = feature_seq[1]
             elif fusion_method == 'imu_only':
                 score_seq = feature_seq[0]
             else:
                 raise NotImplementedError()
 
+            # if not decode:
+            #     model = None
+
             if model is None:
                 pred_seq = score_seq.argmax(axis=0)
+            elif isinstance(model, torch.nn.Module):
+                inputs = torch.tensor(feature_seq[None, ...], dtype=torch.float, device=device)
+                outputs = model.forward(inputs)
+                pred_seq = model.predict(outputs)[0].cpu().numpy()
             else:
                 dummy_samples = np.arange(score_seq.shape[1])
                 pred_seq, _, _, _ = model.viterbi(
@@ -297,7 +383,13 @@ def main(
 
             pred_assemblies = [train_assemblies[i] for i in pred_seq]
             gt_assemblies = [test_assemblies[i] for i in gt_seq]
-            acc = metrics.accuracy_upto(pred_assemblies, gt_assemblies)
+
+            task = int(metadata.iloc[trial_id]['task id'])
+            goal = labels.constructGoalState(task)
+
+            def equivalence(pred, true):
+                return (pred <= goal) == (true <= goal)
+            acc = metrics.accuracy_upto(pred_assemblies, gt_assemblies, equivalence=None)
             accuracies.append(acc)
 
             rgb_pred_seq = feature_seq[1].argmax(axis=0)
@@ -339,6 +431,13 @@ def main(
             )
 
             saveVariable(score_seq, f'trial={trial_id}_data-scores')
+
+            torchutils.plotEpochLog(
+                train_epoch_log,
+                subfig_size=(10, 2.5),
+                title='Training performance',
+                fn=os.path.join(fig_dir, f'cvfold={cv_index}_train-plot.png')
+            )
 
             if plot_predictions:
                 io_figs_dir = os.path.join(fig_dir, 'system-io')
