@@ -1,7 +1,7 @@
 import argparse
 import os
 import inspect
-import collections
+# import collections
 
 import yaml
 import numpy as np
@@ -10,7 +10,6 @@ from matplotlib import pyplot as plt
 import graphviz as gv
 # import scipy
 import torch
-import pandas as pd
 
 from mathtools import utils, metrics, torchutils
 from seqtools import torchutils as sequtils
@@ -157,7 +156,6 @@ def prune(scores, k=1):
 
 def main(
         out_dir=None, data_dir=None, cv_data_dir=None, score_dirs=[],
-        metadata_file=None,
         fusion_method='sum', prune_imu=None, standardize=None, decode=None,
         plot_predictions=None, results_file=None, sweep_param_name=None,
         gpu_dev_id=None,
@@ -168,10 +166,6 @@ def main(
     score_dirs = tuple(map(os.path.expanduser, score_dirs))
     if cv_data_dir is not None:
         cv_data_dir = os.path.expanduser(cv_data_dir)
-
-    if metadata_file is not None:
-        metadata_file = os.path.expanduser(metadata_file)
-        metadata = pd.read_csv(metadata_file, index_col=0)
 
     if results_file is None:
         results_file = os.path.join(out_dir, f'results.csv')
@@ -215,9 +209,9 @@ def main(
     trial_ids = trial_ids[list(idxs)]
     assembly_seqs = tuple(assembly_seqs[i] for i in idxs)
 
-    SMALL_NUMBER = -1e9
-    for feat in feature_seqs:
-        feat[np.isinf(feat)] = SMALL_NUMBER
+    # SMALL_NUMBER = -1e9
+    # for feat in feature_seqs:
+    #     feat[np.isinf(feat)] = SMALL_NUMBER
 
     # Define cross-validation folds
     if cv_data_dir is None:
@@ -278,6 +272,7 @@ def main(
             model = joblib.load(os.path.join(cv_data_dir, fn))
 
         train_features, train_assembly_seqs, train_ids = getSplit(train_idxs)
+        """
         train_labels = tuple(
             np.array(
                 list(labels.gen_eq_classes(assembly_seq, train_assemblies, equivalent=None)),
@@ -292,8 +287,6 @@ def main(
         train_loader = torch.utils.data.DataLoader(
             train_set, batch_size=1, shuffle=True
         )
-
-        model = FusionClassifier(num_sources=train_features[0].shape[0])
 
         train_epoch_log = collections.defaultdict(list)
         # val_epoch_log = collections.defaultdict(list)
@@ -310,6 +303,7 @@ def main(
         )
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=1.00)
 
+        model = FusionClassifier(num_sources=train_features[0].shape[0])
         model, last_model_wts = torchutils.trainModel(
             model, criterion, optimizer_ft, lr_scheduler,
             train_loader,  # val_loader,
@@ -319,6 +313,14 @@ def main(
             # val_epoch_log=val_epoch_log,
             **train_params
         )
+
+        torchutils.plotEpochLog(
+            train_epoch_log,
+            subfig_size=(10, 2.5),
+            title='Training performance',
+            fn=os.path.join(fig_dir, f'cvfold={cv_index}_train-plot.png')
+        )
+        """
 
         test_assemblies = train_assemblies.copy()
         for feature_seq, gt_assembly_seq, trial_id in zip(*getSplit(test_idxs)):
@@ -384,11 +386,6 @@ def main(
             pred_assemblies = [train_assemblies[i] for i in pred_seq]
             gt_assemblies = [test_assemblies[i] for i in gt_seq]
 
-            task = int(metadata.iloc[trial_id]['task id'])
-            goal = labels.constructGoalState(task)
-
-            def equivalence(pred, true):
-                return (pred <= goal) == (true <= goal)
             acc = metrics.accuracy_upto(pred_assemblies, gt_assemblies, equivalence=None)
             accuracies.append(acc)
 
@@ -431,13 +428,8 @@ def main(
             )
 
             saveVariable(score_seq, f'trial={trial_id}_data-scores')
-
-            torchutils.plotEpochLog(
-                train_epoch_log,
-                subfig_size=(10, 2.5),
-                title='Training performance',
-                fn=os.path.join(fig_dir, f'cvfold={cv_index}_train-plot.png')
-            )
+            saveVariable(pred_assemblies, f'trial={trial_id}_pred-assembly-seq')
+            saveVariable(gt_assemblies, f'trial={trial_id}_gt-assembly-seq')
 
             if plot_predictions:
                 io_figs_dir = os.path.join(fig_dir, 'system-io')

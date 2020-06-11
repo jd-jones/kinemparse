@@ -2,14 +2,13 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at=1
-stop_after=1
+start_at=2
+stop_after=2
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 output_dir="$HOME/repo/kinemparse/data/output/fuse-modalities"
 keyframe_decode_scores_dir="$output_dir/register-keyframes_normalization=per-pixel"
-fused_scores_dir="$output_dir/predict-assemblies_per-pixel_learned"
-# decode_dir="$output_dir/decode"
+fused_scores_dir="$output_dir/predict-assemblies_per-pixel_decode"
 
 # IMU DATA DIRS --- READ-ONLY
 imu_dir="$HOME/repo/kinemparse/data/output/predict-joined"
@@ -63,7 +62,6 @@ if [ "$start_at" -le $STAGE ]; then
         --plot_predictions "False" \
         --fusion_method "sum" \
         --decode "True" \
-        --metadata_file "${corpus_dir}/meta-data.csv" \
         --gpu_dev_id "'0'" \
         --train_params "{num_epochs: 15, test_metric: 'Accuracy', seq_as_batch: True}"
     python analysis.py \
@@ -74,3 +72,15 @@ if [ "$stop_after" -eq $STAGE ]; then
     exit 1
 fi
 ((++STAGE))
+
+if [ "$start_at" -le $STAGE ]; then
+    echo "STAGE ${STAGE}: Evaluate model predictions"
+    python eval_preds.py \
+        --out_dir "${fused_scores_dir}/system-eval" \
+        --data_dir "${fused_scores_dir}/data" \
+        --metadata_file "${corpus_dir}/meta-data.csv" \
+        --plot_predictions "True"
+fi
+if [ "$stop_after" -eq $STAGE ]; then
+    exit 1
+fi
