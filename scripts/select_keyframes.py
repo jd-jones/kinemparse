@@ -8,28 +8,9 @@ import yaml
 
 from mathtools import utils
 # FIXME: remove dependency on blocks
-# from blocks.estimation import imageprocessing, videoprocessing, models
 from blocks.estimation import models
-from kinemparse import videoprocessing  # , models
+from kinemparse import videoprocessing
 from visiontools import imageprocessing
-
-
-def monkeyPatchKeyframeModel(keyframe_model):
-    # color_names = ('red', 'blue', 'green', 'yellow')
-    colors = np.array([
-        [1, 0, 0],
-        [0, 0, 1],
-        [0, 1, 0],
-        [1, 0.75, 0]
-    ])
-
-    keyframe_model.is_noise_cluster[[0, 2, 4, 5, 9, 19, 21, 23]] = True
-    keyframe_model.class_histograms[[0, 2, 4, 5, 9, 19, 21, 23], 0] = 1
-    keyframe_model.class_histograms[[0, 2, 4, 5, 9, 19, 21, 23], 1] = 0
-    keyframe_model.is_noise_cluster[8] = False
-    keyframe_model = models.assignModelClusters(keyframe_model, colors=colors)
-
-    return keyframe_model
 
 
 def plotScores(frame_scores, keyframe_idxs, fn):
@@ -74,7 +55,6 @@ def main(
         joblib.dump(var, os.path.join(out_data_dir, f"{var_name}.pkl"))
 
     trial_ids = utils.getUniqueIds(preprocess_dir, prefix='trial-', suffix='.pkl')
-    # keyframe_model = monkeyPatchKeyframeModel(joblib.load(keyframe_model_fn))
     keyframe_model = joblib.load(keyframe_model_fn)
     models.visualizeKeyframeModel(keyframe_model, fn=os.path.join(fig_dir, 'keyframe-model.png'))
 

@@ -7,7 +7,7 @@ stop_after=1
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 output_dir="$HOME/repo/kinemparse/data/output/detect_oov"
-oov_dir="${output_dir}/oov"
+oov_dir="${output_dir}/oov-collapsed"
 
 # READ-ONLY DATA DIRS
 imu_dir="$HOME/repo/kinemparse/data/output/predict-joined"
@@ -31,8 +31,8 @@ if [ "$start_at" -le $STAGE ]; then
         --out_dir "${oov_dir}" \
         --data_dir "${imu_data_dir}/data" \
         --scores_dir "${fused_scores_dir}/data" \
-        --cv_data_dir "${keyframe_decode_scores_dir}/data"
-        # --eq_class "is oov"
+        --cv_data_dir "${keyframe_decode_scores_dir}/data" \
+        --eq_class "is oov"
 fi
 if [ "$stop_after" -eq $STAGE ]; then
     exit 1
