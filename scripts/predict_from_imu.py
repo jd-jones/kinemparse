@@ -1,4 +1,3 @@
-import argparse
 import os
 import collections
 import itertools
@@ -91,14 +90,10 @@ class SegmentalTcnClassifier(TcnClassifier):
 
         self.max_segs = max_segs
         self.pw = pw
-        self.test_mode = False
 
     def predict(self, outputs, return_scores=False):
         if self.binary_multiclass:
             raise NotImplementedError()
-
-        if not self.test_mode:
-            return super().predict(outputs, return_scores=return_scores)
 
         predict_segmental = functools.partial(
             torch_lctm.segmental_inference,
@@ -172,7 +167,7 @@ def joinSeqs(batches):
 
 
 def main(
-        out_dir=None, data_dir=None, model_name=None,
+        out_dir=None, data_dir=None, model_name=None, pretrained_model_dir=None,
         gpu_dev_id=None, batch_size=None, learning_rate=None,
         independent_signals=None, active_only=None,
         model_params={}, cv_params={}, train_params={}, viz_params={},
@@ -234,6 +229,80 @@ def main(
         return split_data
 
     for cv_index, cv_splits in enumerate(cv_folds):
+        if pretrained_model_dir is not None:
+            def loadFromPretrain(fn):
+                return joblib.load(os.path.join(pretrained_model_dir, f"{fn}.pkl"))
+            model = loadFromPretrain(f'cvfold={cv_index}_{model_name}-best')
+            train_ids = loadFromPretrain(f'cvfold={cv_index}_train-ids')
+            val_ids = loadFromPretrain(f'cvfold={cv_index}_val-ids')
+            test_ids = tuple(i for i in trial_ids if i not in (train_ids + val_ids))
+            test_idxs = tuple(trial_ids.tolist().index(i) for i in test_ids)
+            test_data = getSplit(test_idxs)
+
+            if independent_signals:
+                criterion = torch.nn.CrossEntropyLoss()
+                labels_dtype = torch.long
+                test_data = splitSeqs(*test_data, active_only=False)
+            else:
+                # FIXME
+                # criterion = torch.nn.BCEWithLogitsLoss()
+                # labels_dtype = torch.float
+                criterion = torch.nn.CrossEntropyLoss()
+                labels_dtype = torch.long
+
+            test_feats, test_labels, test_ids = test_data
+            test_set = torchutils.SequenceDataset(
+                test_feats, test_labels,
+                device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
+                transpose_data=True
+            )
+            test_loader = torch.utils.data.DataLoader(
+                test_set, batch_size=batch_size, shuffle=False
+            )
+
+            # Test model
+            metric_dict = {
+                'Avg Loss': metrics.AverageLoss(),
+                'Accuracy': metrics.Accuracy(),
+                'Precision': metrics.Precision(),
+                'Recall': metrics.Recall(),
+                'F1': metrics.Fmeasure()
+            }
+            test_io_history = torchutils.predictSamples(
+                model.to(device=device), test_loader,
+                criterion=criterion, device=device,
+                metrics=metric_dict, data_labeled=True, update_model=False,
+                seq_as_batch=train_params['seq_as_batch'],
+                return_io_history=True
+            )
+            if independent_signals:
+                test_io_history = tuple(joinSeqs(test_io_history))
+
+            metric_str = '  '.join(str(m) for m in metric_dict.values())
+            logger.info('[TST]  ' + metric_str)
+
+            d = {k: v.value for k, v in metric_dict.items()}
+            utils.writeResults(results_file, d, sweep_param_name, model_params)
+
+            if plot_predictions:
+                imu.plot_prediction_eg(test_io_history, fig_dir, **viz_params)
+
+            def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
+                if label_mapping is not None:
+                    def dup_score_cols(scores):
+                        num_cols = scores.shape[-1] + len(label_mapping)
+                        col_idxs = torch.arange(num_cols)
+                        for i, j in label_mapping.items():
+                            col_idxs[i] = j
+                        return scores[..., col_idxs]
+                    score_seq = dup_score_cols(score_seq)
+                saveVariable(pred_seq.cpu().numpy(), f'trial={trial_id}_pred-label-seq')
+                saveVariable(score_seq.cpu().numpy(), f'trial={trial_id}_score-seq')
+                saveVariable(label_seq.cpu().numpy(), f'trial={trial_id}_true-label-seq')
+            for io in test_io_history:
+                saveTrialData(*io)
+            continue
+
         train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
 
         if independent_signals:
@@ -324,7 +393,6 @@ def main(
         )
 
         # Test model
-        model.test_mode = True
         metric_dict = {
             'Avg Loss': metrics.AverageLoss(),
             'Accuracy': metrics.Accuracy(),
@@ -414,39 +482,11 @@ def main(
             metric_str = '  '.join(str(m) for m in metric_dict.values())
             logger.info('[TST]  ' + metric_str)
 
-        model.test_mode = False
-
 
 if __name__ == "__main__":
-    # Parse command line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config_file')
-    parser.add_argument('--out_dir')
-    parser.add_argument('--data_dir')
-    parser.add_argument('--model_params')
-    parser.add_argument('--results_file')
-    parser.add_argument('--sweep_param_name')
-
-    args = vars(parser.parse_args())
-    args = {k: yaml.safe_load(v) for k, v in args.items() if v is not None}
-
-    # Load config file and override with any provided command line args
-    config_file_path = args.pop('config_file', None)
-    if config_file_path is None:
-        file_basename = utils.stripExtension(__file__)
-        config_fn = f"{file_basename}.yaml"
-        config_file_path = os.path.join(
-            os.path.expanduser('~'), 'repo', 'kinemparse', 'scripts', config_fn
-        )
-    else:
-        config_fn = os.path.basename(config_file_path)
-    with open(config_file_path, 'rt') as config_file:
-        config = yaml.safe_load(config_file)
-    for k, v in args.items():
-        if isinstance(v, dict) and k in config:
-            config[k].update(v)
-        else:
-            config[k] = v
+    # Parse command-line args and config file
+    cl_args = utils.parse_args(main)
+    config, config_fn = utils.parse_config(cl_args, script_name=__file__)
 
     # Create output directory, instantiate log file and write config options
     out_dir = os.path.expanduser(config['out_dir'])
@@ -455,7 +495,5 @@ if __name__ == "__main__":
     with open(os.path.join(out_dir, config_fn), 'w') as outfile:
         yaml.dump(config, outfile)
     utils.copyFile(__file__, out_dir)
-
-    utils.autoreload_ipython()
 
     main(**config)

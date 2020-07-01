@@ -140,6 +140,8 @@ def main(
     feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
     label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
 
+    # import pdb; pdb.set_trace()
+
     device = torchutils.selectDevice(gpu_dev_id)
 
     # Define cross-validation folds

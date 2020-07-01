@@ -1,5 +1,4 @@
 import os
-import argparse
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -36,6 +35,8 @@ def main(
     keyframe_model_fn = os.path.expanduser(keyframe_model_fn)
     if segments_dir is not None:
         segments_dir = os.path.expanduser(segments_dir)
+
+    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
@@ -117,42 +118,15 @@ def main(
 
 
 if __name__ == '__main__':
-    # Parse command line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config_file')
-    parser.add_argument('--out_dir')
-    parser.add_argument('--data_dir')
-    parser.add_argument('--preprocess_dir')
-    parser.add_argument('--segments_dir')
-    args = vars(parser.parse_args())
-    args = {k: v for k, v in args.items() if v is not None}
-
-    # Load config file and override with any provided command line args
-    config_file_path = args.pop('config_file', None)
-    if config_file_path is None:
-        file_basename = utils.stripExtension(__file__)
-        config_fn = f"{file_basename}.yaml"
-        config_file_path = os.path.expanduser(
-            os.path.join(
-                '~', 'repo', 'blocks', 'blocks', 'estimation', 'scripts', 'config',
-                config_fn
-            )
-        )
-    else:
-        config_fn = os.path.basename(config_file_path)
-    with open(config_file_path, 'rt') as config_file:
-        config = yaml.safe_load(config_file)
-    config.update(args)
+    cl_args = utils.parse_args(main)
+    config, config_fn = utils.parse_config(cl_args, script_name=__file__)
 
     # Create output directory, instantiate log file and write config options
     out_dir = os.path.expanduser(config['out_dir'])
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
     with open(os.path.join(out_dir, config_fn), 'w') as outfile:
         yaml.dump(config, outfile)
     utils.copyFile(__file__, out_dir)
-
-    utils.autoreload_ipython()
 
     main(**config)

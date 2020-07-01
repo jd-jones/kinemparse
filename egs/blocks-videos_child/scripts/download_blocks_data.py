@@ -1,0 +1,1 @@
+../../../scripts/download_blocks_data.py

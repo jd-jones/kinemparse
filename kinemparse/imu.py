@@ -49,8 +49,11 @@ def makeDummyImuSamples(num_samples):
     return dummy
 
 
-def resampleImuSeq(imu_seq, seq_bound):
-    start_time, end_time = seq_bound
+def resampleImuSeq(imu_seq, seq_bounds=None):
+    if seq_bounds is None:
+        raise NotImplementedError()
+
+    start_time, end_time = seq_bounds
     sample_rate = defn.imu_sample_rate
     new_sample_times = utils.computeSampleTimes(sample_rate, start_time, end_time)
     num_new_samples = new_sample_times.shape[0]
@@ -71,6 +74,30 @@ def resampleImuSeq(imu_seq, seq_bound):
         resampled_seq[block_index] = resampled
 
     return resampled_seq
+
+
+def loadImuSampleSeq(corpus, trial_id, sensor_name=None):
+    if sensor_name == 'accel':
+        loadImuSamples = corpus.readAccelSamples
+    elif sensor_name == 'gyro':
+        loadImuSamples = corpus.readGyroSamples
+    else:
+        raise AssertionError()
+
+    metadata = corpus.meta_data[trial_id]
+    name_pairs = (
+        (imu_id, defn.full_names[metadata[imu_id]])
+        for imu_id in defn.imu_ids
+        if metadata[imu_id] not in ('UNUSED', 'MISSING')
+    )
+    id_pairs = ((imu_id, defn.block_ids[name]) for imu_id, name in name_pairs)
+
+    sample_dict = {
+        block_id: loadImuSamples(trial_id, imu_id)
+        for imu_id, block_id in id_pairs
+    }
+
+    return {k: v for k, v in sample_dict.items() if v is not None}
 
 
 # --=( IMU LABELS )=-----------------------------------------------------------

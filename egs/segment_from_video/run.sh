@@ -6,8 +6,8 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/repo/kinemparse/data/output/blocks_child_2020-05-04"
 
-start_at="0"
-stop_after="0"
+start_at="6"
+stop_after="6"
 
 data_dir="$output_dir/raw-data"
 preprocess_dir="$output_dir/preprocess"
@@ -22,13 +22,9 @@ STAGE=0
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Download video data"
-    python download_blocks_data.py \
-        --config_file "$config_dir/download_blocks_data.yaml" \
-        --out_dir "$data_dir" \
-        --metadata_file "~/data/blocks/data/blocks_file_index.xlsx" \
-        --metadata_criteria "{'GroupID': 'Child'}" \
-        --download_gt_keyframes "True" \
-        --modalities "[]"
+    python download_blocks_videos.py \
+        --config_file "$config_dir/download_blocks_videos.yaml" \
+        --out_dir "$data_dir"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -40,14 +36,15 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python preprocess_blocks_videos.py \
         --config_file "$config_dir/preprocess_blocks_videos.yaml" \
         --out_dir "$preprocess_dir" \
-        --data_dir "$data_dir/data"
+        --data_dir "$data_dir/data" \
+        --start_from "50"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
 
-if [ "$start_at" -le "${STAGE}" ]; then
+if [ "$start_at" -le "3" ]; then
     echo "STAGE ${STAGE}: Detect objects"
     python detect_objects.py \
         --config_file "$config_dir/detect_objects.yaml" \
@@ -66,53 +63,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --config_file "${config_dir}/select_keyframes.yaml" \
         --out_dir "${keyframes_dir}" \
         --data_dir "${data_dir}/data" \
-        --preprocess_dir "${preprocess_dir}/data"
-        # --segments_dir "~/repo/kinemparse/data/output/predict-joined/segments/data"
-fi
-if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
-fi
-((++STAGE))
-
-if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Make segment data"
-    python segment_videos.py \
-        --config_file "${config_dir}/segment_videos.yaml" \
-        --out_dir "${output_dir}/segment-data" \
-        --data_dir "$data_dir/data" \
-        --video_seg_scores_dir "${keyframes_dir}/data"
-        # --imu_seg_scores_dir ""
-fi
-if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
-fi
-((++STAGE))
-
-if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Predict segments"
-    python predict_seq_pytorch.py \
-        --config_file "${config_dir}/predict_seq_pytorch.yaml" \
-        --out_dir "${output_dir}/predict-segments" \
-        --data_dir "${output_dir}/segment-data/data"
-    python analysis.py \
-        --out_dir "${output_dir}/predict-segments/system-performance" \
-        --results_file "${output_dir}/predict-segments/results.csv"
-fi
-if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
-fi
-((++STAGE))
-
-if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Smooth segments"
-    python predict_seq_lctm.py \
-        --config_file "${config_dir}/predict_seq_lctm.yaml" \
-        --out_dir "${output_dir}/smooth-segments" \
-        --data_dir "${output_dir}/segment-data/data" \
-        --scores_dir "${output_dir}/predict-segments/data"
-    python analysis.py \
-        --out_dir "${output_dir}/smooth-segments/system-performance" \
-        --results_file "${output_dir}/smooth-segments/results.csv"
+        --preprocess_dir "${preprocess_dir}/data" \
+        --segments_dir "~/repo/kinemparse/data/output/predict-joined/segments/data"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

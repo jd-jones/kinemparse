@@ -1,4 +1,3 @@
-import argparse
 import os
 import logging
 
@@ -324,38 +323,9 @@ def main(
 
 
 if __name__ == "__main__":
-    # Parse command line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config_file')
-    parser.add_argument('--out_dir')
-    parser.add_argument('--predictions_dir')
-    parser.add_argument('--imu_data_dir')
-    parser.add_argument('--video_data_dir')
-    parser.add_argument('--scores_dir')
-    parser.add_argument('--model_params')
-    parser.add_argument('--results_file')
-    parser.add_argument('--sweep_param_name')
-
-    args = vars(parser.parse_args())
-    args = {k: v for k, v in args.items() if v is not None}
-
-    # Load config file and override with any provided command line args
-    config_file_path = args.pop('config_file', None)
-    if config_file_path is None:
-        file_basename = utils.stripExtension(__file__)
-        config_fn = f"{file_basename}.yaml"
-        config_file_path = os.path.join(
-            os.path.expanduser('~'), 'repo', 'kinemparse', 'scripts', config_fn
-        )
-    else:
-        config_fn = os.path.basename(config_file_path)
-    with open(config_file_path, 'rt') as config_file:
-        config = yaml.safe_load(config_file)
-    for k, v in args.items():
-        if isinstance(v, dict) and k in config:
-            config[k].update(v)
-        else:
-            config[k] = v
+    # Parse command-line args and config file
+    cl_args = utils.parse_args(main)
+    config, config_fn = utils.parse_config(cl_args, script_name=__file__)
 
     # Create output directory, instantiate log file and write config options
     out_dir = os.path.expanduser(config['out_dir'])
@@ -364,7 +334,5 @@ if __name__ == "__main__":
     with open(os.path.join(out_dir, config_fn), 'w') as outfile:
         yaml.dump(config, outfile)
     utils.copyFile(__file__, out_dir)
-
-    utils.autoreload_ipython()
 
     main(**config)
