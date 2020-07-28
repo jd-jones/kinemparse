@@ -1,5 +1,5 @@
-import argparse
 import os
+import logging
 
 import yaml
 import numpy as np
@@ -10,9 +10,13 @@ from blocks.core import labels
 from kinemparse import imu
 
 
+logger = logging.getLogger(__name__)
+
+
 def parseActions(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
     assembly_seq = labels.parseLabelSeq(
-        None, timestamps=rgb_timestamp_seq, action_seq=action_seq,
+        # None, timestamps=rgb_timestamp_seq, action_seq=action_seq,
+        action_seq, timestamps=rgb_timestamp_seq,
         structure_change_only=True
     )
     assembly_seq[-1].end_idx = len(rgb_timestamp_seq) - 1
@@ -48,11 +52,9 @@ def makeTimestamps(*imu_dicts):
 
 
 def beforeFirstTouch(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
-    for action in action_seq:
-        first_touch_indices = np.nonzero(action['action'] == 7)[0]
-        if first_touch_indices.size:
-            first_touch_idx = action['start'][first_touch_indices[0]]
-            break
+    first_touch_indices = np.nonzero(action_seq['action'] == 7)[0]
+    if first_touch_indices.size:
+        first_touch_idx = action_seq['start'][first_touch_indices[0]]
     else:
         logger.warning('No first touch annotation')
         return None
@@ -65,11 +67,14 @@ def main(
         out_dir=None, data_dir=None,
         output_data=None, magnitude_centering=None, resting_from_gt=None,
         remove_before_first_touch=None, include_signals=None, fig_type=None):
-    logger.info(f"Reading from: {data_dir}")
-    logger.info(f"Writing to: {out_dir}")
 
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
+
+    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
+
+    logger.info(f"Reading from: {data_dir}")
+    logger.info(f"Writing to: {out_dir}")
 
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
@@ -79,8 +84,11 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def loadVariable(var_name):
-        return joblib.load(os.path.join(data_dir, f'{var_name}.pkl'))
+    def loadAll(seq_ids, var_name):
+        def loadOne(seq_id):
+            fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
+            return joblib.load(fn)
+        return tuple(map(loadOne, seq_ids))
 
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
@@ -89,19 +97,23 @@ def main(
         fig_type = 'multi'
 
     # Load data
-    trial_ids = loadVariable('trial_ids')
-    accel_seqs = loadVariable('accel_samples')
-    gyro_seqs = loadVariable('gyro_samples')
-    action_seqs = loadVariable('action_seqs')
-    rgb_timestamp_seqs = loadVariable('orig_rgb_timestamps')
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
+    if not trial_ids.any():
+        logger.warning("No filenames matched the trial ID string!")
+
+    accel_seqs = loadAll(trial_ids, 'accel-samples.pkl')
+    gyro_seqs = loadAll(trial_ids, 'gyro-samples.pkl')
+    action_seqs = loadAll(trial_ids, 'action-seq.pkl')
+    rgb_timestamp_seqs = loadAll(trial_ids, 'rgb-frame-timestamp-seq.pkl')
 
     def validate_imu(seqs):
         def is_valid(d):
             return not any(np.isnan(x).any() for x in d.values())
         return np.array([is_valid(d) for d in seqs])
+
     imu_is_valid = validate_imu(accel_seqs) & validate_imu(gyro_seqs)
     logger.info(
-        f"Ignoring {(~imu_is_valid).sum()} invalid IMU sequences "
+        f"Ignoring {(~imu_is_valid).sum()} IMU sequences with NaN-valued samples "
         f"(of {len(imu_is_valid)} total)"
     )
 
@@ -119,34 +131,17 @@ def main(
     accel_mag_seqs = tuple(map(lambda x: dictToArray(x, transform=norm), accel_seqs))
     gyro_mag_seqs = tuple(map(lambda x: dictToArray(x, transform=norm), gyro_seqs))
 
-    if magnitude_centering == 'across devices':
-        if resting_from_gt:
-            imu_unused = tuple(map(imu.restingDevices, action_seqs))
-        else:
-            def resting(gyro_mag_seq):
-                device_is_resting = np.array(
-                    [imu.deviceRestingFromSignal(seq) for seq in gyro_mag_seq.T]
-                )
-                if device_is_resting.all():
-                    raise AssertionError()
-                return device_is_resting
-            imu_unused = tuple(map(resting, gyro_mag_seqs))
-        accel_mag_seqs = utils.batchProcess(
-            imu.centerSignals,
-            accel_mag_seqs, imu_unused
-        )
-        gyro_mag_seqs = utils.batchProcess(
-            imu.centerSignals,
-            gyro_mag_seqs, imu_unused
-        )
-    elif magnitude_centering is not None:
-        raise AssertionError()
-
     imu_timestamp_seqs = utils.batchProcess(makeTimestamps, accel_seqs, gyro_seqs)
 
     if remove_before_first_touch:
         before_first_touch_seqs = utils.batchProcess(
             beforeFirstTouch, action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs
+        )
+
+        num_ignored = sum(b is None for b in before_first_touch_seqs)
+        logger.info(
+            f"Ignoring {num_ignored} sequences without first-touch annotations "
+            f"(of {len(before_first_touch_seqs)} total)"
         )
 
         def clip(signal, bool_array):
@@ -206,48 +201,33 @@ def main(
     if include_signals is None:
         include_signals = tuple(signals.keys())
     signals = tuple(signals[key] for key in include_signals)
-    imu_sample_seqs = tuple(np.stack(x, axis=-1).squeeze(axis=-1) for x in zip(*signals))
+    imu_feature_seqs = tuple(np.stack(x, axis=-1).squeeze(axis=-1) for x in zip(*signals))
 
-    imu.plot_prediction_eg(
-        tuple(zip(imu_sample_seqs, imu_label_seqs, trial_ids)), fig_dir,
-        fig_type=fig_type, output_data=output_data
+    video_seqs = tuple(zip(imu_feature_seqs, imu_label_seqs, trial_ids))
+    imu.plot_prediction_eg(video_seqs, fig_dir, fig_type=fig_type, output_data=output_data)
+
+    video_seqs = tuple(
+        zip(assembly_seqs, imu_feature_seqs, imu_timestamp_seqs, imu_label_seqs, trial_ids)
     )
-
-    saveVariable(assembly_seqs, f'assembly_seqs')
-    saveVariable(imu_sample_seqs, f'imu_sample_seqs')
-    saveVariable(imu_label_seqs, f'imu_label_seqs')
-    saveVariable(trial_ids, f'trial_ids')
+    for assembly_seq, feature_seq, timestamp_seq, label_seq, trial_id in video_seqs:
+        id_string = f"trial={trial_id}"
+        saveVariable(assembly_seq, f'{id_string}_assembly-seq')
+        saveVariable(feature_seq, f'{id_string}_feature-seq')
+        saveVariable(timestamp_seq, f'{id_string}_timestamp-seq')
+        saveVariable(label_seq, f'{id_string}_label-seq')
 
 
 if __name__ == "__main__":
-    # Parse command line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config_file')
-    parser.add_argument('--out_dir')
-    args = vars(parser.parse_args())
-    args = {k: v for k, v in args.items() if v is not None}
-
-    # Load config file and override with any provided command line args
-    config_file_path = args.pop('config_file', None)
-    if config_file_path is None:
-        file_basename = utils.stripExtension(__file__)
-        config_fn = f"{file_basename}.yaml"
-        config_file_path = os.path.join(
-            os.path.expanduser('~'), 'repo', 'kinemparse', 'scripts', config_fn
-        )
-    with open(config_file_path, 'rt') as config_file:
-        config = yaml.safe_load(config_file)
-    config.update(args)
+    # Parse command-line args and config file
+    cl_args = utils.parse_args(main)
+    config, config_fn = utils.parse_config(cl_args, script_name=__file__)
 
     # Create output directory, instantiate log file and write config options
     out_dir = os.path.expanduser(config['out_dir'])
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
     with open(os.path.join(out_dir, config_fn), 'w') as outfile:
         yaml.dump(config, outfile)
     utils.copyFile(__file__, out_dir)
-
-    utils.autoreload_ipython()
 
     main(**config)

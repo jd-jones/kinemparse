@@ -49,8 +49,11 @@ def makeDummyImuSamples(num_samples):
     return dummy
 
 
-def resampleImuSeq(imu_seq, seq_bound):
-    start_time, end_time = seq_bound
+def resampleImuSeq(imu_seq, seq_bounds=None):
+    if seq_bounds is None:
+        raise NotImplementedError()
+
+    start_time, end_time = seq_bounds
     sample_rate = defn.imu_sample_rate
     new_sample_times = utils.computeSampleTimes(sample_rate, start_time, end_time)
     num_new_samples = new_sample_times.shape[0]
@@ -71,6 +74,30 @@ def resampleImuSeq(imu_seq, seq_bound):
         resampled_seq[block_index] = resampled
 
     return resampled_seq
+
+
+def loadImuSampleSeq(corpus, trial_id, sensor_name=None):
+    if sensor_name == 'accel':
+        loadImuSamples = corpus.readAccelSamples
+    elif sensor_name == 'gyro':
+        loadImuSamples = corpus.readGyroSamples
+    else:
+        raise AssertionError()
+
+    metadata = corpus.meta_data[trial_id]
+    name_pairs = (
+        (imu_id, defn.full_names[metadata[imu_id]])
+        for imu_id in defn.imu_ids
+        if metadata[imu_id] not in ('UNUSED', 'MISSING')
+    )
+    id_pairs = ((imu_id, defn.block_ids[name]) for imu_id, name in name_pairs)
+
+    sample_dict = {
+        block_id: loadImuSamples(trial_id, imu_id)
+        for imu_id, block_id in id_pairs
+    }
+
+    return {k: v for k, v in sample_dict.items() if v is not None}
 
 
 # --=( IMU LABELS )=-----------------------------------------------------------
@@ -435,7 +462,7 @@ def pairwiseFeats(mag_seq):
 
 
 # --=( VISUALIZATION )=-------------------------------------------
-def unpack(io_sample):
+def unpack(io_sample, scores_as_inputs=False):
     def toNumpy(x):
         if isinstance(x, torch.Tensor):
             return x.squeeze().cpu().numpy()
@@ -454,6 +481,10 @@ def unpack(io_sample):
     else:
         raise AssertionError()
 
+    if scores_as_inputs:
+        inputs = scores.T
+        labels = tuple(l.T for l in labels)
+
     return inputs, labels, label_names, ids
 
 
@@ -466,21 +497,15 @@ def plot_prediction_eg(*args, fig_type=None, **kwargs):
         return plot_prediction_eg_multi(*args, **kwargs)
 
 
-def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_names=None):
+def plot_prediction_eg_array(
+        io_history, expt_out_path, output_data=None, tick_names=None, scores_as_inputs=False):
     subplot_width = 12
     subplot_height = 3
 
     for fig_idx, io_sample in enumerate(io_history):
-        inputs, labels, label_names, ids = unpack(io_sample)
+        inputs, labels, label_names, ids = unpack(io_sample, scores_as_inputs=scores_as_inputs)
 
-        # import pdb; pdb.set_trace()
-
-        if labels[0].ndim == 1:
-            num_axes = 2
-        elif labels[0].ndim == 2:
-            num_axes = 1 + len(labels)
-        else:
-            raise AssertionError()
+        num_axes = 1 + len(labels)
 
         figsize = (subplot_width, num_axes * subplot_height)
         fig, axes = plt.subplots(num_axes, figsize=figsize, sharex=True)
@@ -490,28 +515,28 @@ def plot_prediction_eg_array(io_history, expt_out_path, output_data=None, tick_n
         axes[-1].imshow(inputs, interpolation='none', aspect='auto')
         axes[-1].set_ylabel('Input')
 
-        if labels[0].ndim == 1:
-            for label, label_name in zip(labels, label_names):
-                axes[0].plot(label, label=label_name)
+        for i, (label, label_name) in enumerate(zip(labels, label_names)):
+            if label.ndim == 1:
+                axes[i].plot(label, label=label_name)
                 if tick_names is not None:
-                    axes[0].set_yticks(range(len(tick_names)))
-                    axes[0].set_yticklabels(tick_names)
-                axes[0].set_ylabel('Labels')
-                axes[0].legend()
-        elif labels[0].ndim == 2:
-            for i, (label, label_name) in enumerate(zip(labels, label_names)):
+                    axes[i].set_yticks(range(len(tick_names)))
+                    axes[i].set_yticklabels(tick_names)
+            elif label.ndim == 2:
                 axes[i].imshow(label, interpolation='none', aspect='auto')
                 if tick_names is not None:
                     axes[i].set_yticks(range(len(tick_names)))
                     axes[i].set_yticklabels(tick_names)
-                axes[i].set_ylabel(label_name)
+            axes[i].set_ylabel(label_name)
 
         if isinstance(ids, int):
             trial_id = ids
         else:
-            if not all(i == ids[0] for i in ids):
-                raise AssertionError()
-            trial_id = ids[0]
+            if ids.shape == ():
+                trial_id = int(ids)
+            else:
+                if not all(i == ids[0] for i in ids):
+                    raise AssertionError()
+                trial_id = ids[0]
 
         plt.tight_layout()
         fig_name = f'trial-{trial_id:03}.png'

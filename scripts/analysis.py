@@ -1,5 +1,6 @@
 import os
 import argparse
+import logging
 
 import yaml
 import pandas as pd
@@ -7,8 +8,16 @@ import pandas as pd
 from mathtools import utils
 
 
+logger = logging.getLogger(__name__)
+
+
 def main(out_dir=None, results_file=None, sweep_param_name=None):
     out_dir = os.path.expanduser(out_dir)
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
+
     results_file = os.path.expanduser(results_file)
 
     # Set NUMEXPR_MAX_THREADS to avoid warnings
@@ -74,7 +83,6 @@ if __name__ == "__main__":
     out_dir = os.path.expanduser(config['out_dir'])
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
     with open(os.path.join(out_dir, config_fn), 'w') as outfile:
         yaml.dump(config, outfile)
     utils.copyFile(__file__, out_dir)

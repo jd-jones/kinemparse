@@ -1,0 +1,1 @@
+../../../scripts/make_attr_data_image.py

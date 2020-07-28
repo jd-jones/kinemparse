@@ -1,9 +1,5 @@
 import argparse
 import os
-import itertools
-import functools
-import collections
-import math
 import warnings
 import logging
 
@@ -21,68 +17,9 @@ import LCTM.utils
 import LCTM.learn
 
 from mathtools import utils
-# from seqtools import fsm
-from kinemparse import imu
 
 
 logger = logging.getLogger(__name__)
-
-
-def splitSeqs(feature_seqs, label_seqs, trial_ids, active_only=False):
-    num_signals = label_seqs[0].shape[1]
-    if num_signals >= 100:
-        raise ValueError("{num_signals} signals will cause overflow in sequence ID (max is 99)")
-
-    def validate(seqs):
-        return all(seq.shape[1] == num_signals for seq in seqs)
-    all_valid = all(validate(x) for x in (feature_seqs, label_seqs))
-    if not all_valid:
-        raise AssertionError("Features and labels don't all have the same number of sequences")
-
-    trial_ids = tuple(
-        itertools.chain(
-            *(
-                tuple(t_id + 0.01 * (i + 1) for i in range(num_signals))
-                for t_id in trial_ids
-            )
-        )
-    )
-
-    def splitSeq(arrays):
-        return tuple(row for array in arrays for row in array)
-    feature_seqs = splitSeq(map(lambda x: x.swapaxes(0, 1), feature_seqs))
-    label_seqs = splitSeq(map(lambda x: x.T, label_seqs))
-
-    if active_only:
-        is_active = tuple(map(lambda x: x.any(), label_seqs))
-
-        def filterInactive(arrays):
-            return tuple(arr for arr, act in zip(arrays, is_active) if act)
-        return tuple(map(filterInactive, (feature_seqs, label_seqs, trial_ids)))
-
-    return feature_seqs, label_seqs, trial_ids
-
-
-def joinSeqs(batches):
-    stack = functools.partial(np.stack, axis=0)
-
-    all_seqs = collections.defaultdict(dict)
-    for batch in batches:
-        for b in zip(*batch):
-            i = b[-1]
-            seqs = b[:-1]
-
-            # i = int(vid_id) + seq_id / 100
-            seq_id, trial_id = math.modf(i)
-            seq_id = int(round(seq_id * 100))
-            trial_id = int(round(trial_id))
-
-            all_seqs[trial_id][seq_id] = seqs
-
-    for trial_id, seq_dict in all_seqs.items():
-        seqs = (seq_dict[k] for k in sorted(seq_dict.keys()))
-        seqs = map(stack, zip(*seqs))
-        yield tuple(seqs) + (trial_id,)
 
 
 def preprocess(imu_feature_seqs):
@@ -94,7 +31,7 @@ def preprocess(imu_feature_seqs):
     return preprocessed_feature_seqs
 
 
-def pre_init(model, train_samples, train_labels, pretrain=True):
+def pre_init(model, train_samples, train_labels, pretrain=True, transitions=None):
     n_samples = len(train_samples)
     model.n_features = train_samples[0].shape[0]
     model.n_classes = np.max(list(map(np.max, train_labels))) + 1
@@ -119,9 +56,9 @@ def pre_init(model, train_samples, train_labels, pretrain=True):
     # )
 
     transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
-    next_states = [2, 3, 1, 0]
-    for cur_state, next_state in enumerate(next_states):
-        transition_probs[cur_state, next_state] = 1
+    for cur_state, next_states in transitions.items():
+        for next_state in next_states:
+            transition_probs[cur_state, next_state] = 1
 
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', message='divide by zero')
@@ -191,8 +128,7 @@ def plot_train(objectives, fn=None):
 def main(
         out_dir=None, data_dir=None, scores_dir=None, model_name=None,
         results_file=None, sweep_param_name=None,
-        independent_signals=None, active_only=None,
-        label_mapping=None, eval_label_mapping=None, pre_init_pw=None,
+        pre_init_pw=None, transitions=None,
         model_params={}, cv_params={}, train_params={}, viz_params={},
         plot_predictions=None):
 
@@ -203,8 +139,10 @@ def main(
 
     if results_file is None:
         results_file = os.path.join(out_dir, f'results.csv')
+        write_mode = 'w'
     else:
         results_file = os.path.expanduser(results_file)
+        write_mode = 'a'
 
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
@@ -241,17 +179,6 @@ def main(
             for trial_id in trial_ids
         )
 
-    if label_mapping is not None:
-        def map_labels(labels):
-            for i, j in label_mapping.items():
-                labels[labels == i] = j
-            return labels
-        label_seqs = tuple(map(map_labels, label_seqs))
-        if scores_dir is not None:
-            num_labels = feature_seqs[0].shape[-1]
-            idxs = [i for i in range(num_labels) if i not in label_mapping]
-            feature_seqs = tuple(x[..., idxs] for x in feature_seqs)
-
     # Define cross-validation folds
     dataset_size = len(trial_ids)
     cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
@@ -272,20 +199,15 @@ def main(
     for cv_index, cv_splits in enumerate(cv_folds):
         train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
 
-        if independent_signals:
-            split_ = functools.partial(splitSeqs, active_only=active_only)
-            train_samples, train_labels, train_ids = split_(*train_data)
-            val_samples, val_labels, val_ids = split_(*val_data)
-            test_samples, test_labels, test_ids = splitSeqs(*test_data, active_only=False)
+        train_samples, train_labels, train_ids = train_data
+        val_samples, val_labels, val_ids = val_data
+        test_samples, test_labels, test_ids = test_data
 
-            # Transpose input data so they have shape (num_features, num_samples),
-            # to conform with LCTM interface
-            train_samples = preprocess(train_samples)
-            test_samples = preprocess(test_samples)
-            val_samples = preprocess(val_samples)
-
-        else:
-            raise NotImplementedError()
+        # Transpose input data so they have shape (num_features, num_samples),
+        # to conform with LCTM interface
+        # train_samples = preprocess(train_samples)
+        # test_samples = preprocess(test_samples)
+        # val_samples = preprocess(val_samples)
 
         logger.info(
             f'CV fold {cv_index + 1}: {len(trial_ids)} total '
@@ -296,19 +218,26 @@ def main(
 
         if pre_init_pw:
             pretrain = train_params.get('pretrain', True)
-            model = pre_init(model, train_samples, train_labels, pretrain=pretrain)
+            model = pre_init(
+                model, train_samples, train_labels,
+                pretrain=pretrain, transitions=transitions
+            )
         else:
             model.fit(train_samples, train_labels, **train_params)
             # FIXME: Is this even necessary?
             if model_params.get('inference', None) == 'segmental':
                 model.max_segs = LCTM.utils.max_seg_count(train_labels)
 
+        train_fig_dir = os.path.join(fig_dir, 'train-plots')
+        if not os.path.exists(train_fig_dir):
+            os.makedirs(train_fig_dir)
+
         plot_weights(
-            model, fn=os.path.join(fig_dir, f"cvfold={cv_index}_model-weights-trained.png")
+            model, fn=os.path.join(train_fig_dir, f"cvfold={cv_index}_model-weights-trained.png")
         )
         plot_train(
             model.logger.objectives,
-            fn=os.path.join(fig_dir, f"cvfold={cv_index}_train-loss.png")
+            fn=os.path.join(train_fig_dir, f"cvfold={cv_index}_train-loss.png")
         )
 
         # Test model
@@ -317,9 +246,6 @@ def main(
         test_io_history = tuple(
             zip([pred_labels], [test_samples], [test_samples], [test_labels], [test_ids])
         )
-
-        if independent_signals:
-            test_io_history = tuple(joinSeqs(test_io_history))
 
         for name in metric_dict.keys():
             value = getattr(LCTM.metrics, name)(pred_labels, test_labels)
@@ -332,20 +258,24 @@ def main(
         logger.info(f'Label distribution: {label_hist}')
 
         d = {k: v[-1] / 100 for k, v in metric_dict.items()}
-        utils.writeResults(results_file, d, sweep_param_name, model_params)
+        utils.writeResults(
+            results_file, d, sweep_param_name, model_params,
+            write_mode=write_mode
+        )
 
         if plot_predictions:
-            imu.plot_prediction_eg(test_io_history, fig_dir, **viz_params)
+            io_fig_dir = os.path.join(fig_dir, 'model-io')
+            if not os.path.exists(io_fig_dir):
+                os.makedirs(io_fig_dir)
+
+            label_names = ('gt', 'pred')
+            preds, scores, inputs, gt_labels, ids = zip(*test_io_history)
+            for batch in test_io_history:
+                for preds, _, inputs, gt_labels, seq_id in zip(*batch):
+                    fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
+                    utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn)
 
         def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
-            if False:  # label_mapping is not None:
-                def dup_score_cols(scores):
-                    num_cols = scores.shape[-1] + len(label_mapping)
-                    col_idxs = np.arange(num_cols)
-                    for i, j in label_mapping.items():
-                        col_idxs[i] = j
-                    return scores[..., col_idxs]
-                score_seq = dup_score_cols(score_seq)
             saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
             saveVariable(score_seq, f'trial={trial_id}_score-seq')
             saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
@@ -357,24 +287,6 @@ def main(
         saveVariable(val_ids, f'cvfold={cv_index}_val-ids')
         saveVariable(metric_dict, f'cvfold={cv_index}_{model_name}-metric-dict')
         saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
-
-        if eval_label_mapping is not None:
-            def map_labels(labels):
-                labels = labels.copy()
-                for i, j in eval_label_mapping.items():
-                    labels[labels == i] = j
-                return labels
-            pred_labels = tuple(map(map_labels, pred_labels))
-            test_labels = tuple(map(map_labels, test_labels))
-            for name in metric_dict.keys():
-                value = getattr(LCTM.metrics, name)(pred_labels, test_labels)
-                metric_dict[name] += [value]
-            metric_str = '  '.join(f"{k}: {v[-1]:.1f}%" for k, v in metric_dict.items())
-            logger.info('[TST]  ' + metric_str)
-
-            all_labels = np.hstack(test_labels)
-            label_hist = utils.makeHistogram(len(np.unique(all_labels)), all_labels, normalize=True)
-            logger.info(f'Label distribution: {label_hist}')
 
 
 if __name__ == "__main__":
