@@ -26,12 +26,10 @@ STAGE=0
 
 if [ "${start_at}" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Compute part poses"
-    python compute_part_poses.py \
-        --config_file "${config_dir}/compute_part_poses.yaml" \
+    python markers_to_parts.py \
         --out_dir "${part_pose_dir}" \
         --marker_pose_dir "${marker_pose_dir}" \
-        --marker_bundles_dir "${marker_bundles_dir}" \
-        --urdf_dir "${urdf_dir}"
+        --marker_bundles_dir "${marker_bundles_dir}"
 fi
 if [ "${stop_after}" -eq "${STAGE}" ]; then
     exit 1
