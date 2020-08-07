@@ -26,10 +26,11 @@ STAGE=0
 
 if [ "${start_at}" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Compute part poses"
-    python markers_to_parts.py \
+    python -m pdb markers_to_parts.py \
         --out_dir "${part_pose_dir}" \
         --marker_pose_dir "${marker_pose_dir}" \
-        --marker_bundles_dir "${marker_bundles_dir}"
+        --marker_bundles_dir "${marker_bundles_dir}" \
+        --urdf_file "${urdf_dir}/ikea_chair_backrest.xacro"
 fi
 if [ "${stop_after}" -eq "${STAGE}" ]; then
     exit 1
