@@ -119,6 +119,10 @@ def plotScoreHists(scores, labels, fn=None):
         plt.close()
 
 
+def make_imu_feats(imu_score_seq):
+    return imu_score_seq[..., 2].swapaxes(0, 1).max(axis=1)
+
+
 def main(
         out_dir=None, video_data_dir=None, imu_data_dir=None,
         video_seg_scores_dir=None, imu_seg_scores_dir=None, gt_keyframes_dir=None):
@@ -174,7 +178,7 @@ def main(
                     f'trial={trial_id}_score-seq',
                     imu_seg_scores_dir
                 )
-                imu_score_seq = imu_score_seq[..., 2].swapaxes(0, 1).max(axis=1)
+                imu_score_seq = make_imu_feats(imu_score_seq)
             except FileNotFoundError:
                 logger.info(f"  IMU scores not found: trial {trial_id}")
                 continue

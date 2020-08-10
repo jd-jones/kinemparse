@@ -275,12 +275,13 @@ def main(
                     fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
                     utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn)
 
-        def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
-            saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
-            saveVariable(score_seq, f'trial={trial_id}_score-seq')
-            saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
-        for io in test_io_history:
-            saveTrialData(*io)
+        def saveTrialData(batch):
+            for pred_seq, score_seq, feat_seq, label_seq, trial_id in zip(*batch):
+                saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
+                saveVariable(score_seq, f'trial={trial_id}_score-seq')
+                saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
+        for batch in test_io_history:
+            saveTrialData(batch)
 
         saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
         saveVariable(test_ids, f'cvfold={cv_index}_test-ids')

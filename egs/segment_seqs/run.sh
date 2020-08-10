@@ -51,8 +51,6 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --video_seg_scores_dir "${keyframes_dir}/data" \
         --imu_seg_scores_dir "${attr_scores_dir}/data" \
         --gt_keyframes_dir "${video_data_dir}/data"
-        # --imu_seg_scores_dir ""
-        # --config_file "${config_dir}/make_activity_dataset_video.yaml"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -90,3 +88,15 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
 fi
 ((++STAGE))
 
+if [ "$start_at" -le "${STAGE}" ]; then
+    python select_keyframes.py \
+        --out_dir "${output_dir}/keyframes_pred-segs" \
+        --video_data_dir "~/repo/kinemparse/data/output/blocks_child_2020-05-04/raw-data/data" \
+        --keyframe_scores_dir "${keyframes_dir}/data" \
+        --segments_dir "${output_dir}/predict-segments/data" \
+        --use_gt_segments "False"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
