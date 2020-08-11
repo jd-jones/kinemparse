@@ -1,1 +1,0 @@
-../../../scripts/predict_from_imu_lctm.py

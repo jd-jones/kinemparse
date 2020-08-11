@@ -68,6 +68,7 @@ def main(
         feature_seq = loadFromDir(f"trial={trial_id}_feature-seq", features_dir)
         raw_labels = loadFromDir(f"trial-{trial_id}_action-seq", video_data_dir)
         timestamp_seq = loadFromDir(f"trial-{trial_id}_rgb-frame-timestamp-seq", video_data_dir)
+        activity_labels = loadFromDir(f"trial={trial_id}_label-seq", activity_labels_dir)
 
         action_labels = makeActionLabels(raw_labels, seq_len=feature_seq.shape[0])
 
@@ -78,9 +79,15 @@ def main(
             )
             continue
 
+        # trim sequences
+        is_activity = activity_labels == 1
+        action_labels = action_labels[is_activity, :]
+        timestamp_seq = timestamp_seq[is_activity, :]
+        feature_seq = feature_seq[is_activity, :]
+
         logger.info(f"  Saving output...")
         trial_str = f"trial={trial_id}"
-        saveToWorkingDir(feature_seq, f'{trial_str}_timestamp-seq')
+        saveToWorkingDir(timestamp_seq, f'{trial_str}_timestamp-seq')
         saveToWorkingDir(feature_seq, f'{trial_str}_feature-seq')
         saveToWorkingDir(action_labels, f'{trial_str}_label-seq')
 

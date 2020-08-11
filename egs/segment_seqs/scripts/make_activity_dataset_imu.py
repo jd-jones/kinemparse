@@ -1,1 +1,0 @@
-../../../scripts/make_activity_dataset_imu.py
