@@ -577,6 +577,8 @@ def selectSegmentKeyframes(
         segment_labels, num_labels = scipy.ndimage.label(is_peak)
 
     unique_labels = np.unique(segment_labels)
+    # 0 is the "background" class (ie no activity), so ignore it
+    unique_labels = unique_labels[unique_labels != 0]
     num_unique_labels = unique_labels.shape[0]
 
     best_idxs = np.zeros(num_unique_labels, dtype=int)

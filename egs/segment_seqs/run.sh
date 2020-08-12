@@ -3,8 +3,8 @@ set -ue
 
 # --=(SET CONFIG OPTIONS)==----------------------------------------------------
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="3"
-stop_after="3"
+start_at="7"
+stop_after="7"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 output_dir="$HOME/repo/kinemparse/data/output/segment-seqs"
@@ -12,11 +12,11 @@ activity_dir="${output_dir}/activity"
 activity_data_dir="${activity_dir}/dataset"
 activity_preds_dir="${activity_dir}/preds"
 activity_smoothed_dir="${activity_dir}/preds-smoothed"
-action_dir="${output_dir}/action"
+action_dir="${output_dir}/action_activity-labels=true_model=tcn"
 action_data_dir="${action_dir}/dataset"
 action_preds_dir="${action_dir}/preds"
 action_smoothed_dir="${action_dir}/preds-smoothed"
-keyframes_dir="${output_dir}/keyframes"
+keyframes_dir="${output_dir}/keyframes_activity-labels=true_action-labels=pred_smoothed"
 
 # IMU DIRS --- READONLY
 imu_attr_dir="$HOME/repo/kinemparse/data/output/block-connections-imu"
@@ -96,7 +96,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --out_dir "${action_data_dir}" \
         --video_data_dir "${video_data_dir}/data" \
         --features_dir "${activity_data_dir}/data" \
-        --activity_labels_dir "${activity_smoothed_dir}/data"
+        --activity_labels_dir "${activity_smoothed_dir}/data" \
+        --use_gt_activity_labels "True"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -109,7 +110,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --config_file "${config_dir}/actions/predict_seq_pytorch.yaml" \
         --out_dir "${action_preds_dir}" \
         --data_dir "${action_data_dir}/data" \
-        --gpu_dev_id "0"
+        --gpu_dev_id "'0'"
     python analysis.py \
         --out_dir "${action_preds_dir}/system-performance" \
         --results_file "${action_preds_dir}/results.csv"
@@ -140,10 +141,12 @@ fi
 if [ "$start_at" -le "${STAGE}" ]; then
     python select_keyframes.py \
         --out_dir "${keyframes_dir}" \
-        --video_data_dir "~/repo/kinemparse/data/output/blocks_child_2020-05-04/raw-data/data" \
+        --video_data_dir "${video_data_dir}/data" \
         --keyframe_scores_dir "${keyframe_scores_dir}/data" \
-        --segments_dir "${output_dir}/predict-segments/data" \
-        --use_gt_segments "False"
+        --activity_labels_dir "${activity_smoothed_dir}/data" \
+        --action_labels_dir "${action_smoothed_dir}/data" \
+        --use_gt_activity "True" \
+        --use_gt_actions "False"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

@@ -13,8 +13,11 @@ logger = logging.getLogger(__name__)
 
 def makeActionLabels(action_seq, seq_len=None):
     """
-    0: no action
-    1: action
+    0: action
+    1: no action
+
+    Note: Action labels are "inverted" because we actually want to retrieve the
+        parts of the signal where NO actions are happening.
     """
 
     if seq_len is None:
@@ -23,19 +26,19 @@ def makeActionLabels(action_seq, seq_len=None):
     is_tag = action_seq['action'] > 7
     action_seq = action_seq[~is_tag]
 
-    labels = np.zeros(seq_len, dtype=int)
+    labels = np.ones(seq_len, dtype=int)
 
     for action in action_seq:
         start = action['start']
         end = action['end']
-        labels[start:end + 1] = 1
+        labels[start:end + 1] = 0
 
     return labels
 
 
 def main(
         out_dir=None, video_data_dir=None, features_dir=None,
-        activity_labels_dir=None, gt_keyframes_dir=None):
+        activity_labels_dir=None, gt_keyframes_dir=None, use_gt_activity_labels=False):
     out_dir = os.path.expanduser(out_dir)
     video_data_dir = os.path.expanduser(video_data_dir)
     features_dir = os.path.expanduser(features_dir)
@@ -59,8 +62,9 @@ def main(
     def saveToWorkingDir(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f"{var_name}.pkl"))
 
-    trial_ids = utils.getUniqueIds(features_dir, prefix='trial-', suffix='.pkl')
+    trial_ids = utils.getUniqueIds(features_dir, prefix='trial=', suffix='.pkl')
 
+    seq_lens = []
     for seq_idx, trial_id in enumerate(trial_ids):
         logger.info(f"Processing video {seq_idx + 1} / {len(trial_ids)}  (trial {trial_id})")
 
@@ -68,11 +72,16 @@ def main(
         feature_seq = loadFromDir(f"trial={trial_id}_feature-seq", features_dir)
         raw_labels = loadFromDir(f"trial-{trial_id}_action-seq", video_data_dir)
         timestamp_seq = loadFromDir(f"trial-{trial_id}_rgb-frame-timestamp-seq", video_data_dir)
-        activity_labels = loadFromDir(f"trial={trial_id}_label-seq", activity_labels_dir)
+
+        if use_gt_activity_labels:
+            activity_label_fn = f"trial={trial_id}_true-label-seq"
+        else:
+            activity_label_fn = f"trial={trial_id}_pred-label-seq"
+        activity_labels = loadFromDir(activity_label_fn, activity_labels_dir)
 
         action_labels = makeActionLabels(raw_labels, seq_len=feature_seq.shape[0])
 
-        if timestamp_seq.shape != feature_seq.shape:
+        if timestamp_seq.shape[0] != feature_seq.shape[0]:
             logger.warning(
                 f"Video dimensions don't match: "
                 f"{feature_seq.shape} scores, {timestamp_seq.shape} timestamps"
@@ -81,15 +90,33 @@ def main(
 
         # trim sequences
         is_activity = activity_labels == 1
-        action_labels = action_labels[is_activity, :]
-        timestamp_seq = timestamp_seq[is_activity, :]
-        feature_seq = feature_seq[is_activity, :]
+        if not is_activity.any():
+            logger.warning(f"No activity detected: skipping trial")
+            continue
+
+        action_labels = action_labels[is_activity, ...]
+        timestamp_seq = timestamp_seq[is_activity, ...]
+        feature_seq = feature_seq[is_activity, ...]
+
+        if feature_seq.shape[0] != action_labels.shape[0]:
+            err_str = (
+                "Data dimensions don't match: "
+                f"{feature_seq.shape} features, {action_labels.shape} labels"
+            )
+            raise AssertionError(err_str)
+
+        seq_lens.append(feature_seq.shape[0])
 
         logger.info(f"  Saving output...")
         trial_str = f"trial={trial_id}"
         saveToWorkingDir(timestamp_seq, f'{trial_str}_timestamp-seq')
         saveToWorkingDir(feature_seq, f'{trial_str}_feature-seq')
         saveToWorkingDir(action_labels, f'{trial_str}_label-seq')
+
+        fn = os.path.join(fig_dir, f"trial={trial_id}.png")
+        utils.plot_array(feature_seq.T, (action_labels,), ('action',), fn=fn)
+
+    logger.info(f"min seq len: {min(seq_lens)}   max seq len: {max(seq_lens)}")
 
 
 if __name__ == '__main__':
