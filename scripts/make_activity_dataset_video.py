@@ -12,31 +12,30 @@ from mathtools import utils
 logger = logging.getLogger(__name__)
 
 
-def expandLabels(action_seq, seq_len=None):
+def makeActivityLabels(action_seq, seq_len=None, use_end_label=False):
     """
-    0: beginning of sequence
-    1: no action
-    2: action
-    3: end of sequence
+    0: before main activity
+    1: main activity
+    2: after main activity
     """
 
     if seq_len is None:
         seq_len = action_seq['end'].max() + 1
 
+    is_tag = action_seq['action'] > 7
+    action_seq = action_seq[~is_tag]
+
+    # Say everything is the main activity at first
     labels = np.ones(seq_len, dtype=int)
+
+    # Label everything before the start of the first (non-tag) action as "before"
     first_start = action_seq[0]['start']
     labels[:first_start] = 0
-    for action in action_seq:
-        start = action['start']
-        end = action['end']
-        label = action['action']
-        if label > 7:
-            continue
-        # seg_len = end - start
-        # start = end - seg_len // 2
-        labels[start:end + 1] = 2
-    last_end = action_seq[-1]['end']
-    labels[last_end + 1:] = 3
+
+    if use_end_label:
+        # Label everything after the end of the last (non-tag) action as "after"
+        last_end = action_seq[-1]['end']
+        labels[last_end + 1:] = 2
 
     return labels
 
@@ -119,9 +118,14 @@ def plotScoreHists(scores, labels, fn=None):
         plt.close()
 
 
+def make_imu_feats(imu_score_seq):
+    return imu_score_seq[..., 2].swapaxes(0, 1).max(axis=1)
+
+
 def main(
         out_dir=None, video_data_dir=None, imu_data_dir=None,
-        video_seg_scores_dir=None, imu_seg_scores_dir=None, gt_keyframes_dir=None):
+        video_seg_scores_dir=None, imu_seg_scores_dir=None, gt_keyframes_dir=None,
+        label_kwargs={}):
 
     out_dir = os.path.expanduser(out_dir)
     video_data_dir = os.path.expanduser(video_data_dir)
@@ -158,7 +162,7 @@ def main(
         logger.info(f"  Loading data...")
         score_seq = loadFromDir(f"trial-{trial_id}_frame-scores", video_seg_scores_dir)
         raw_labels = loadFromDir(f"trial-{trial_id}_action-seq", video_data_dir)
-        action_labels = expandLabels(raw_labels, seq_len=score_seq.shape[0])
+        action_labels = makeActivityLabels(raw_labels, seq_len=score_seq.shape[0], **label_kwargs)
         timestamp_seq = loadFromDir(f"trial-{trial_id}_rgb-frame-timestamp-seq", video_data_dir)
 
         if timestamp_seq.shape != score_seq.shape:
@@ -174,7 +178,7 @@ def main(
                     f'trial={trial_id}_score-seq',
                     imu_seg_scores_dir
                 )
-                imu_score_seq = imu_score_seq[..., 2].swapaxes(0, 1).max(axis=1)
+                imu_score_seq = make_imu_feats(imu_score_seq)
             except FileNotFoundError:
                 logger.info(f"  IMU scores not found: trial {trial_id}")
                 continue

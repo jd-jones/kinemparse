@@ -1,1 +1,0 @@
-../../../scripts/score_attributes.py

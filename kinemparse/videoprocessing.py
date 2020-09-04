@@ -550,12 +550,14 @@ def nanargmax(signal, axis=1):
     return non_nan_row_idxs, non_nan_argmax
 
 
-def selectSegmentKeyframes(scores, segment_labels=None, score_thresh=0, prepend_first=False):
+def selectSegmentKeyframes(
+        scores, segment_labels=None, score_thresh=0, min_seg_len=2, prepend_first=False):
     """ Identify segments in a score sequence, then choose the highest-scoring frame in each.
 
     Parameters
     ----------
     scores : numpy array of float, shape (num_frames,)
+    segment_labels : numpy array of int, shape (num_frames,)
     score_thresh : float, optional
     prepend_first : bool, optional
         If True, every keyframe sequence begins with 0.
@@ -572,18 +574,17 @@ def selectSegmentKeyframes(scores, segment_labels=None, score_thresh=0, prepend_
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", "invalid value encountered")
             is_peak = scores > score_thresh
-
         segment_labels, num_labels = scipy.ndimage.label(is_peak)
-        # trough_seg_label = segment_labels[~is_peak][0]
 
     unique_labels = np.unique(segment_labels)
-    # unique_labels = unique_labels[unique_labels != trough_seg_label]
+    # 0 is the "background" class (ie no activity), so ignore it
+    unique_labels = unique_labels[unique_labels != 0]
     num_unique_labels = unique_labels.shape[0]
 
     best_idxs = np.zeros(num_unique_labels, dtype=int)
     for i, label in enumerate(unique_labels):
         l_scores = scores.copy()
-        if np.sum(segment_labels == label) < 2:
+        if np.sum(segment_labels == label) < min_seg_len:
             best_idx = -1
         else:
             l_scores[segment_labels != label] = np.nan

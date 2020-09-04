@@ -36,6 +36,9 @@ class ConvClassifier(torch.nn.Module):
     def __init__(self, input_dim, out_set_size, kernel_size=3, binary_multiclass=False):
         super().__init__()
 
+        if not (kernel_size % 2):
+            raise NotImplementedError("Kernel size must be an odd number!")
+
         self.input_dim = input_dim
         self.out_set_size = out_set_size
         self.binary_labels = binary_multiclass
@@ -51,7 +54,8 @@ class ConvClassifier(torch.nn.Module):
         )
 
     def forward(self, input_seq):
-        return self.conv1d(input_seq).transpose(1, 2)
+        output_seq = self.conv1d(input_seq).transpose(1, 2)
+        return output_seq
 
     def predict(self, outputs):
         if self.binary_labels:
@@ -139,8 +143,6 @@ def main(
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
     feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
     label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
-
-    # import pdb; pdb.set_trace()
 
     device = torchutils.selectDevice(gpu_dev_id)
 
