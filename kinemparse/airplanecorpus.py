@@ -10,7 +10,10 @@ import numpy as np
 import yaml
 
 from mathtools import utils
-from seqtools import fsm
+try:
+    from seqtools import fsm
+except ImportError:
+    fsm = None
 
 
 LABEL_DTYPE = [('object', 'U10'), ('start_idx', 'i4'), ('end_idx', 'i4')]
@@ -111,7 +114,7 @@ def fitBins(action_means, action_covs, viz=False):
             std = action_covs[action_name] ** 0.5
             plt.errorbar(mean[0], mean[1], yerr=std[1], xerr=std[0])
             # logger.info(f"{action_name}:  bin {bin_id}  ({mean} +/- {std})")
-        plt.title(f"Mean hand detection +/- std")
+        plt.title("Mean hand detection +/- std")
         plt.show()
 
         for k, v in bin_contents.items():
@@ -260,7 +263,7 @@ def loadVideoFrames(video_id, dir_name=None, as_float=False, subsample_period=No
     return video_frames, video_fns
 
 
-def loadHandDetections(video_id, dir_name=None):
+def loadHandDetections(video_id, dir_name=None, unflatten=False):
     """ Load pre-computed hand detections from CSV file.
 
     Parameters
@@ -289,6 +292,9 @@ def loadHandDetections(video_id, dir_name=None):
 
     converters = {i: NanStrToNan for i in range(4)}
     hand_detections = np.loadtxt(filename, delimiter=",", converters=converters)
+
+    if unflatten:
+        hand_detections = np.stack((hand_detections[:, :2], hand_detections[:, 2:]), axis=1)
 
     return hand_detections
 
@@ -399,7 +405,6 @@ def generateAssemblies(action_seq):
 
 
 class AirplaneAssembly(object):
-
     def __init__(
             self, start_index=None, end_index=None, assembly_state=None,
             ignore_objects_in_comparisons=None):
@@ -452,39 +457,40 @@ class AirplaneAssembly(object):
         return any(self.assembly_state)
 
 
-class BinAssemblyModel(fsm.AbstractFstSequenceModel):
-    """ Sequence model that decodes assembly actions by recognizing objects in bins. """
+if fsm is not None:
+    class BinAssemblyModel(fsm.AbstractFstSequenceModel):
+        """ Sequence model that decodes assembly actions by recognizing objects in bins. """
 
-    def _initialize(self):
-        self._integerizer = fsm.HashableFstIntegerizer()
+        def _initialize(self):
+            self._integerizer = fsm.HashableFstIntegerizer()
 
-    def _preprocessLabelSeqs(self, action_seqs):
-        return tuple(action_seq['object'].tolist() for action_seq in action_seqs)
+        def _preprocessLabelSeqs(self, action_seqs):
+            return tuple(action_seq['object'].tolist() for action_seq in action_seqs)
 
-    def _fitObservationModel(self, action_segs, hand_detection_seqs, win_len=17, min_y=250):
-        action_means, action_covs = estimateActionParams(
-            hand_detection_seqs, action_segs, win_len=win_len, min_y=min_y
-        )
-        bin_locations, bin_contents = fitBins(action_means, action_covs)
+        def _fitObservationModel(self, action_segs, hand_detection_seqs, win_len=17, min_y=250):
+            action_means, action_covs = estimateActionParams(
+                hand_detection_seqs, action_segs, win_len=win_len, min_y=min_y
+            )
+            bin_locations, bin_contents = fitBins(action_means, action_covs)
 
-        self._integerizer.update(tuple(f"bin {i}" for i in bin_contents.keys()))
-        self._bin_locations = bin_locations
-        self._bin_contents = bin_contents
+            self._integerizer.update(tuple(f"bin {i}" for i in bin_contents.keys()))
+            self._bin_locations = bin_locations
+            self._bin_contents = bin_contents
 
-    def _fitProcessModel(self, assembly_seqs):
-        bin_to_obj = fsm.binToObjFst(self._bin_contents, self._integerizer)
-        action_acceptor = fsm.stateTransitionFsa(assembly_seqs, self._integerizer)
-        bin_to_action = bin_to_obj.compose(action_acceptor)
-        return bin_to_action
+        def _fitProcessModel(self, assembly_seqs):
+            bin_to_obj = fsm.binToObjFst(self._bin_contents, self._integerizer)
+            action_acceptor = fsm.stateTransitionFsa(assembly_seqs, self._integerizer)
+            bin_to_action = bin_to_obj.compose(action_acceptor)
+            return bin_to_action
 
-    def _scoreObservations(self, hand_detection_seq):
-        bin_segs = segmentDetections(
-            hand_detection_seq, self._bin_locations, return_means=False
-        )
-        bin_detector = fsm.binDetectorFst(bin_segs, self._bin_contents, self._integerizer)
-        return bin_detector
+        def _scoreObservations(self, hand_detection_seq):
+            bin_segs = segmentDetections(
+                hand_detection_seq, self._bin_locations, return_means=False
+            )
+            bin_detector = fsm.binDetectorFst(bin_segs, self._bin_contents, self._integerizer)
+            return bin_detector
 
-    def predictSeq(self, hand_detection_seq):
-        action_seq = filter(None, super().predictSeq(hand_detection_seq))
-        state_seq = generateAssemblies(action_seq)
-        return tuple(state_seq)
+        def predictSeq(self, hand_detection_seq):
+            action_seq = filter(None, super().predictSeq(hand_detection_seq))
+            state_seq = generateAssemblies(action_seq)
+            return tuple(state_seq)
