@@ -2,7 +2,7 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="3"
+start_at="1"
 stop_after="3"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
@@ -26,7 +26,9 @@ STAGE=1
 if [ "${start_at}" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Compute part poses"
     python track_hands.py \
-        --out_dir "${detections_dir}"
+        --out_dir "${detections_dir}" \
+        --videos_dir "${airplane_videos_dir}" \
+        --hand_detections_dir "${airplane_detections_dir}"
 fi
 if [ "${stop_after}" -eq "${STAGE}" ]; then
     exit 1
@@ -35,10 +37,10 @@ fi
 
 if [ "${start_at}" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Compute part poses"
-    python -m pdb viz_hand_detections.py \
+    python viz_hand_detections.py \
         --out_dir "${viz_dir}" \
         --videos_dir "${airplane_videos_dir}" \
-        --hand_detections_dir "${airplane_detections_dir}"
+        --hand_detections_dir "${detections_dir}/data"
 fi
 if [ "${stop_after}" -eq "${STAGE}" ]; then
     exit 1

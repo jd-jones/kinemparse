@@ -286,7 +286,7 @@ def loadHandDetections(video_id, dir_name=None, unflatten=False):
         filename = os.path.join(dir_name, f"{video_id}.handsdetections.txt")
 
     def NanStrToNan(in_string):
-        if in_string == 'NaN':
+        if in_string == 'NaN' or in_string == 'nan':
             return np.nan
         return in_string
 
