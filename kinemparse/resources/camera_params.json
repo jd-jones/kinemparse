@@ -1,0 +1,12 @@
+{
+    "intrinsic_matrix": [
+      [268.9122, 0, 0],
+      [0, 269.5376, 0],
+      [158.4105, 158.4105, 1.0000]
+    ],
+
+  "lens_distortion": {
+    "radial_distortion": [0.0428, -0.1565],
+    "tangential_distortion": [0, 0]
+  }
+}

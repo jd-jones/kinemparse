@@ -96,7 +96,7 @@ def main(
     def saveToWorkingDir(var, var_name):
         joblib.dump(var, os.path.join(out_video_data_dir, f"{var_name}.pkl"))
 
-    trial_ids = utils.getUniqueIds(activity_labels_dir, prefix='trial=', suffix='.pkl')
+    trial_ids = utils.getUniqueIds(action_labels_dir, prefix='trial=', suffix='.pkl')
 
     if max_seqs is not None:
         trial_ids = trial_ids[:max_seqs]

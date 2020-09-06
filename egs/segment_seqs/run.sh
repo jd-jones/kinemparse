@@ -12,11 +12,11 @@ activity_dir="${output_dir}/activity"
 activity_data_dir="${activity_dir}/dataset"
 activity_preds_dir="${activity_dir}/preds"
 activity_smoothed_dir="${activity_dir}/preds-smoothed"
-action_dir="${output_dir}/action_activity-labels=true_model=tcn"
+action_dir="${output_dir}/action_activity-labels=pred"
 action_data_dir="${action_dir}/dataset"
 action_preds_dir="${action_dir}/preds"
 action_smoothed_dir="${action_dir}/preds-smoothed"
-keyframes_dir="${output_dir}/keyframes_activity-labels=true_action-labels=pred_smoothed"
+keyframes_dir="${output_dir}/keyframes_activity-labels=pred_action-labels=pred_conv"
 
 # IMU DIRS --- READONLY
 imu_attr_dir="$HOME/repo/kinemparse/data/output/block-connections-imu"
@@ -145,7 +145,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --keyframe_scores_dir "${keyframe_scores_dir}/data" \
         --activity_labels_dir "${activity_smoothed_dir}/data" \
         --action_labels_dir "${action_smoothed_dir}/data" \
-        --use_gt_activity "True" \
+        --use_gt_activity "False" \
         --use_gt_actions "False"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then

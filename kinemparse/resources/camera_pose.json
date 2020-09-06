@@ -1,0 +1,10 @@
+{
+  "camera_pose": {
+    "orientation": {
+      "x_angle": 180,
+      "y_angle": 0,
+      "z_angle": 0
+    },
+    "position": [0, 0, 606]
+  }
+}
