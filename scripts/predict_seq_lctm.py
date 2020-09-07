@@ -217,6 +217,10 @@ def main(
         model = getattr(LCTM.models, model_name)(**model_params)
 
         if pre_init_pw:
+            if transitions is None:
+                # TODO: use transitions in training data
+                pass
+
             pretrain = train_params.get('pretrain', True)
             model = pre_init(
                 model, train_samples, train_labels,
