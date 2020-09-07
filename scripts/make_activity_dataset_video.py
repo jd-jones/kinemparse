@@ -159,7 +159,7 @@ def main(
     for seq_idx, trial_id in enumerate(trial_ids):
         logger.info(f"Processing video {seq_idx + 1} / {len(trial_ids)}  (trial {trial_id})")
 
-        logger.info(f"  Loading data...")
+        logger.info("  Loading data...")
         score_seq = loadFromDir(f"trial-{trial_id}_frame-scores", video_seg_scores_dir)
         raw_labels = loadFromDir(f"trial-{trial_id}_action-seq", video_data_dir)
         action_labels = makeActivityLabels(raw_labels, seq_len=score_seq.shape[0], **label_kwargs)
@@ -197,7 +197,7 @@ def main(
             imu_score_seq = None
             imu_timestamp_seq = None
 
-        logger.info(f"  Saving output...")
+        logger.info("  Saving output...")
 
         gt_keyframe_fn = os.path.join(gt_keyframes_dir, f"trial-{trial_id}_gt-keyframe-seq.pkl")
         if os.path.exists(gt_keyframe_fn):
@@ -232,7 +232,7 @@ def main(
 
     all_score_seqs = np.hstack(tuple(all_score_seqs))
     all_action_labels = np.hstack(tuple(all_action_labels))
-    fn = os.path.join(fig_dir, f'score-hists.png')
+    fn = os.path.join(fig_dir, 'score-hists.png')
     plotScoreHists(all_score_seqs, all_action_labels, fn=fn)
 
 

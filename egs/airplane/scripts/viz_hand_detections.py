@@ -14,10 +14,17 @@ from kinemparse import airplanecorpus
 logger = logging.getLogger(__name__)
 
 
-def vizDetection(frame, detection, bounding_box_size=(10, 10), bounding_box_color=(0, 255, 0)):
-    x, y = tuple(int(x) for x in detection)
-    w, h = bounding_box_size
-    cv2.rectangle(frame, (x, y), (x + w, y + h), bounding_box_color, 2)
+def vizDetection(frame, detection, bounding_box_size=None, bounding_box_color=None):
+    if bounding_box_size is None:
+        bounding_box_size = np.array([100, 100])
+
+    if bounding_box_color is None:
+        bounding_box_color = (0, 255, 0)
+
+    lower_left = (detection - bounding_box_size / 2).astype(int)
+    upper_right = (detection + bounding_box_size / 2).astype(int)
+
+    cv2.rectangle(frame, lower_left.tolist(), upper_right.tolist(), bounding_box_color, 2)
 
     return frame
 

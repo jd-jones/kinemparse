@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 def loadModelAssignments(part_to_model_fn=None):
-
     if part_to_model_fn is None:
         part_to_model_fn = os.path.join(
             os.path.expanduser('~'), 'repo', 'kinemparse', 'kinemparse', 'resources',

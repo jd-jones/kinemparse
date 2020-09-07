@@ -116,7 +116,7 @@ def main(
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     if results_file is None:
-        results_file = os.path.join(out_dir, f'results.csv')
+        results_file = os.path.join(out_dir, 'results.csv')
         write_mode = 'w'
     else:
         results_file = os.path.expanduser(results_file)

@@ -1,0 +1,21 @@
+gpu_dev_id: '1'
+model_name: 'TCN'
+batch_size: 1
+learning_rate: 0.001
+cv_params: {
+    val_ratio: 0.25,
+    n_splits: 5,
+    shuffle: True
+}
+train_params: {
+    num_epochs: 25,
+    test_metric: 'Accuracy',
+    seq_as_batch: True,
+}
+model_params: {
+    binary_multiclass: False,
+    tcn_channels: [8,  8, 16, 16, 32, 32],
+    kernel_size: 25,
+    dropout: 0.2
+}
+plot_predictions: True

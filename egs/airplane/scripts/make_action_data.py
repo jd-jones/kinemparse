@@ -3,34 +3,33 @@ import logging
 import glob
 
 import yaml
+import joblib
 import numpy as np
-from scipy import optimize
 
 from mathtools import utils
-from visiontools import utils as vu
 from kinemparse import airplanecorpus
 
 
 logger = logging.getLogger(__name__)
 
 
-def associate_detections(prev_feats, cur_feats):
-    residuals = cur_feats[:, None, :] - prev_feats[None, :, :]
-    costs = np.linalg.norm(residuals, axis=2)
+def makeBinLabels(action_labels, part_idxs_to_bins, num_samples):
+    no_bin = part_idxs_to_bins[0]  # 0 is the index of the null part
+    bin_labels = np.full(num_samples, no_bin, dtype=int)
 
-    costs[np.isnan(costs)] = np.finfo(float).max
+    for part_index, start_index, end_index in action_labels:
+        bin_index = part_idxs_to_bins[part_index]
+        bin_labels[start_index:end_index + 1] = bin_index
 
-    cur_indices, prev_indices = optimize.linear_sum_assignment(costs)
-    return prev_indices
+    return bin_labels
 
 
 def main(
-        out_dir=None,
-        videos_dir=None, hand_detections_dir=None,
+        out_dir=None, hand_detections_dir=None, labels_dir=None,
         plot_output=None, results_file=None, sweep_param_name=None):
 
-    videos_dir = os.path.expanduser(videos_dir)
     hand_detections_dir = os.path.expanduser(hand_detections_dir)
+    labels_dir = os.path.expanduser(labels_dir)
 
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
@@ -44,7 +43,13 @@ def main(
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
 
+    def saveVariable(var, var_name):
+        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
+
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
+
+    logger.info(f"Reading from: {hand_detections_dir}")
+    logger.info(f"Writing to: {out_dir}")
 
     if results_file is None:
         results_file = os.path.join(out_dir, 'results.csv')
@@ -61,40 +66,33 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    for i, video_fn in enumerate(glob.glob(os.path.join(videos_dir, '*.avi'))):
-        video_id = utils.stripExtension(video_fn)
+    part_names, part_names_to_idxs, part_idxs_to_bins = airplanecorpus.loadParts()
+
+    for i, fn in enumerate(glob.glob(os.path.join(hand_detections_dir, '*.txt'))):
+        video_id = utils.stripExtension(fn).split('.handsdetections')[0]
 
         logger.info(f"Processing video {video_id}")
 
-        frames = vu.readVideo(video_fn)
         hand_detections = airplanecorpus.loadHandDetections(
             video_id, dir_name=hand_detections_dir, unflatten=True
         )
-
-        num_frames = frames.shape[0]
-        if hand_detections.shape[0] != num_frames:
-            raise AssertionError()
-
-        for frame_index in range(1, num_frames):
-            cur_detections = hand_detections[frame_index]
-            prev_detections = hand_detections[frame_index - 1]
-
-            # Data association
-            assignment = associate_detections(prev_detections, cur_detections)
-            cur_detections = cur_detections[assignment]
-
-            # Impute missing values
-            imputed = prev_detections
-            cur_is_nan = np.isnan(cur_detections)
-            cur_detections[cur_is_nan] = imputed[cur_is_nan]
-
-            hand_detections[frame_index] = cur_detections
-
-        fn = os.path.join(out_data_dir, f"{video_id}.handsdetections.txt")
         hand_detections = hand_detections.reshape(hand_detections.shape[0], -1)
-        np.savetxt(fn, hand_detections, delimiter=',', fmt='%.0f')
+        mean_detection = np.nanmean(hand_detections)
+        hand_detections[np.isnan(hand_detections)] = mean_detection
 
-        video_fn = os.path.join(fig_dir, f'{video_id}.avi')
+        action_labels = airplanecorpus.loadLabels(
+            video_id, dir_name=labels_dir,
+            part_names_to_idxs=part_names_to_idxs
+        )
+
+        bin_labels = makeBinLabels(action_labels, part_idxs_to_bins, hand_detections.shape[0])
+
+        fig_fn = os.path.join(fig_dir, f"{video_id}.png")
+        utils.plot_array(hand_detections.T, (bin_labels,), ('bin',), fn=fig_fn)
+
+        video_id = video_id.replace('_', '-')
+        saveVariable(hand_detections, f'trial={video_id}_feature-seq')
+        saveVariable(bin_labels, f'trial={video_id}_label-seq')
 
 
 if __name__ == "__main__":

@@ -186,7 +186,7 @@ def main(
                 for args in zip(action_seqs, rgb_timestamp_seqs, imu_timestamp_seqs)
             )
         )
-        saveVariable(unique_components, f'unique_components')
+        saveVariable(unique_components, 'unique_components')
     elif output_data == 'pairwise components':
         imu_label_seqs = utils.batchProcess(
             labels.pairwiseComponentLabels, assembly_seqs,
