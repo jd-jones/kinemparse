@@ -81,11 +81,11 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Predict actions"
-    python -m pdb predict_seq_pytorch.py \
+    python predict_seq_pytorch.py \
         --config_file "${config_dir}/actions/predict_seq_pytorch.yaml" \
         --out_dir "${action_preds_dir}" \
         --data_dir "${action_data_dir}/data" \
-        --gpu_dev_id "None"
+        --gpu_dev_id "'2'"
     python analysis.py \
         --out_dir "${action_preds_dir}/system-performance" \
         --results_file "${action_preds_dir}/results.csv"

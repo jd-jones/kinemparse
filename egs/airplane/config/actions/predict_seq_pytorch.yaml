@@ -8,7 +8,7 @@ cv_params: {
     shuffle: True
 }
 train_params: {
-    num_epochs: 25,
+    num_epochs: 100,
     test_metric: 'Accuracy',
     seq_as_batch: True,
 }

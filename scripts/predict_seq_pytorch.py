@@ -270,7 +270,10 @@ def main(
             label_names = ('gt', 'pred')
             preds, scores, inputs, gt_labels, ids = zip(*test_io_history)
             for batch in test_io_history:
-                batch = map(lambda x: x.cpu().numpy(), batch)
+                batch = tuple(
+                    x.cpu().numpy() if isinstance(x, torch.Tensor) else x
+                    for x in batch
+                )
                 for preds, _, inputs, gt_labels, seq_id in zip(*batch):
                     fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
                     utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn)
@@ -280,7 +283,10 @@ def main(
             saveVariable(score_seq, f'trial={trial_id}_score-seq')
             saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
         for batch in test_io_history:
-            batch = map(lambda x: x.cpu().numpy(), batch)
+            batch = tuple(
+                x.cpu().numpy() if isinstance(x, torch.Tensor) else x
+                for x in batch
+            )
             for io in zip(*batch):
                 saveTrialData(*io)
 
