@@ -1,0 +1,22 @@
+corpus_name: "child"
+default_annotator: "Cathryn"
+cv_scheme: "leave one out"
+legacy_mode: 1
+remove_background: True
+model_config: {
+    init_kwargs: {
+        structured: 1
+    },
+    fit_kwargs: {
+      diag_regularizer: 1,
+      expand_staging: 1,
+      override_transitions: 0
+    },
+    decode_kwargs: {
+        bias: [0, -5],
+        inv_scale: [1, 0.05],
+        theta_sample_period: 90,
+        # initial_translation: "bb_mean",
+        # viz_pose: 0
+    }
+}

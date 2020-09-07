@@ -1,0 +1,32 @@
+independent_signals: True
+active_only: True
+cv_params: {
+    val_ratio: 0.25,
+    n_splits: 5,
+    shuffle: True
+}
+model_name: 'PretrainedModel'
+pre_init_pw: True
+model_params: {
+    debug: True,
+    # conv_len: 25,
+    inference: "segmental",
+    segmental: True
+}
+plot_predictions: True
+viz_params: {
+    fig_type: 'array',
+    # 'activity' or 'connections'
+    output_data: 'connections',
+}
+
+# Connected / disconnected
+# label_mapping: {2: 0, 3: 1, 4: 1}
+
+# Connected / disconnected / action
+# label_mapping: {3: 2, 4: 1}
+# eval_label_mapping: {2: 0}
+
+# Connected / disconnected / c -> d / d -> c
+label_mapping: {4: 1}
+eval_label_mapping: {2: 0, 3: 1}

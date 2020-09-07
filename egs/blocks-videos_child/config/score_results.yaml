@@ -1,0 +1,6 @@
+corpus_name: 'easy'
+metric_names: ['state', 'topology', 'subset_geom', 'subset_topo', 'off by one']
+resolution: 'state'
+denom_mode: 'accuracy'
+confidence: 0.68
+param_vals: {}

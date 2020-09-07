@@ -1,0 +1,39 @@
+independent_signals: True
+active_only: True
+gpu_dev_id: '1'
+model_name: 'TCN'
+batch_size: 1
+learning_rate: 0.001
+cv_params: {
+    val_ratio: 0.25,
+    n_splits: 5,
+    shuffle: True
+}
+train_params: {
+    num_epochs: 15,
+    test_metric: 'F1',
+    seq_as_batch: True,
+}
+model_params: {
+    binary_multiclass: False,
+    tcn_channels: [8,  8, 16, 16, 32, 32],
+    kernel_size: 25,
+    dropout: 0.2
+}
+plot_predictions: True
+viz_params: {
+    fig_type: 'array',
+    # 'activity' or 'connections'
+    output_data: 'connections',
+}
+
+# Connected / disconnected
+# label_mapping: {2: 0, 3: 1, 4: 1}
+
+# Connected / disconnected / action
+label_mapping: {3: 2, 4: 1}
+eval_label_mapping: {2: 0}
+
+# Connected / disconnected / c -> d / d -> c
+# label_mapping: {4: 1}
+# eval_label_mapping: {2: 0, 3: 1}

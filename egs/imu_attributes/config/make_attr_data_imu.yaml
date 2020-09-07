@@ -1,0 +1,6 @@
+# 'activity' or  'connections'
+output_data: 'pairwise components'
+resting_from_gt: True
+# 'array', 'multi', or None (ie comment out the line below)
+fig_type: 'array'
+include_signals: ['gyro']

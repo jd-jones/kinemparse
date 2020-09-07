@@ -1,0 +1,6 @@
+use_gt_segments: True
+plot_predictions: True
+viz_params: {
+    fig_type: 'array',
+    output_data: 'connections',
+}

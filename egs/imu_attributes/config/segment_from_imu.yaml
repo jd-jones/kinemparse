@@ -1,0 +1,12 @@
+cv_params: {
+    val_ratio: 0.25,
+    n_splits: 5,
+    shuffle: True
+}
+plot_predictions: True
+use_gt_segments: True
+viz_params: {
+    fig_type: 'array',
+    # 'activity' or 'connections'
+    output_data: 'connections',
+}

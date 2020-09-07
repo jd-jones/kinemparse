@@ -1,0 +1,11 @@
+cv_params: {
+}
+train_params: {
+}
+model_params: {
+}
+plot_predictions: True
+viz_params: {
+    fig_type: 'array',
+    output_data: 'connections',
+}
