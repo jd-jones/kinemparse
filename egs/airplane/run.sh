@@ -2,8 +2,8 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="5"
-stop_after="5"
+start_at="7"
+stop_after="7"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 output_dir="${HOME}/data/output/parse_airplanes"
@@ -12,7 +12,9 @@ viz_dir="${output_dir}/viz_detections"
 action_dir="${output_dir}/action"
 action_data_dir="${action_dir}/dataset"
 action_preds_dir="${action_dir}/preds"
-action_smoothed_dir="${action_dir}/preds-smoothed"
+assembly_dir="${output_dir}/assembly"
+assembly_data_dir="${assembly_dir}/dataset"
+assembly_preds_dir="${assembly_dir}/preds"
 
 # DATA DIRS
 airplane_data_dir="${HOME}/data/toy_airplane"
@@ -25,6 +27,7 @@ eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 cd $scripts_dir
+
 
 STAGE=1
 
@@ -85,6 +88,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --config_file "${config_dir}/actions/predict_seq_pytorch.yaml" \
         --out_dir "${action_preds_dir}" \
         --data_dir "${action_data_dir}/data" \
+        --data_dir "${action_data_dir}/data" \
         --gpu_dev_id "'2'"
     python analysis.py \
         --out_dir "${action_preds_dir}/system-performance" \
@@ -95,21 +99,32 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
 fi
 ((++STAGE))
 
+
+# -=( PHASE 3: ASSEMBLY PREDICTION )==-----------------------------------------
+if [ "${start_at}" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Make assembly dataset"
+    python make_assembly_data.py \
+        --out_dir "${assembly_data_dir}" \
+        --bin_scores_dir "${action_preds_dir}/data" \
+        --action_labels_dir "${airplane_labels_dir}"
+fi
+if [ "${stop_after}" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Smooth action predictions"
+    echo "STAGE ${STAGE}: Smooth assembly predictions"
     python predict_seq_lctm.py \
-        --config_file "${config_dir}/actions/predict_seq_lctm.yaml" \
-        --out_dir "${action_smoothed_dir}" \
-        --data_dir "${action_data_dir}/data" \
-        --scores_dir "${action_preds_dir}/data"
+        --config_file "${config_dir}/assembly/predict_seq_lctm.yaml" \
+        --out_dir "${assembly_preds_dir}" \
+        --data_dir "${assembly_data_dir}/data" \
+        --scores_dir "${assembly_data_dir}/data"
     python analysis.py \
-        --out_dir "${action_smoothed_dir}/system-performance" \
-        --results_file "${action_smoothed_dir}/results.csv"
+        --out_dir "${assembly_preds_dir}/system-performance" \
+        --results_file "${assembly_preds_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
-
-
-# -=( PHASE 3: ASSEMBLY PREDICTION )==-----------------------------------------

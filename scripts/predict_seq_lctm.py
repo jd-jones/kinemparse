@@ -17,6 +17,7 @@ import LCTM.utils
 import LCTM.learn
 
 from mathtools import utils
+from seqtools import utils as su
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def preprocess(imu_feature_seqs):
     return preprocessed_feature_seqs
 
 
-def pre_init(model, train_samples, train_labels, pretrain=True, transitions=None):
+def pre_init(model, train_samples, train_labels, pretrain=True, transition_scores=None):
     n_samples = len(train_samples)
     model.n_features = train_samples[0].shape[0]
     model.n_classes = np.max(list(map(np.max, train_labels))) + 1
@@ -49,21 +50,8 @@ def pre_init(model, train_samples, train_labels, pretrain=True, transitions=None
         else:
             LCTM.learn.pretrain_weights(model, train_samples, train_labels)
 
-    # Overwrite pairwise weights with negative log transition probs
-    # train_labels = tuple(map(LCTM.utils.segment_labels, train_labels))
-    # transition_probs, initial_probs, final_probs = fsm.smoothCounts(
-    #     *fsm.countSeqs(train_labels), structure_only=True, as_numpy=True
-    # )
-
-    transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
-    for cur_state, next_states in transitions.items():
-        for next_state in next_states:
-            transition_probs[cur_state, next_state] = 1
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', message='divide by zero')
-        model.ws['seg_pw'] = np.log(transition_probs)
-    # model.ws['pw'][transition_probs == 0] = -np.inf
+    if transition_scores is not None:
+        model.ws['seg_pw'] = transition_scores
 
     return model
 
@@ -138,7 +126,7 @@ def main(
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     if results_file is None:
-        results_file = os.path.join(out_dir, f'results.csv')
+        results_file = os.path.join(out_dir, 'results.csv')
         write_mode = 'w'
     else:
         results_file = os.path.expanduser(results_file)
@@ -181,7 +169,8 @@ def main(
 
     # Define cross-validation folds
     dataset_size = len(trial_ids)
-    cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
+    # cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
+    cv_folds = ((tuple(range(dataset_size)), tuple(), tuple(range(dataset_size))),)  # FIXME
 
     metric_dict = {
         'accuracy': [],
@@ -218,13 +207,21 @@ def main(
 
         if pre_init_pw:
             if transitions is None:
-                # TODO: use transitions in training data
-                pass
+                transition_probs, initial, final = su.smoothCounts(*su.countSeqs(train_labels))
+            else:
+                transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
+                for cur_state, next_states in transitions.items():
+                    for next_state in next_states:
+                        transition_probs[cur_state, next_state] = 1
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='divide by zero')
+                transition_scores = np.log(transition_probs)
 
             pretrain = train_params.get('pretrain', True)
             model = pre_init(
                 model, train_samples, train_labels,
-                pretrain=pretrain, transitions=transitions
+                pretrain=pretrain, transition_scores=transition_scores
             )
         else:
             model.fit(train_samples, train_labels, **train_params)
