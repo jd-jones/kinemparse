@@ -47,35 +47,19 @@ def makeAssemblyLabels(action_labels, part_names, num_samples, vocabulary={}):
 
 
 def makeAssemblyScores(
-        bin_scores, part_names_to_idxs, part_idxs_to_bins, transition_vocabulary,
-        initial_scores=None, final_scores=None):
-    def transitionToPart(cur_assembly, next_assembly):
-        if next_assembly == cur_assembly:
-            return 'null'
-
-        part_difference = tuple(next_assembly ^ cur_assembly)
-        if len(part_difference) != 1:
-            raise AssertionError()
-        part = part_difference[0]
-        return part
-
-    transition_to_part_name = [transitionToPart(c, n) for (c, n) in transition_vocabulary]
+        bin_scores, part_names_to_idxs, part_idxs_to_bins, transition_vocabulary):
+    transition_to_part_name = [
+        airplanecorpus.actionFromTransition(c, n)
+        for (c, n) in transition_vocabulary
+    ]
     transition_to_part_index = [part_names_to_idxs[name] for name in transition_to_part_name]
     transition_to_bin = part_idxs_to_bins[transition_to_part_index]
     assembly_scores = bin_scores[:, transition_to_bin]
 
-    if initial_scores is not None:
-        assembly_scores[0, :] += initial_scores
-
-    if final_scores is not None:
-        assembly_scores[-1, :] += final_scores
-
     return assembly_scores
 
 
-def main(
-        out_dir=None, bin_scores_dir=None, action_labels_dir=None,
-        plot_output=None, results_file=None, sweep_param_name=None):
+def main(out_dir=None, bin_scores_dir=None, action_labels_dir=None, subsample_period=None):
 
     bin_scores_dir = os.path.expanduser(bin_scores_dir)
     action_labels_dir = os.path.expanduser(action_labels_dir)
@@ -95,13 +79,6 @@ def main(
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     logger.info(f"Writing to: {out_dir}")
-
-    if results_file is None:
-        results_file = os.path.join(out_dir, 'results.csv')
-        # write_mode = 'w'
-    else:
-        results_file = os.path.expanduser(results_file)
-        # write_mode = 'a'
 
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
@@ -142,6 +119,7 @@ def main(
     num_items = len(transition_to_index)
     transition_vocabulary = {v: k for k, v in transition_to_index.items()}
     transition_vocabulary = tuple(transition_vocabulary[i] for i in range(num_items))
+    saveVariable(transition_vocabulary, 'transition-vocabulary')
 
     for i, trial_id in enumerate(trial_ids):
         video_id = utils.stripExtension(trial_id).replace('-', '_')
@@ -151,8 +129,10 @@ def main(
 
         assembly_scores = makeAssemblyScores(
             bin_score_seq, part_names_to_idxs, part_idxs_to_bins, transition_vocabulary,
-            initial_scores=initial_scores, final_scores=final_scores
         )
+
+        assembly_scores = assembly_scores[::subsample_period, :]
+        assembly_labels = assembly_labels[::subsample_period]
 
         fig_fn = os.path.join(fig_dir, f"{video_id}.png")
         utils.plot_array(assembly_scores.T, (assembly_labels,), ('assembly',), fn=fig_fn)

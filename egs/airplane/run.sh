@@ -2,8 +2,8 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="7"
-stop_after="7"
+start_at="9"
+stop_after="9"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 output_dir="${HOME}/data/output/parse_airplanes"
@@ -15,6 +15,9 @@ action_preds_dir="${action_dir}/preds"
 assembly_dir="${output_dir}/assembly"
 assembly_data_dir="${assembly_dir}/dataset"
 assembly_preds_dir="${assembly_dir}/preds"
+assembly_results_dir="${assembly_dir}/results"
+baseline_dir="${output_dir}/baseline_vo2014"
+vo2014_export_dir="${output_dir}/vo2014-matlab"
 
 # DATA DIRS
 airplane_data_dir="${HOME}/data/toy_airplane"
@@ -82,7 +85,7 @@ if [ "${stop_after}" -eq "${STAGE}" ]; then
 fi
 ((++STAGE))
 
-if [ "$start_at" -le "${STAGE}" ]; then
+if [ "${start_at}" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Predict actions"
     python predict_seq_pytorch.py \
         --config_file "${config_dir}/actions/predict_seq_pytorch.yaml" \
@@ -106,14 +109,15 @@ if [ "${start_at}" -le "${STAGE}" ]; then
     python make_assembly_data.py \
         --out_dir "${assembly_data_dir}" \
         --bin_scores_dir "${action_preds_dir}/data" \
-        --action_labels_dir "${airplane_labels_dir}"
+        --action_labels_dir "${airplane_labels_dir}" \
+        --subsample_period "8"
 fi
 if [ "${stop_after}" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
 
-if [ "$start_at" -le "${STAGE}" ]; then
+if [ "${start_at}" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Smooth assembly predictions"
     python predict_seq_lctm.py \
         --config_file "${config_dir}/assembly/predict_seq_lctm.yaml" \
@@ -125,6 +129,39 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --results_file "${assembly_preds_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+if [ "${start_at}" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Evaluate assembly predictions"
+    python eval_output.py \
+        --out_dir "${assembly_results_dir}" \
+        --preds_dir "${assembly_preds_dir}/data" \
+        --data_dir "${assembly_data_dir}/data"
+    python analysis.py \
+        --out_dir "${assembly_results_dir}/system-performance" \
+        --results_file "${assembly_results_dir}/results.csv"
+fi
+if [ "${stop_after}" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+
+# -=( OPTIONAL: BASELINE FROM VO 2014 )==--------------------------------------
+if [ "${start_at}" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Baseline performance"
+    python baseline.py \
+        --out_dir "${baseline_dir}" \
+        --data_dir "${assembly_data_dir}/data" \
+        --preds_dir "${vo2014_export_dir}/data"
+        # --detection_threshold "0"
+    python analysis.py \
+        --out_dir "${baseline_dir}/system-performance" \
+        --results_file "${baseline_dir}/results.csv"
+fi
+if [ "${stop_after}" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))

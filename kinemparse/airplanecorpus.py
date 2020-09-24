@@ -22,6 +22,18 @@ LABEL_DTYPE = [('object', 'U10'), ('start_idx', 'i4'), ('end_idx', 'i4')]
 logger = logging.getLogger(__name__)
 
 
+def actionFromTransition(cur_assembly, next_assembly):
+    if next_assembly == cur_assembly:
+        return 'null'
+
+    part_difference = tuple(next_assembly ^ cur_assembly)
+    if len(part_difference) != 1:
+        raise AssertionError()
+    part = part_difference[0]
+
+    return part
+
+
 def loadModelAssignments(part_to_model_fn=None):
     if part_to_model_fn is None:
         part_to_model_fn = os.path.join(

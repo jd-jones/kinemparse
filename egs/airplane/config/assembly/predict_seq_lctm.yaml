@@ -8,6 +8,8 @@ pre_init_pw: True
 model_params: {
     debug: True,
     inference: "segmental",
-    segmental: True
+    segmental: True,
+    start_prior: True,
+    end_prior: True
 }
 plot_predictions: True

@@ -1,66 +1,92 @@
 #!/usr/bin/env/python
 import os
 import glob
+import logging
+import collections
 
 import numpy as np
-from scipy.spatial.transform import Rotation
-from urdf_parser_py.urdf import URDF
+import pandas as pd
+import yaml
 
 import _utils as ikea_utils
 from mathtools import utils
 
 
-def truncateSeqs(seqs, warn=False):
-    num_samples = min(seq.shape[0] for seq in seqs)
-    truncated = tuple(seq[:num_samples, :] for seq in seqs)
-    return truncated
+CAMERA_NAMES = ('upper', 'lower')
+POSE_VAR_NAMES = ['p_x', 'p_y', 'p_z', 'q_x', 'q_y', 'q_z', 'q_w']
 
 
-def markerPosesToPartPoses(marker_pose_worldframe_seq, marker_pose_partframe):
-    if np.isnan(marker_pose_worldframe_seq).any():
-        row_is_valid = ~(np.isnan(marker_pose_worldframe_seq).any(axis=1))
-        part_poses = marker_pose_worldframe_seq.copy()
+logger = logging.getLogger(__name__)
 
-        if row_is_valid.any():
-            valid_marker_poses = marker_pose_worldframe_seq[row_is_valid, :]
-            valid_part_poses = markerPosesToPartPoses(valid_marker_poses, marker_pose_partframe)
-            part_poses[row_is_valid, 1:] = valid_part_poses
 
-        return part_poses
+def collectMarkerPoses(marker_sample_seqs, marker_keys):
+    marker_sample_seqs = [marker_sample_seqs[k] for k in marker_keys]
 
-    t_wm = marker_pose_worldframe_seq[:, 1:4]
-    q_wm = marker_pose_worldframe_seq[:, 4:8]
-    # orientation from quaternion to abstract rotation
-    r_wm = Rotation.from_quat(q_wm)
+    min_len = min(x.shape[0] for x in marker_sample_seqs)
+    for i in range(len(marker_sample_seqs)):
+        num_samples = marker_sample_seqs[i].shape[0]
+        if min_len < num_samples:
+            marker_sample_seqs[i] = marker_sample_seqs[i][:min_len, :]
+            logger.info(
+                f"Truncated seq of len {num_samples} "
+                f"to {marker_sample_seqs[i].shape[0]}"
+            )
 
-    t_pm, R_pm = marker_pose_partframe
-    r_pm = Rotation.from_matrix(R_pm)
+    marker_index_seqs = tuple(seq[:, :1] for seq in marker_sample_seqs)
+    marker_pose_seqs = tuple(seq[:, 1:] for seq in marker_sample_seqs)
 
-    # FOR COLUMN VECTORS:
-    # x_p = R_pm x_m + t_pm
-    # x_m = R_pm_inv ( x_p - t_pm )
-    # R_pm_inv = R_pm.T
-    # x_m = R_pm.T x_p - R_pm.T t_pm
-    #     = R_mp x_p + t_mp
-    # --> R_mp = R_pm.T    t_mp = - R_pm.T t_pm
-    r_mp = r_pm.inv()
-    t_mp = r_mp.apply(-t_pm)
+    return marker_index_seqs, marker_pose_seqs
 
-    t_wp = r_wm.apply(t_mp) + t_wm
-    r_wp = r_wm * r_mp
 
-    # orientation from abstract rotation to quaternion
-    q_wp = r_wp.as_quat()
-    part_pose_worldframe_seq = np.hstack((t_wp, q_wp))
-    return part_pose_worldframe_seq
+def cameraIndices(marker_pose_seqs, marker_keys, camera_name):
+    frame_indices = np.hstack(tuple(
+        seq for seq, k in zip(marker_pose_seqs, marker_keys)
+        if k[0] == camera_name
+    ))
+
+    if not np.all(frame_indices == frame_indices[:, 0:1]):
+        # import pdb; pdb.set_trace()
+        raise AssertionError()
+
+    return frame_indices[:, 0]
+
+
+def readFrameFns(fn, names_as_int=False):
+    frame_fns = pd.read_csv(fn, header=None).iloc[:, 0].tolist()
+
+    if names_as_int:
+        frame_fns = np.array([int(fn.strip('.png').strip('frame')) for fn in frame_fns])
+
+    return frame_fns
+
+
+def frameNamesToSampleIndices(labels, frame_fns, frame_idx_seq):
+    def sampleIndexFromFrameName(label_frame_names):
+        # import pdb; pdb.set_trace()
+        label_frame_idxs = utils.firstMatchingIndex(
+            frame_fns, label_frame_names,
+            check_single=False
+        )
+        label_sample_idxs = utils.firstMatchingIndex(
+            frame_idx_seq, label_frame_idxs,
+            check_single=False
+        )
+        return label_sample_idxs
+
+    for key in ('start', 'end'):
+        labels[key] = sampleIndexFromFrameName(labels[key].to_numpy())
+
+    return labels
 
 
 def main(
-        out_dir=None, marker_pose_dir=None, marker_bundles_dir=None, urdf_file=None,
-        start_from=None):
+        out_dir=None, marker_pose_dir=None, marker_bundles_dir=None, labels_dir=None,
+        urdf_file=None, start_from=None, rename_parts={}):
     marker_pose_dir = os.path.expanduser(marker_pose_dir)
     marker_bundles_dir = os.path.expanduser(marker_bundles_dir)
+    labels_dir = os.path.expanduser(labels_dir)
     urdf_file = os.path.expanduser(urdf_file)
+
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -68,51 +94,127 @@ def main(
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
+    out_labels_dir = os.path.join(out_data_dir, 'labels')
+    if not os.path.exists(out_labels_dir):
+        os.makedirs(out_labels_dir)
+    out_idxs_dir = os.path.join(out_data_dir, 'frame-indices')
+    if not os.path.exists(out_idxs_dir):
+        os.makedirs(out_idxs_dir)
 
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
+    diffs_dir = os.path.join(fig_dir, 'diffs')
+    if not os.path.exists(diffs_dir):
+        os.makedirs(diffs_dir)
 
-    chair = ikea_utils.parse_xacro(urdf_file)
-    import pdb; pdb.set_trace()
+    logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     marker_to_part = {}
-    marker_poses_partframe = {}
     for bundle_fn in glob.glob(os.path.join(marker_bundles_dir, '*.xml')):
         part_name, bundle_data = ikea_utils.getBundleData(bundle_fn)
         for marker_index, pose in bundle_data.items():
-            marker_poses_partframe[marker_index] = pose
             marker_to_part[marker_index] = part_name
 
-    for i, video_dir in enumerate(glob.glob(os.path.join(marker_pose_dir, '*'))):
-        if start_from is not None and i < start_from:
+    action_names = frozenset()
+    part_names = frozenset()
+    for i, label_fn in enumerate(glob.glob(os.path.join(labels_dir, "*.txt"))):
+        # Load labels
+        labels, video_id, camera_name = ikea_utils.readLabels(
+            label_fn, rename_parts=rename_parts
+        )
+
+        if not os.path.exists(os.path.join(marker_pose_dir, video_id)):
+            logger.warning(f"Skipping video {video_id}: no marker poses")
             continue
 
-        video_id = os.path.basename(os.path.normpath(video_dir))
+        # Load frame fns
+        frame_fns = readFrameFns(
+            os.path.join(marker_pose_dir, video_id, 'metadata', f"frame-fns_{camera_name}.csv"),
+            names_as_int=True
+        )
 
-        print("PROCESSING VIDEO {0}: {1}".format(i, video_id))
+        logger.info("PROCESSING VIDEO {0}: {1}".format(i, video_id))
 
         out_video_dir = os.path.join(out_data_dir, video_id)
         if not os.path.exists(out_video_dir):
             os.makedirs(out_video_dir)
 
-        for file_path in glob.glob(os.path.join(video_dir, '*.csv')):
+        marker_samples = {}
+        part_to_keys = collections.defaultdict(list)
+        for file_path in glob.glob(os.path.join(marker_pose_dir, video_id, '*.csv')):
             file_id = ikea_utils.basename(file_path)
             camera_name, marker_index = ikea_utils.metadataFromTopicName(file_id)
-
             part_name = marker_to_part[marker_index]
-            marker_pose_partframe = marker_poses_partframe[marker_index]
+            marker_pose_seq = ikea_utils.readMarkerPoses(file_path, pose_and_index=True)
+            if np.isnan(marker_pose_seq[:, 1:]).all():
+                continue
 
-            # Convert marker pose to part pose
-            part_pose_seq = ikea_utils.readMarkerPoses(file_path)
-            # part_pose_seq = markerPosesToPartPoses(marker_pose_seq, marker_pose_partframe)
+            marker_samples[camera_name, marker_index] = marker_pose_seq
+            part_to_keys[part_name].append((camera_name, marker_index))
 
-            col_names = ['frame_idx', 'p_x', 'p_y', 'p_z', 'q_x', 'q_y', 'q_z', 'q_w']
-            fmt = ['%d'] + ['%f'] * 7
-            fn = os.path.join(out_video_dir, '{0}.csv'.format(file_id))
-            np.savetxt(fn, part_pose_seq, delimiter=',', header=','.join(col_names), fmt=fmt)
+        all_part_frame_seqs = []
+        for part_name, marker_keys in part_to_keys.items():
+            marker_index_seqs, marker_pose_seqs = collectMarkerPoses(marker_samples, marker_keys)
+            part_pose_seq = ikea_utils.avgPose(*marker_pose_seqs)
+
+            # VISUALIZE POSES
+            ikea_utils.plotPoses(
+                os.path.join(fig_dir, f"{video_id}_part={part_name}_all-markers.png"),
+                *marker_pose_seqs,
+                labels=tuple(', '.join(tuple(map(str, k))) for k in marker_keys)
+            )
+            ikea_utils.plotPoses(
+                os.path.join(fig_dir, f"{video_id}_part={part_name}.png"),
+                part_pose_seq
+            )
+
+            # SAVE POSES
+            pd.DataFrame(data=part_pose_seq, columns=POSE_VAR_NAMES).to_csv(
+                os.path.join(out_video_dir, '{0}_poses.csv'.format(part_name)),
+                index=False
+            )
+
+            part_frame_seq = np.column_stack(tuple(
+                cameraIndices(marker_index_seqs, marker_keys, name)
+                for name in CAMERA_NAMES
+            ))
+            all_part_frame_seqs.append(part_frame_seq)
+
+        all_part_frame_seqs = np.stack(tuple(all_part_frame_seqs), axis=-1)
+        if not np.all(all_part_frame_seqs == all_part_frame_seqs[:, :, :1]):
+            # import pdb; pdb.set_trace()
+            raise AssertionError()
+        frame_idx_seq = all_part_frame_seqs[..., 0]
+
+        labels = frameNamesToSampleIndices(labels, frame_fns, frame_idx_seq)
+
+        # save labels
+        labels.to_csv(os.path.join(out_labels_dir, f"{video_id}.csv"), index=False)
+
+        pd.DataFrame(data=frame_idx_seq, columns=CAMERA_NAMES).to_csv(
+            os.path.join(out_idxs_dir, '{0}.csv'.format(part_name)),
+            index=False
+        )
+
+        action_names = action_names | frozenset(labels['action'].tolist())
+        part_names = part_names | frozenset(labels['arg1'].tolist())
+        part_names = part_names | frozenset(labels['arg2'].tolist())
+
+    with open(os.path.join(out_labels_dir, 'action_and_part_names.yaml'), 'wt') as f:
+        yaml.dump({'action_names': list(action_names), 'part_names': list(part_names)}, f)
 
 
 if __name__ == '__main__':
     cl_args = utils.parse_args(main)
-    main(**cl_args)
+    config, config_fn = utils.parse_config(cl_args, script_name=__file__)
+
+    # Create output directory, instantiate log file and write config options
+    out_dir = os.path.expanduser(config['out_dir'])
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    with open(os.path.join(out_dir, config_fn), 'w') as outfile:
+        yaml.dump(config, outfile)
+    utils.copyFile(__file__, out_dir)
+
+    main(**config)

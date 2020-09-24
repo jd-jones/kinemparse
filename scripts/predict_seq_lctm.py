@@ -1,4 +1,3 @@
-import argparse
 import os
 import warnings
 import logging
@@ -32,7 +31,9 @@ def preprocess(imu_feature_seqs):
     return preprocessed_feature_seqs
 
 
-def pre_init(model, train_samples, train_labels, pretrain=True, transition_scores=None):
+def pre_init(
+        model, train_samples, train_labels, pretrain=True,
+        transition_scores=None, start_scores=None, end_scores=None):
     n_samples = len(train_samples)
     model.n_features = train_samples[0].shape[0]
     model.n_classes = np.max(list(map(np.max, train_labels))) + 1
@@ -52,6 +53,12 @@ def pre_init(model, train_samples, train_labels, pretrain=True, transition_score
 
     if transition_scores is not None:
         model.ws['seg_pw'] = transition_scores
+
+    if start_scores is not None:
+        model.ws['start'] = start_scores
+
+    if end_scores is not None:
+        model.ws['end'] = end_scores
 
     return model
 
@@ -77,6 +84,8 @@ def plot_weights(model, fn=None):
         if weights.ndim > 2:
             logger.info(f"Flattening {name} weights with shape {weights.shape}")
             weights = weights.reshape(weights.shape[0], -1)
+        if weights.ndim == 1:
+            weights = weights[None, :]
         axis.imshow(weights, interpolation='None')
         axis.set_title(f"{name}:  min {weights.min():.02f}  max {weights.max():.02f}")
 
@@ -127,10 +136,10 @@ def main(
 
     if results_file is None:
         results_file = os.path.join(out_dir, 'results.csv')
-        write_mode = 'w'
+        if os.path.exists(results_file):
+            os.remove(results_file)
     else:
         results_file = os.path.expanduser(results_file)
-        write_mode = 'a'
 
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
@@ -207,21 +216,28 @@ def main(
 
         if pre_init_pw:
             if transitions is None:
-                transition_probs, initial, final = su.smoothCounts(*su.countSeqs(train_labels))
+                transition_probs, start_probs, end_probs = su.smoothCounts(
+                    *su.countSeqs(train_labels)
+                )
             else:
                 transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
                 for cur_state, next_states in transitions.items():
                     for next_state in next_states:
                         transition_probs[cur_state, next_state] = 1
+                start_probs = np.ones(model.n_classes)
+                end_probs = np.ones(model.n_classes)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', message='divide by zero')
                 transition_scores = np.log(transition_probs)
+                start_scores = np.log(start_probs)
+                end_scores = np.log(end_probs)
 
             pretrain = train_params.get('pretrain', True)
             model = pre_init(
                 model, train_samples, train_labels,
-                pretrain=pretrain, transition_scores=transition_scores
+                pretrain=pretrain, transition_scores=transition_scores,
+                start_scores=start_scores, end_scores=end_scores
             )
         else:
             model.fit(train_samples, train_labels, **train_params)
@@ -259,10 +275,7 @@ def main(
         logger.info(f'Label distribution: {label_hist}')
 
         d = {k: v[-1] / 100 for k, v in metric_dict.items()}
-        utils.writeResults(
-            results_file, d, sweep_param_name, model_params,
-            write_mode=write_mode
-        )
+        utils.writeResults(results_file, d, sweep_param_name, model_params)
 
         if plot_predictions:
             io_fig_dir = os.path.join(fig_dir, 'model-io')
@@ -292,36 +305,9 @@ def main(
 
 
 if __name__ == "__main__":
-    # Parse command line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config_file')
-    parser.add_argument('--out_dir')
-    parser.add_argument('--data_dir')
-    parser.add_argument('--scores_dir')
-    parser.add_argument('--model_params')
-    parser.add_argument('--results_file')
-    parser.add_argument('--sweep_param_name')
-
-    args = vars(parser.parse_args())
-    args = {k: v for k, v in args.items() if v is not None}
-
-    # Load config file and override with any provided command line args
-    config_file_path = args.pop('config_file', None)
-    if config_file_path is None:
-        file_basename = utils.stripExtension(__file__)
-        config_fn = f"{file_basename}.yaml"
-        config_file_path = os.path.join(
-            os.path.expanduser('~'), 'repo', 'kinemparse', 'scripts', config_fn
-        )
-    else:
-        config_fn = os.path.basename(config_file_path)
-    with open(config_file_path, 'rt') as config_file:
-        config = yaml.safe_load(config_file)
-    for k, v in args.items():
-        if isinstance(v, dict) and k in config:
-            config[k].update(v)
-        else:
-            config[k] = v
+    # Parse command-line args and config file
+    cl_args = utils.parse_args(main)
+    config, config_fn = utils.parse_config(cl_args, script_name=__file__)
 
     # Create output directory, instantiate log file and write config options
     out_dir = os.path.expanduser(config['out_dir'])
@@ -330,7 +316,5 @@ if __name__ == "__main__":
     with open(os.path.join(out_dir, config_fn), 'w') as outfile:
         yaml.dump(config, outfile)
     utils.copyFile(__file__, out_dir)
-
-    utils.autoreload_ipython()
 
     main(**config)

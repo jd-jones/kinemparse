@@ -149,7 +149,7 @@ def main(
                 continue
             selected_frame_indices = keyframe_idxs
 
-        logger.info(f"  Loading labels...")
+        logger.info("  Loading labels...")
         action_seq, annotator_name, is_valid = corpus.readLabels(trial_id, default_annotator)
         if not is_valid:
             logger.info(f"    Skipping trial {trial_id}: No labels")
@@ -202,7 +202,7 @@ def main(
         # trial_str = f"trial={trial_id}"
         trial_str = f"trial-{trial_id}"
         if 'imu' in modalities:
-            logger.info(f"  Loading and saving IMU data...")
+            logger.info("  Loading and saving IMU data...")
 
             accel_seq = imu.loadImuSampleSeq(corpus, trial_id, sensor_name='accel')
             gyro_seq = imu.loadImuSampleSeq(corpus, trial_id, sensor_name='gyro')
@@ -227,7 +227,7 @@ def main(
             saveToWorkingDir(gyro_seq, f'{trial_str}_gyro-samples')
 
         if 'video' in modalities:
-            logger.info(f"  Loading and saving video data...")
+            logger.info("  Loading and saving video data...")
 
             rgb_frame_seq = primesense.loadRgbFrameSeq(
                 rgb_frame_fn_seq, rgb_frame_timestamp_seq,
