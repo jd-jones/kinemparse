@@ -1,0 +1,1 @@
+../../../scripts/predict_seq_lctm.py

@@ -9,7 +9,8 @@ import pandas as pd
 import yaml
 
 import _utils as ikea_utils
-from mathtools import utils
+from mathtools import utils, pose
+from kinemparse.assembly import Assembly
 
 
 CAMERA_NAMES = ('upper', 'lower')
@@ -38,9 +39,9 @@ def collectMarkerPoses(marker_sample_seqs, marker_keys):
     return marker_index_seqs, marker_pose_seqs
 
 
-def cameraIndices(marker_pose_seqs, marker_keys, camera_name):
+def cameraIndices(frame_idx_seqs, marker_keys, camera_name):
     frame_indices = np.hstack(tuple(
-        seq for seq, k in zip(marker_pose_seqs, marker_keys)
+        seq for seq, k in zip(frame_idx_seqs, marker_keys)
         if k[0] == camera_name
     ))
 
@@ -58,6 +59,59 @@ def readFrameFns(fn, names_as_int=False):
         frame_fns = np.array([int(fn.strip('.png').strip('frame')) for fn in frame_fns])
 
     return frame_fns
+
+
+def partLabelsToHoleLabels(labels, ignore_sibling_holes=True):
+    correct_connections = (
+        (('left', 1), ('frontbeam', 1)),
+        (('left', 2), ('backbeam', 1)),
+        (('left', 3), ('backrest', 1)),
+        (('right', 1), ('frontbeam', 2)),
+        (('right', 2), ('backbeam', 2)),
+        (('right', 3), ('backrest', 2)),
+        (('cushion', 1), ('frontbeam', 3)),
+        (('cushion', 2), ('backbeam', 3)),
+    )
+    correct_connections += tuple((rhs, lhs) for lhs, rhs in correct_connections)
+
+    if ignore_sibling_holes:
+        part_pairs_to_hole_pairs = {
+            (f'{part1}', f'{part2}'): ((f'{part1}_hole_{hole1}', f'{part2}_hole_{hole2}'),)
+            for (part1, hole1), (part2, hole2) in correct_connections
+        }
+    else:
+        part_pairs_to_hole_pairs = {
+            (f'{part1}', f'{part2}'): tuple(
+                (f'{part1}_hole_{hole1}_{i}', f'{part2}_hole_{hole2}_{i}')
+                for i in (1, 2)
+            )
+            for (part1, hole1), (part2, hole2) in correct_connections
+        }
+
+    rows = []
+    for i, (start_idx, end_idx, action, part1, part2) in labels.iterrows():
+        part_pairs = part_pairs_to_hole_pairs[part1, part2]
+        for part1, part2 in part_pairs:
+            rows.append([start_idx, end_idx, action, part1, part2])
+
+    labels = pd.DataFrame(data=rows, columns=labels.columns)
+    return labels
+
+
+def averageSiblingHoles(hole_pose_seqs):
+    def matchingPoses(name):
+        matches = tuple(
+            poses for hole_name, poses in hole_pose_seqs.items()
+            if hole_name.startswith(name)
+        )
+        return matches
+
+    names = tuple(set('_'.join(name.split('_')[:-1]) for name in hole_pose_seqs.keys()))
+    hole_pose_seqs = {
+        name: pose.avgPose(*matchingPoses(name))
+        for name in names
+    }
+    return hole_pose_seqs
 
 
 def frameNamesToSampleIndices(labels, frame_fns, frame_idx_seq):
@@ -79,6 +133,22 @@ def frameNamesToSampleIndices(labels, frame_fns, frame_idx_seq):
     return labels
 
 
+def partPosesToHolePoses(part_pose_seq, part_name, assembly):
+    part_pose_seq = pose.unpack_pose(part_pose_seq)
+
+    def convert_pose(joint):
+        converted_pose = part_pose_seq * joint.transform
+        packed = pose.pack_pose(converted_pose)
+        return packed
+
+    hole_pose_seqs = {
+        joint.child_name: convert_pose(joint)
+        for joint in assembly.joints.values() if joint.parent_name == part_name
+    }
+
+    return hole_pose_seqs
+
+
 def main(
         out_dir=None, marker_pose_dir=None, marker_bundles_dir=None, labels_dir=None,
         urdf_file=None, start_from=None, rename_parts={}):
@@ -94,6 +164,9 @@ def main(
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
+    out_poses_dir = os.path.join(out_data_dir, 'poses')
+    if not os.path.exists(out_poses_dir):
+        os.makedirs(out_poses_dir)
     out_labels_dir = os.path.join(out_data_dir, 'labels')
     if not os.path.exists(out_labels_dir):
         os.makedirs(out_labels_dir)
@@ -110,10 +183,16 @@ def main(
 
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
+    urdf_dir, _ = os.path.split(urdf_file)
+    assembly = Assembly.from_xacro(
+        urdf_file,
+        params={'$(find furniture_description)/urdf': urdf_dir}
+    )
+
     marker_to_part = {}
     for bundle_fn in glob.glob(os.path.join(marker_bundles_dir, '*.xml')):
         part_name, bundle_data = ikea_utils.getBundleData(bundle_fn)
-        for marker_index, pose in bundle_data.items():
+        for marker_index in bundle_data.keys():
             marker_to_part[marker_index] = part_name
 
     action_names = frozenset()
@@ -136,7 +215,7 @@ def main(
 
         logger.info("PROCESSING VIDEO {0}: {1}".format(i, video_id))
 
-        out_video_dir = os.path.join(out_data_dir, video_id)
+        out_video_dir = os.path.join(out_poses_dir, video_id)
         if not os.path.exists(out_video_dir):
             os.makedirs(out_video_dir)
 
@@ -156,23 +235,17 @@ def main(
         all_part_frame_seqs = []
         for part_name, marker_keys in part_to_keys.items():
             marker_index_seqs, marker_pose_seqs = collectMarkerPoses(marker_samples, marker_keys)
-            part_pose_seq = ikea_utils.avgPose(*marker_pose_seqs)
+            part_pose_seq = pose.avgPose(*marker_pose_seqs)
 
             # VISUALIZE POSES
-            ikea_utils.plotPoses(
+            pose.plotPoses(
                 os.path.join(fig_dir, f"{video_id}_part={part_name}_all-markers.png"),
                 *marker_pose_seqs,
                 labels=tuple(', '.join(tuple(map(str, k))) for k in marker_keys)
             )
-            ikea_utils.plotPoses(
+            pose.plotPoses(
                 os.path.join(fig_dir, f"{video_id}_part={part_name}.png"),
                 part_pose_seq
-            )
-
-            # SAVE POSES
-            pd.DataFrame(data=part_pose_seq, columns=POSE_VAR_NAMES).to_csv(
-                os.path.join(out_video_dir, '{0}_poses.csv'.format(part_name)),
-                index=False
             )
 
             part_frame_seq = np.column_stack(tuple(
@@ -181,19 +254,30 @@ def main(
             ))
             all_part_frame_seqs.append(part_frame_seq)
 
+            # map part pose to hole poses
+            hole_pose_seqs = partPosesToHolePoses(part_pose_seq, part_name, assembly)
+            hole_pose_seqs = averageSiblingHoles(hole_pose_seqs)
+            for hole_name, hole_pose_seq in hole_pose_seqs.items():
+                # SAVE POSES
+                pd.DataFrame(data=hole_pose_seq, columns=POSE_VAR_NAMES).to_csv(
+                    os.path.join(out_video_dir, '{0}.csv'.format(hole_name)),
+                    index=False
+                )
+
         all_part_frame_seqs = np.stack(tuple(all_part_frame_seqs), axis=-1)
         if not np.all(all_part_frame_seqs == all_part_frame_seqs[:, :, :1]):
             # import pdb; pdb.set_trace()
             raise AssertionError()
         frame_idx_seq = all_part_frame_seqs[..., 0]
 
+        labels = partLabelsToHoleLabels(labels, ignore_sibling_holes=True)
         labels = frameNamesToSampleIndices(labels, frame_fns, frame_idx_seq)
 
         # save labels
         labels.to_csv(os.path.join(out_labels_dir, f"{video_id}.csv"), index=False)
 
         pd.DataFrame(data=frame_idx_seq, columns=CAMERA_NAMES).to_csv(
-            os.path.join(out_idxs_dir, '{0}.csv'.format(part_name)),
+            os.path.join(out_idxs_dir, '{0}.csv'.format(video_id)),
             index=False
         )
 

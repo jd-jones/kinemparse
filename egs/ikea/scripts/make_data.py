@@ -7,8 +7,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from mathtools import utils
-import _utils as ikea_utils
+from mathtools import utils, pose
+from kinemparse import assembly as lib_assembly
 
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ def relativePose(poses_seq, lower_tri_only=True, magnitude_only=False):
         tuple(
             np.stack(
                 tuple(
-                    ikea_utils.relPose(
+                    pose.relPose(
                         poses_seq[..., i], poses_seq[..., j],
                         magnitude_only=magnitude_only
                     )
@@ -39,7 +39,7 @@ def relativePose(poses_seq, lower_tri_only=True, magnitude_only=False):
     return rel_poses
 
 
-def assemblyLabels(
+def actionLabels(
         labels_arr, num_samples, action_name_to_index, part_name_to_index,
         lower_tri_only=True):
     num_parts = len(part_name_to_index)
@@ -51,10 +51,38 @@ def assemblyLabels(
         part2_idx = part_name_to_index[part2]
 
         label_seq[start_idx:end_idx, part1_idx, part2_idx] = action_idx + 1
+        label_seq[start_idx:end_idx, part2_idx, part1_idx] = action_idx + 1
 
     if lower_tri_only:
         rows, cols = np.tril_indices(label_seq.shape[1], k=-1)
         label_seq = label_seq[:, rows, cols]
+
+    return label_seq
+
+
+def assemblyLabels(labels_arr, num_samples, assembly_vocab=[]):
+    def getIndex(assembly):
+        for i, a in enumerate(assembly_vocab):
+            if a == assembly:
+                return i
+        else:
+            assembly_vocab.append(assembly)
+            return len(assembly_vocab) - 1
+
+    label_seq = np.zeros(num_samples, dtype=int)
+
+    assembly = lib_assembly.Assembly()
+    assembly_index = getIndex(assembly)
+    prev_end_idx = 0
+    for i, (start_idx, end_idx, action, part1, part2) in labels_arr.iterrows():
+        label_seq[prev_end_idx:end_idx] = assembly_index
+        if action == 'connect':
+            assembly = assembly.add_joint(part1, part2, in_place=False, directed=False)
+        elif action == 'disconnect':
+            assembly = assembly.remove_joint(part1, part2, in_place=False, directed=False)
+        assembly_index = getIndex(assembly)
+        prev_end_idx = end_idx
+    label_seq[end_idx:] = assembly_index
 
     return label_seq
 
@@ -67,6 +95,21 @@ def makePairs(seq, lower_tri_only=True):
         pairs = tuple(pairs[r][c] for r, c in zip(rows, cols))
 
     return pairs
+
+
+def possibleConnections(part_pair_names):
+    def holeInfo(part_name):
+        part_name, hole_idx = part_name.split('_hole_')
+        return part_name, hole_idx
+
+    def connectionPossible(name_A, name_B):
+        name_A, hole_A = holeInfo(name_A)
+        name_B, hole_B = holeInfo(name_B)
+        if name_A == name_B:
+            return False
+        return True
+
+    return np.array([connectionPossible(a, b) for a, b in part_pair_names])
 
 
 def main(
@@ -86,6 +129,10 @@ def main(
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
+
+    debug_dir = os.path.join(out_dir, 'debug')
+    if not os.path.exists(debug_dir):
+        os.makedirs(debug_dir)
 
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
@@ -127,10 +174,11 @@ def main(
         all_label_arrs.append(labels_arr)
         video_ids.append(video_id)
 
+    pose_dir = os.path.join(data_dir, 'poses')
     pose_ids = tuple(
         video_id
         for video_id in video_ids
-        if os.path.exists(os.path.join(data_dir, video_id))
+        if os.path.exists(os.path.join(pose_dir, video_id))
     )
     keep_ids = tuple(v_id in pose_ids for v_id in video_ids)
     logger.info(
@@ -143,6 +191,8 @@ def main(
     all_label_arrs = filterSeq(all_label_arrs)
     video_ids = filterSeq(video_ids)
 
+    assembly_vocab = []
+    label_seqs = []
     for i, video_id in enumerate(video_ids):
         if start_from is not None and i < start_from:
             continue
@@ -151,10 +201,10 @@ def main(
 
         labels_arr = all_label_arrs[i]
 
-        video_dir = os.path.join(data_dir, video_id)
+        video_dir = os.path.join(pose_dir, video_id)
 
         def loadFile(part_name):
-            path = os.path.join(video_dir, f'{part_name}_poses.csv')
+            path = os.path.join(video_dir, f'{part_name}.csv')
             arr = pd.read_csv(path)
             return arr
 
@@ -163,25 +213,63 @@ def main(
         poses_seq = np.stack(tuple(arr.values for arr in part_data), axis=-1)
 
         feature_seq = relativePose(poses_seq, lower_tri_only=True, magnitude_only=True)
-        label_seq = assemblyLabels(
+        label_seq = actionLabels(
             labels_arr, feature_seq.shape[0],
             action_name_to_index, part_name_to_index
         )
 
         part_pair_names = makePairs(part_names, lower_tri_only=True)
+        is_possible = possibleConnections(part_pair_names)
+        feature_seq = feature_seq[:, is_possible, :]
+        label_seq = label_seq[:, is_possible]
+        part_pair_names = tuple(n for (b, n) in zip(is_possible, part_pair_names) if b)
 
         utils.plot_multi(
             np.moveaxis(feature_seq, (0, 1, 2), (-1, 0, 1)), label_seq.T,
             axis_names=part_pair_names, label_name='action',
             feature_names=('translation_dist', 'rotation_dist'),
             tick_names=[''] + action_names,
-            fn=os.path.join(fig_dir, f"{video_id}.png")
+            fn=os.path.join(fig_dir, f"{video_id}_actions.png")
         )
 
-        # utils.plot_array(feature_seq.T, (label_seq.sum(axis=-1),), ('activity',), fn=fig_fn)
+        label_seq = assemblyLabels(
+            labels_arr, feature_seq.shape[0],
+            assembly_vocab=assembly_vocab
+        )
+        utils.plot_array(
+            feature_seq.sum(axis=-1).T, (label_seq,), ('assembly',),
+            fn=os.path.join(fig_dir, f"{video_id}_assemblies.png")
+        )
+        label_seqs.append(label_seq)
 
+        label_segments, __ = utils.computeSegments(label_seq)
+        assembly_segments = [assembly_vocab[i] for i in label_segments]
+        lib_assembly.writeAssemblies(
+            os.path.join(debug_dir, f'trial={video_id}_assembly-seq.txt'),
+            assembly_segments
+        )
+
+        video_id = video_id.replace('_', '-')
         saveVariable(feature_seq, f'trial={video_id}_feature-seq')
         saveVariable(label_seq, f'trial={video_id}_label-seq')
+
+    if False:
+        from seqtools import utils as su
+        transition_probs, start_probs, end_probs = su.smoothCounts(
+            *su.countSeqs(label_seqs)
+        )
+        # import pdb; pdb.set_trace()
+
+    lib_assembly.writeAssemblies(
+        os.path.join(debug_dir, 'assembly-vocab.txt'),
+        assembly_vocab
+    )
+
+    saveVariable(assembly_vocab, 'assembly-vocab')
+    with open(os.path.join(out_data_dir, 'action-vocab.yaml'), 'wt') as f:
+        yaml.dump(action_names, f)
+    with open(os.path.join(out_data_dir, 'part-vocab.yaml'), 'wt') as f:
+        yaml.dump(part_names, f)
 
 
 if __name__ == "__main__":
