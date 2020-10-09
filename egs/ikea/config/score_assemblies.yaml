@@ -1,0 +1,17 @@
+model_name: 'AssemblyClassifier'
+batch_size: 1
+learning_rate: 0.1
+cv_params: {
+    val_ratio: 0.25
+}
+train_params: {
+    num_epochs: 10,
+    test_metric: 'Accuracy',
+    seq_as_batch: True,
+}
+model_params: {
+    scale: 1,
+    alpha: -1,
+    update_params: True
+}
+plot_predictions: True

@@ -1,0 +1,5 @@
+keyframe_model_fn: '~/repo/blocks/data/working/model-keyframes/child+easy/keyframe-scorer_25-08-2019.pkl'
+# stop_at: 1
+write_video: False
+upsample_frames_by: 1
+display_summary_img: False

@@ -1,0 +1,13 @@
+cv_params: {
+    val_ratio: 0.25,
+}
+model_name: 'PretrainedModel'
+pre_init_pw: True
+model_params: {
+    debug: True,
+    inference: "segmental",
+    segmental: True,
+    start_prior: True,
+    end_prior: True
+}
+plot_predictions: True

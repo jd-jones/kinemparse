@@ -108,4 +108,4 @@ venv.bak/
 
 # ignore yaml except in examples dir
 *.yaml
-!egs/*/*.yaml
+!egs/*/config/*.yaml

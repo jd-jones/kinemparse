@@ -1,0 +1,5 @@
+corpus_name: 'easy'
+default_annotator: 'Cathryn'
+start_video_from_first_touch: False
+use_annotated_keyframes: False
+subsample_period: 2

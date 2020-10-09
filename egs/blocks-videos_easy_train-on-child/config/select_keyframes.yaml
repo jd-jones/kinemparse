@@ -1,0 +1,10 @@
+keyframe_model_fn: '~/repo/blocks/data/working/model-keyframes/child+easy/keyframe-scorer_25-08-2019.pkl'
+corpus_name: 'easy'
+frame_scoring_options: {
+    log_domain: True,
+    hard_assign_clusters: 'all'
+}
+frame_selection_options: {
+    score_thresh: 0,
+    prepend_first: True
+}
