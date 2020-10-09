@@ -1,20 +1,22 @@
 #!/bin/bash
 set -ue
 
-start_at="3"
+start_at="7"
 stop_after="10"
 
-output_dir="~/data/output/blocks/easy-videos_2020-09-09"
+# output_dir="~/data/output/blocks/easy-videos_2020-09-09"
+output_dir="~/data/output/blocks/child-videos_keyframes-only"
 data_dir="$output_dir/raw-data"
 preprocess_dir="$output_dir/preprocess"
 detections_dir="$output_dir/detections"
 keyframes_dir="$output_dir/keyframes"
 register_dir="$output_dir/register"
-decode_dir="$output_dir/decode"
+decode_dir="$output_dir/decode_rgb"
+eval_dir="$output_dir/eval_rgb"
 
 eg_root=$(pwd)
-# scripts_dir="${eg_root}/scripts"
-scripts_dir="$HOME/repo/blocks/blocks/estimation/scripts/"
+scripts_dir="${eg_root}/scripts"
+# scripts_dir="$HOME/repo/blocks/blocks/estimation/scripts/"
 config_dir="${eg_root}/config"
 cd $scripts_dir
 
@@ -98,5 +100,19 @@ if [ "$start_at" -le "6" ]; then
         --decode_dir "$decode_dir/data"
 fi
 if [ "$stop_after" -eq "6" ]; then
+    exit 1
+fi
+
+if [ "$start_at" -le "7" ]; then
+    echo "STAGE 7: running eval_output.py"
+    python eval_output.py \
+        --out_dir "$eval_dir" \
+        --data_dir "$data_dir/data" \
+        --preds_dir "$decode_dir/data"
+    python analysis.py \
+        --out_dir "${eval_dir}/system-performance" \
+        --results_file "${eval_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "7" ]; then
     exit 1
 fi

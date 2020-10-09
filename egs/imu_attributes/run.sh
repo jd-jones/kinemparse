@@ -2,18 +2,22 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="2"
-stop_after="2"
+start_at="1"
+stop_after="1"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-output_dir="$HOME/repo/kinemparse/data/output/block-connections-imu"
+base_dir="${HOME}/data/output/blocks/child-videos_keyframes-only"
+output_dir="${base_dir}/block-connections-imu"
 raw_data_dir="${output_dir}/raw-imu-data"
-data_dir="$output_dir/connections-dataset_untrimmed"
-attr_scores_dir="$output_dir/predict-attributes_tcn_untrimmed"
+data_dir="$output_dir/connections-dataset"
+attr_scores_dir="$output_dir/predict-attributes"
 attr_smoothed_dir="$output_dir/predict-attributes_sm-crf"
 seg_dir="$output_dir/segments"
 state_scores_dir="$output_dir/predict-assemblies_attr"
 keyframe_decode_scores_dir="$output_dir/register-keyframes"
+
+# READONLY
+video_scores_dir="${base_dir}/decode_rgb"
 
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
@@ -44,8 +48,9 @@ if [ "$start_at" -le $STAGE ]; then
     python make_attr_data_imu.py \
         --config_file "${config_dir}/make_attr_data_imu.yaml" \
         --data_dir "${raw_data_dir}/data" \
-        --out_dir ${data_dir} \
-        --remove_before_first_touch "False"
+        --out_dir "${data_dir}" \
+        --use_vid_ids_from "${video_scores_dir}/data" \
+        --remove_before_first_touch "True"
 fi
 if [ "$stop_after" -eq $STAGE ]; then
     exit 1

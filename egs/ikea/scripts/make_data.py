@@ -7,7 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from mathtools import utils, pose
+from mathtools import utils  # , pose
 from kinemparse import assembly as lib_assembly
 
 
@@ -15,12 +15,32 @@ logger = logging.getLogger(__name__)
 
 
 def relativePose(poses_seq, lower_tri_only=True, magnitude_only=False):
+    def relPose(lhs, rhs, magnitude_only=False):
+        if np.isnan(lhs).any() or np.isnan(rhs).any():
+            either_row_has_nan = np.isnan(lhs).any(axis=1) + np.isnan(rhs).any(axis=1)
+            non_nan_rel_pose = relPose(
+                lhs[~either_row_has_nan, :], rhs[~either_row_has_nan, :],
+                magnitude_only=magnitude_only
+            )
+            rel_pose = np.full(lhs.shape[0:1] + non_nan_rel_pose.shape[1:], np.nan)
+            rel_pose[~either_row_has_nan, ...] = non_nan_rel_pose
+            return rel_pose
+
+        if not magnitude_only:
+            raise NotImplementedError()
+
+        position_lhs = lhs[:, :3]
+        position_rhs = rhs[:, :3]
+        rel_pose = np.linalg.norm(position_lhs - position_rhs, axis=1, keepdims=True)
+        return rel_pose
+
     num_poses = poses_seq.shape[-1]
     rel_poses = np.stack(
         tuple(
             np.stack(
                 tuple(
-                    pose.relPose(
+                    # pose.relPose(
+                    relPose(
                         poses_seq[..., i], poses_seq[..., j],
                         magnitude_only=magnitude_only
                     )
@@ -60,7 +80,64 @@ def actionLabels(
     return label_seq
 
 
-def assemblyLabels(labels_arr, num_samples, assembly_vocab=[]):
+def iterateSymmetries(action, part1, part2, cur_assembly, symmetries=[]):
+    def is_possible(action, part1, part2, cur_assembly):
+        if action == 'connect':
+            for joint in cur_assembly.joints.values():
+                for part in (part1, part2):
+                    if part == joint.parent_name or part == joint.child_name:
+                        return False
+            return True
+        if action == 'disconnect':
+            for joint in cur_assembly.joints.values():
+                for part in (part1, part2):
+                    if part == joint.parent_name or part == joint.child_name:
+                        return True
+            return False
+
+    part1_sym = symmetries.get(part1, [part1])
+    part2_sym = symmetries.get(part2, [part2])
+
+    for p1 in part1_sym:
+        for p2 in part2_sym:
+            if is_possible(action, p1, p2, cur_assembly):
+                if action == 'connect':
+                    assembly = cur_assembly.add_joint(p1, p2, in_place=False, directed=False)
+                elif action == 'disconnect':
+                    assembly = cur_assembly.remove_joint(p1, p2, in_place=False, directed=False)
+                yield assembly
+
+
+def _assemblyLabels(labels_arr, num_samples, assembly_vocab=[], symmetries=[]):
+    def getIndex(assembly):
+        for i, a in enumerate(assembly_vocab):
+            if a == assembly:
+                return i
+        else:
+            assembly_vocab.append(assembly)
+            return len(assembly_vocab) - 1
+
+    label_seq = np.zeros(num_samples, dtype=int)
+
+    assembly = lib_assembly.Assembly()
+    getIndex(assembly)
+    paths = [[assembly]]
+    for i, (_, _, action, part1, part2) in labels_arr.iterrows():
+        new_paths = []
+        for i, path in enumerate(paths):
+            states = list(
+                iterateSymmetries(action, part1, part2, path[-1], symmetries=symmetries)
+            )
+            for assembly in states:
+                getIndex(assembly)
+                new_path = path + [assembly]
+                new_paths.append(new_path)
+        paths = new_paths
+
+    return label_seq
+
+
+def assemblyLabels(labels_arr, num_samples, assembly_vocab=[], symmetries=[]):
     def getIndex(assembly):
         for i, a in enumerate(assembly_vocab):
             if a == assembly:
@@ -113,8 +190,19 @@ def possibleConnections(part_pair_names):
 
 
 def main(
-        out_dir=None, data_dir=None,
+        out_dir=None, data_dir=None, part_symmetries=None,
         plot_output=None, results_file=None, sweep_param_name=None, start_from=None):
+
+    if part_symmetries is None:
+        part_symmetries = [
+            ['frontbeam_hole_1', 'frontbeam_hole_2', 'backbeam_hole_1', 'backbeam_hole_2'],
+            ['cushion_hole_1', 'cushion_hole_2']
+        ]
+        part_symmetries = {
+            symms[i]: symms
+            for symms in part_symmetries
+            for i in range(len(symms))
+        }
 
     data_dir = os.path.expanduser(data_dir)
 
@@ -234,8 +322,12 @@ def main(
 
         label_seq = assemblyLabels(
             labels_arr, feature_seq.shape[0],
-            assembly_vocab=assembly_vocab
+            assembly_vocab=assembly_vocab, symmetries=part_symmetries
         )
+        # expanded_label_seq = _assemblyLabels(
+        #     labels_arr, feature_seq.shape[0],
+        #     assembly_vocab=assembly_vocab, symmetries=part_symmetries
+        # )
         utils.plot_array(
             feature_seq.sum(axis=-1).T, (label_seq,), ('assembly',),
             fn=os.path.join(fig_dir, f"{video_id}_assemblies.png")
@@ -252,6 +344,7 @@ def main(
         video_id = video_id.replace('_', '-')
         saveVariable(feature_seq, f'trial={video_id}_feature-seq')
         saveVariable(label_seq, f'trial={video_id}_label-seq')
+        # saveVariable(expanded_label_seq, f'trial={video_id}_expanded-label-seq')
 
     if False:
         from seqtools import utils as su

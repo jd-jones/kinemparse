@@ -127,6 +127,9 @@ def frameNamesToSampleIndices(labels, frame_fns, frame_idx_seq):
         )
         return label_sample_idxs
 
+    if labels.empty:
+        return labels
+
     for key in ('start', 'end'):
         labels[key] = sampleIndexFromFrameName(labels[key].to_numpy())
 
@@ -270,7 +273,7 @@ def main(
             raise AssertionError()
         frame_idx_seq = all_part_frame_seqs[..., 0]
 
-        labels = partLabelsToHoleLabels(labels, ignore_sibling_holes=True)
+        # labels = partLabelsToHoleLabels(labels, ignore_sibling_holes=True)
         labels = frameNamesToSampleIndices(labels, frame_fns, frame_idx_seq)
 
         # save labels

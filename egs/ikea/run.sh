@@ -3,11 +3,11 @@ set -ue
 
 # --=(SET CONFIG OPTIONS)==----------------------------------------------------
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="4"
-stop_after="4"
+start_at="0"
+stop_after="10"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-output_dir="${HOME}/data/output/parse_ikea"
+output_dir="${HOME}/data/output/parse-ikea"
 part_pose_dir="${output_dir}/hole_poses"
 data_dir="${output_dir}/hole_dataset"
 preds_dir="${output_dir}/preds"
@@ -15,7 +15,7 @@ smoothed_dir="${output_dir}/preds-smoothed"
 
 # DATA DIRS --- READONLY
 ikea_data_dir="${HOME}/data/output/ikea_part_tracking"
-marker_pose_dir="${ikea_data_dir}/marker_poses"
+marker_pose_dir="${ikea_data_dir}/marker-poses_fps=2"
 marker_bundles_dir="${ikea_data_dir}/marker_bundles"
 labels_dir="${HOME}/data/ikea/labels"
 urdf_dir="${ikea_data_dir}/urdf"
@@ -39,8 +39,7 @@ if [ "${start_at}" -le "${STAGE}" ]; then
         --marker_pose_dir "${marker_pose_dir}" \
         --marker_bundles_dir "${marker_bundles_dir}" \
         --urdf_file "${urdf_dir}/ikea_chair_all_parts.urdf.xacro" \
-        --labels_dir "${labels_dir}" \
-        --rename_parts "{'back_beam': 'backbeam', 'front_beam': 'frontbeam', 'seat': 'cushion'}"
+        --labels_dir "${labels_dir}"
 fi
 if [ "${stop_after}" -eq "${STAGE}" ]; then
     exit 1
@@ -65,7 +64,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --config_file "${config_dir}/score_assemblies.yaml" \
         --out_dir "${preds_dir}" \
         --data_dir "${data_dir}/data" \
-        --gpu_dev_id "None"
+        --gpu_dev_id "None" \
+        --viz_params "{'labels_together': True}"
     python analysis.py \
         --out_dir "${preds_dir}/system-performance" \
         --results_file "${preds_dir}/results.csv"
@@ -81,7 +81,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --config_file "${config_dir}/predict_seq_lctm.yaml" \
         --out_dir "${smoothed_dir}" \
         --data_dir "${data_dir}/data" \
-        --scores_dir "${preds_dir}/data"
+        --scores_dir "${preds_dir}/data" \
+        --viz_params "{'labels_together': True}"
     python analysis.py \
         --out_dir "${smoothed_dir}/system-performance" \
         --results_file "${smoothed_dir}/results.csv"
@@ -92,7 +93,7 @@ fi
 ((++STAGE))
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Smooth assembly predictions"
+    echo "STAGE ${STAGE}: Evaluate assembly predictions"
     action_dir="${smoothed_dir}_action"
     python eval_output.py \
         --out_dir "${action_dir}" \

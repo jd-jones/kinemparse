@@ -64,7 +64,7 @@ def beforeFirstTouch(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
 
 
 def main(
-        out_dir=None, data_dir=None,
+        out_dir=None, data_dir=None, use_vid_ids_from=None,
         output_data=None, magnitude_centering=None, resting_from_gt=None,
         remove_before_first_touch=None, include_signals=None, fig_type=None):
 
@@ -97,7 +97,11 @@ def main(
         fig_type = 'multi'
 
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
+    if use_vid_ids_from is None:
+        trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
+    else:
+        use_vid_ids_from = os.path.expanduser(use_vid_ids_from)
+        trial_ids = utils.getUniqueIds(use_vid_ids_from, prefix='trial-', to_array=True)
     if not trial_ids.any():
         logger.warning("No filenames matched the trial ID string!")
 
@@ -143,6 +147,11 @@ def main(
             f"Ignoring {num_ignored} sequences without first-touch annotations "
             f"(of {len(before_first_touch_seqs)} total)"
         )
+        trials_missing_first_touch = [
+            i for b, i in zip(before_first_touch_seqs, trial_ids)
+            if b is None
+        ]
+        logger.info(f"Trials without first touch: {trials_missing_first_touch}")
 
         def clip(signal, bool_array):
             return signal[~bool_array, ...]

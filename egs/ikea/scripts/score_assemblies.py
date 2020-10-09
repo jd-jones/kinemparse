@@ -86,8 +86,8 @@ class AssemblyClassifier(torch.nn.Module):
         scores : torch.Tensor, shape (batch_size, num_samples)
         """
         input_seq = input_seq.sum(axis=-1)
-
-        # import pdb; pdb.set_trace()
+        edge_is_observed = ~torch.isnan(input_seq)
+        input_seq[~edge_is_observed] = 0
 
         edge_is_present = adjacencies(assembly, self.link_vocab, lower_tri_only=True)
         edge_is_present = edge_is_present[self._pair_is_possible]
@@ -97,18 +97,22 @@ class AssemblyClassifier(torch.nn.Module):
             edge_scores = torch.zeros(shape, dtype=torch.float)
         else:
             edge_features = input_seq[:, edge_is_present, :]
-            edge_scores = -edge_features.sum(axis=1)
+            edge_scores = torch.sum(
+                -edge_features * edge_is_observed[:, edge_is_present, :],
+                axis=1
+            )
 
         if not (~edge_is_present).any():
             shape = (input_seq.shape[0], input_seq.shape[-1])
             no_edge_scores = torch.zeros(shape, dtype=torch.float)
         else:
             no_edge_features = input_seq[:, ~edge_is_present, :]
-            no_edge_scores = torch.ones_like(no_edge_features).sum(axis=1)
+            no_edge_scores = torch.sum(
+                torch.ones_like(no_edge_features) * edge_is_observed[:, ~edge_is_present, :],
+                axis=1
+            )
 
         scores = self._scale * edge_scores + self._alpha * no_edge_scores
-
-        # import pdb; pdb.set_trace()
         return scores
 
     def predict(self, outputs):
@@ -159,10 +163,10 @@ def main(
     def impute_nan(input_seq):
         input_is_nan = np.isnan(input_seq)
         logger.info(f"{input_is_nan.sum()} NaN elements")
-        input_seq[input_is_nan] = np.nanmean(input_seq)
+        input_seq[input_is_nan] = 0  # np.nanmean(input_seq)
         return input_seq
 
-    feature_seqs = tuple(map(impute_nan, feature_seqs))
+    # feature_seqs = tuple(map(impute_nan, feature_seqs))
 
     device = torchutils.selectDevice(gpu_dev_id)
 
@@ -297,7 +301,10 @@ def main(
                 )
                 for preds, _, inputs, gt_labels, seq_id in zip(*batch):
                     fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
-                    utils.plot_array(inputs.sum(axis=-1), (gt_labels, preds), label_names, fn=fn)
+                    utils.plot_array(
+                        inputs.sum(axis=-1), (gt_labels, preds), label_names,
+                        fn=fn, **viz_params
+                    )
 
         def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
             saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')

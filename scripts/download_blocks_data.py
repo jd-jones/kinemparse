@@ -155,6 +155,9 @@ def main(
             logger.info(f"    Skipping trial {trial_id}: No labels")
             continue
 
+        if not (action_seq['action'] == 7).sum():
+            logger.warning(f'    trial {trial_id}: missing first touch labels')
+
         annotator_names[trial_id] = annotator_name
 
         rgb_frame_fn_seq = corpus.getRgbFrameFns(trial_id)
@@ -199,8 +202,7 @@ def main(
         rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
         depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
 
-        # trial_str = f"trial={trial_id}"
-        trial_str = f"trial-{trial_id}"
+        trial_str = f"trial={trial_id}"
         if 'imu' in modalities:
             logger.info("  Loading and saving IMU data...")
 
@@ -241,11 +243,11 @@ def main(
             )[selected_frame_indices]
             saveToWorkingDir(depth_frame_seq, f'{trial_str}_depth-frame-seq')
 
-        # saveToWorkingDir(rgb_frame_fn_seq, f'{trial_str}_rgb-frame-fn-seq')
-        # saveToWorkingDir(rgb_frame_timestamp_seq, f'{trial_str}_rgb-frame-timestamp-seq')
-        # saveToWorkingDir(depth_frame_fn_seq, f'{trial_str}_depth-frame-fn-seq')
-        # saveToWorkingDir(depth_frame_timestamp_seq, f'{trial_str}_depth-frame-timestamp-seq')
-        # saveToWorkingDir(action_seq, f'{trial_str}_action-seq')
+        saveToWorkingDir(rgb_frame_fn_seq, f'{trial_str}_rgb-frame-fn-seq')
+        saveToWorkingDir(rgb_frame_timestamp_seq, f'{trial_str}_rgb-frame-timestamp-seq')
+        saveToWorkingDir(depth_frame_fn_seq, f'{trial_str}_depth-frame-fn-seq')
+        saveToWorkingDir(depth_frame_timestamp_seq, f'{trial_str}_depth-frame-timestamp-seq')
+        saveToWorkingDir(action_seq, f'{trial_str}_action-seq')
 
         if download_gt_keyframes:
             annotator = 'Jonathan'

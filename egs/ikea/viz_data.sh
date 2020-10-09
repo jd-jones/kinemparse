@@ -4,12 +4,13 @@ set -ue
 # SET CONFIG OPTIONS HERE
 ikea_data_dir="${HOME}/data/ikea"
 fpv_video_dir="${ikea_data_dir}/assembly_videos_fpv"
-pose_dir="${HOME}/data/output/parse_ikea/hole_poses/data"
-viz_dir="${HOME}/data/output/parse_ikea/viz_hole_poses"
+pose_dir="${HOME}/data/output/parse-ikea_dummy-labels/hole_poses"
+viz_dir="${HOME}/data/output/parse-ikea_dummy-labels/viz_hole_poses"
 video_dir="${viz_dir}/combined_videos"
-onedrive_dir="onedrive_jhu:workspace/hole_poses"
+onedrive_dir="onedrive_jhu:workspace/hole-poses_dummy-labels"
+metadata_parent_dir="${HOME}/data/output/ikea_part_tracking/marker-poses_fps=2"
 
-start_at=3
+start_at=1
 stop_after=3
 
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
@@ -26,9 +27,9 @@ if [ "$start_at" -le $STAGE ]; then
     # Visualize all marker poses by drawing them onto the video frames
     python viz_dataset.py \
         --out_dir "${viz_dir}" \
-        --data_dir "${pose_dir}" \
+        --data_dir "${pose_dir}/data" \
         --frames_dir "${fpv_video_dir}" \
-        --metadata_parent_dir "${HOME}/data/output/ikea_part_tracking/marker_poses"
+        --metadata_parent_dir "${metadata_parent_dir}"
 fi
 if [ "$stop_after" -eq $STAGE ]; then
     exit 1

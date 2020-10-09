@@ -32,11 +32,14 @@ def preprocess(imu_feature_seqs):
 
 
 def pre_init(
-        model, train_samples, train_labels, pretrain=True,
+        model, train_samples, train_labels, pretrain=True, num_states=None,
         transition_scores=None, start_scores=None, end_scores=None):
+    if num_states is None:
+        num_states = np.max(list(map(np.max, train_labels))) + 1
+
     n_samples = len(train_samples)
     model.n_features = train_samples[0].shape[0]
-    model.n_classes = np.max(list(map(np.max, train_labels))) + 1
+    model.n_classes = num_states
     model.max_segs = LCTM.utils.max_seg_count(train_labels)
 
     model.ws.init_weights(model)
@@ -216,8 +219,10 @@ def main(
 
         if pre_init_pw:
             if transitions is None:
+                # FIXME
                 transition_probs, start_probs, end_probs = su.smoothCounts(
-                    *su.countSeqs(train_labels)
+                    *su.countSeqs(train_labels),
+                    num_states=test_samples[0].shape[0]
                 )
             else:
                 transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
@@ -237,7 +242,8 @@ def main(
             model = pre_init(
                 model, train_samples, train_labels,
                 pretrain=pretrain, transition_scores=transition_scores,
-                start_scores=start_scores, end_scores=end_scores
+                start_scores=start_scores, end_scores=end_scores,
+                num_states=test_samples[0].shape[0]  # FIXME
             )
         else:
             model.fit(train_samples, train_labels, **train_params)
@@ -287,7 +293,7 @@ def main(
             for batch in test_io_history:
                 for preds, _, inputs, gt_labels, seq_id in zip(*batch):
                     fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
-                    utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn)
+                    utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn, **viz_params)
 
         def saveTrialData(batch):
             for pred_seq, score_seq, feat_seq, label_seq, trial_id in zip(*batch):
