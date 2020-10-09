@@ -204,7 +204,7 @@ def main(
         return tuple(map(loadOne, seq_ids))
 
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
     feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
     label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
 

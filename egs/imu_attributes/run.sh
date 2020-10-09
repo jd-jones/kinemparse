@@ -2,8 +2,8 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="1"
-stop_after="1"
+start_at="2"
+stop_after="2"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 base_dir="${HOME}/data/output/blocks/child-videos_keyframes-only"
@@ -64,8 +64,8 @@ if [ "$start_at" -le $STAGE ]; then
         --config_file "${config_dir}/predict_from_imu.yaml" \
         --out_dir "${attr_scores_dir}" \
         --data_dir "${data_dir}/data" \
-        --results_file "${attr_scores_dir}/results.csv" \
-        --pretrained_model_dir "${output_dir}/predict-attributes_tcn/data"
+        --results_file "${attr_scores_dir}/results.csv"
+        # --pretrained_model_dir "${output_dir}/predict-attributes_tcn/data"
     python analysis.py \
         --out_dir "${attr_scores_dir}/system-performance" \
         --results_file "${attr_scores_dir}/results.csv"
