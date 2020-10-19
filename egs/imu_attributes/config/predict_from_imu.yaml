@@ -6,8 +6,8 @@ batch_size: 1
 learning_rate: 0.001
 cv_params: {
     val_ratio: 0.25,
-    n_splits: 5,
-    shuffle: True
+    # n_splits: 5,
+    # shuffle: True
 }
 train_params: {
     num_epochs: 15,
