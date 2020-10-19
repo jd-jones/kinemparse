@@ -285,7 +285,8 @@ class AssemblyAction(Assembly):
 # --=( ASSEMBLY FUNCTIONS )==--------------------------------------------------
 def writeAssemblies(fn, assemblies):
     with open(fn, 'wt') as f:
-        for a in assemblies:
+        for i, a in enumerate(assemblies):
+            f.write(f'ASSEMBLY {i}' + '\n')
             f.write(str(a) + '\n')
             f.write('----------' + '\n')
 

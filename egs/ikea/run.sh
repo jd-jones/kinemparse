@@ -3,14 +3,14 @@ set -ue
 
 # --=(SET CONFIG OPTIONS)==----------------------------------------------------
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="0"
-stop_after="10"
+start_at="4"
+stop_after="4"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 output_dir="${HOME}/data/output/parse-ikea"
 part_pose_dir="${output_dir}/hole_poses"
 data_dir="${output_dir}/hole_dataset"
-preds_dir="${output_dir}/preds"
+preds_dir="${output_dir}/preds_eq-classes"
 smoothed_dir="${output_dir}/preds-smoothed"
 
 # DATA DIRS --- READONLY
@@ -80,7 +80,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python predict_seq_lctm.py \
         --config_file "${config_dir}/predict_seq_lctm.yaml" \
         --out_dir "${smoothed_dir}" \
-        --data_dir "${data_dir}/data" \
+        --data_dir "${preds_dir}/data" \
         --scores_dir "${preds_dir}/data" \
         --viz_params "{'labels_together': True}"
     python analysis.py \
@@ -94,11 +94,11 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate assembly predictions"
-    action_dir="${smoothed_dir}_action"
+    action_dir="${smoothed_dir}/eval"
     python eval_output.py \
         --out_dir "${action_dir}" \
         --preds_dir "${smoothed_dir}/data" \
-        --data_dir "${data_dir}/data"
+        --data_dir "${preds_dir}/data"
     python analysis.py \
         --out_dir "${action_dir}/system-performance" \
         --results_file "${action_dir}/results.csv"

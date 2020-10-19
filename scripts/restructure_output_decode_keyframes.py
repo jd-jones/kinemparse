@@ -36,7 +36,7 @@ def main(out_dir=None, data_dir=None, detections_dir=None, modality=None, normal
         return tuple(map(loadOne, trial_ids))
 
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial-')
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial-', to_array=True)
 
     # Define cross-validation folds
     dataset_size = len(trial_ids)
@@ -44,6 +44,7 @@ def main(out_dir=None, data_dir=None, detections_dir=None, modality=None, normal
         dataset_size,
         precomputed_fn=os.path.join(data_dir, 'cv-folds.pkl')
     )
+
     cv_folds = tuple(tuple(map(np.array, splits)) for splits in cv_folds)
 
     # Validate CV folds by checking that each split covers all trial ids
@@ -59,7 +60,7 @@ def main(out_dir=None, data_dir=None, detections_dir=None, modality=None, normal
         tuple(map(lambda x: trial_ids[x], splits))
         for splits in cv_folds
     )
-    saveVariable(cv_fold_trial_ids, f"cv-fold-trial-ids")
+    saveVariable(cv_fold_trial_ids, "cv-fold-trial-ids")
 
     for cv_index, (train_idxs, test_idxs) in enumerate(cv_folds):
         logger.info(
@@ -79,13 +80,19 @@ def main(out_dir=None, data_dir=None, detections_dir=None, modality=None, normal
             # shape: (num_states, num_samples)
             data_scores = loadVariable(f'trial-{trial_id}_data-scores')
 
+            if data_scores.shape[0] != len(train_assemblies):
+                warn_str = (
+                    f"Trial {trial_id}: {data_scores.shape[0]} data scores "
+                    f"!= {len(train_assemblies)} assemblies in vocab"
+                )
+                logger.warning(warn_str)
+                continue
+
             if detections_dir is not None:
                 fn = f'trial-{trial_id}_class-label-frame-seq.pkl'
                 pixel_label_frame_seq = joblib.load(os.path.join(detections_dir, fn))
                 for i, label_frame in enumerate(pixel_label_frame_seq):
                     # px_is_unoccluded = (label_frame == 0) + (label_frame == 3)
-                    if normalization is None:
-                        pass
                     if normalization == 'per-pixel':
                         px_is_blocks = label_frame == 3
                         denominator = px_is_blocks.sum()
@@ -100,7 +107,7 @@ def main(out_dir=None, data_dir=None, detections_dir=None, modality=None, normal
                         joint_probs = data_scores + log_prior
                         data_marginals = scipy.special.logsumexp(joint_probs, axis=0)
                         data_scores = joint_probs - data_marginals
-                    else:
+                    elif normalization is not None:
                         raise NotImplementedError()
 
             # Validate the loaded data

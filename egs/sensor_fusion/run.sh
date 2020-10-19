@@ -2,35 +2,31 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at=2
-stop_after=2
+start_at=3
+stop_after=3
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-output_dir="$HOME/repo/kinemparse/data/output/fuse-modalities"
-keyframe_decode_scores_dir="$output_dir/register-keyframes_normalization=per-pixel"
-fused_scores_dir="$output_dir/predict-assemblies_per-pixel_decode"
+base_dir="${HOME}/data/output/blocks/child-videos_keyframes-only"
+output_dir="${base_dir}/fuse-modalities"
+video_scores_dir="${output_dir}/assembly-scores_rgb_normalization=per-pixel"
+imu_scores_dir="${output_dir}/assembly-scores_imu"
+fused_scores_dir="${output_dir}/predict-assemblies_imu"
 
 # IMU DATA DIRS --- READ-ONLY
-imu_dir="$HOME/repo/kinemparse/data/output/predict-joined"
-imu_data_dir="$imu_dir/imu-data"
-state_scores_dir="$imu_dir/predict-assemblies_attr"
+imu_dir="${base_dir}/block-connections-imu"
+imu_data_dir="${imu_dir}/connections-dataset"
+imu_features_dir="${imu_dir}/predict-attributes"
 
 # VIDEO DATA DIRS --- READ-ONLY
-corpus_dir="$HOME/repo/blocks/data/input/child"
-new_blocks_dir="$HOME/repo/kinemparse/data/output/blocks_child_keyframes-only_2020-05-04"
-blocks_dir="$HOME/repo/kinemparse/data/output/blocks_child_keyframes-only_2020-01-26"
-rgb_data_dir="$new_blocks_dir/raw-data"
-preprocess_dir="$blocks_dir/preprocess"
-detections_dir="$blocks_dir/detections"
-keyframes_dir="$blocks_dir/keyframes"
-register_dir="$blocks_dir/register_rgb"
-decode_dir="$blocks_dir/decode_rgb"
+corpus_dir="${HOME}/data/blocks/data/child"
+detections_dir="${base_dir}/detections"
+decode_dir="${base_dir}/decode_rgb"
 
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
-cd $scripts_dir
+cd "${scripts_dir}"
 
 STAGE=0
 
@@ -38,10 +34,29 @@ if [ "$start_at" -le $STAGE ]; then
     echo "STAGE ${STAGE}: Convert decode_keyframes output"
     python restructure_output_decode_keyframes.py \
         --data_dir "${decode_dir}/data" \
-        --out_dir $keyframe_decode_scores_dir \
+        --out_dir "${video_scores_dir}" \
         --detections_dir "${detections_dir}/data" \
-        --normalization "per-pixel" \
         --modality "RGB"
+        # --normalization "per-pixel" \
+fi
+if [ "$stop_after" -eq $STAGE ]; then
+    exit 1
+fi
+((++STAGE))
+
+if [ "$start_at" -le $STAGE ]; then
+    echo "STAGE ${STAGE}: Predict assemblies"
+    python _score_attributes.py \
+        --config_file "${config_dir}/score_attributes.yaml" \
+        --out_dir "${imu_scores_dir}" \
+        --data_dir "${imu_data_dir}/data" \
+        --cv_data_dir "${video_scores_dir}/data" \
+        --attributes_dir "${imu_features_dir}/data" \
+        --results_file "${imu_scores_dir}/results.csv" \
+        --plot_predictions "True"
+    python analysis.py \
+        --out_dir "${imu_scores_dir}/system-performance" \
+        --results_file "${imu_scores_dir}/results.csv"
 fi
 if [ "$stop_after" -eq $STAGE ]; then
     exit 1
@@ -50,20 +65,14 @@ fi
 
 if [ "$start_at" -le $STAGE ]; then
     echo "STAGE ${STAGE}: Fuse assembly predictions"
-    python combine_scores.py \
+    python _combine_scores.py \
         --config_file "${config_dir}/combine_scores.yaml" \
         --out_dir "${fused_scores_dir}" \
         --data_dir "${imu_data_dir}/data" \
-        --cv_data_dir "${keyframe_decode_scores_dir}/data" \
-        --results_file "${fused_scores_dir}/results.csv" \
-        --score_dirs "[${state_scores_dir}/data, ${keyframe_decode_scores_dir}/data]" \
-        --prune_imu "False" \
-        --standardize "False" \
-        --plot_predictions "False" \
-        --fusion_method "sum" \
-        --decode "True" \
-        --gpu_dev_id "'0'" \
-        --train_params "{num_epochs: 15, test_metric: 'Accuracy', seq_as_batch: True}"
+        --cv_data_dir "${video_scores_dir}/data" \
+        --score_dirs "[${imu_scores_dir}/data, ${video_scores_dir}/data]" \
+        --fusion_method "rgb_only" \
+        --decode "True"
     python analysis.py \
         --out_dir "${fused_scores_dir}/system-performance" \
         --results_file "${fused_scores_dir}/results.csv"
@@ -75,11 +84,16 @@ fi
 
 if [ "$start_at" -le $STAGE ]; then
     echo "STAGE ${STAGE}: Evaluate model predictions"
+    eval_dir="${fused_scores_dir}/system-eval_ignore-initial"
     python eval_preds.py \
-        --out_dir "${fused_scores_dir}/system-eval" \
+        --out_dir "${eval_dir}" \
         --data_dir "${fused_scores_dir}/data" \
-        --metadata_file "${corpus_dir}/meta-data.csv" \
-        --plot_predictions "True"
+        --plot_predictions "False" \
+        --draw_paths "False" \
+        --ignore_initial_state "True"
+    python analysis.py \
+        --out_dir "${eval_dir}/system-performance" \
+        --results_file "${eval_dir}/results.csv"
 fi
 if [ "$stop_after" -eq $STAGE ]; then
     exit 1

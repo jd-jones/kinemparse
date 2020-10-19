@@ -1,5 +1,5 @@
 cv_params: {
-    val_ratio: 0.25,
+    val_ratio: 0,
 }
 model_name: 'PretrainedModel'
 pre_init_pw: True

@@ -4,11 +4,19 @@ import logging
 
 import yaml
 import pandas as pd
+from matplotlib import pyplot as plt
 
 from mathtools import utils
 
 
 logger = logging.getLogger(__name__)
+
+
+def make_hist(fn, data):
+    plt.figure(figsize=(12, 4))
+    plt.hist(data, bins=10)
+    plt.savefig(fn)
+    plt.close()
 
 
 def main(out_dir=None, results_file=None, sweep_param_name=None):
@@ -32,6 +40,7 @@ def main(out_dir=None, results_file=None, sweep_param_name=None):
             if name == 'loss':
                 continue
             logger.info(f"{name}: {means[name]:.1f}% +/- {stds[name]:.1f}%")
+            make_hist(os.path.join(out_dir, f"{name}.png"), data[name].to_numpy())
 
     else:
         sweep_vals = data[sweep_param_name].unique()

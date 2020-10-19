@@ -181,11 +181,11 @@ def main(
             continue
 
         if action_seq['start'].max() >= len(rgb_frame_fn_seq):
-            logger.info(f"    Skipping trial {trial_id}: actions longer than #rgb frames")
+            logger.info(f"    Skipping trial {trial_id}: actions longer than rgb frames")
             continue
 
         if action_seq['end'].max() >= len(rgb_frame_fn_seq):
-            logger.info(f"    Skipping trial {trial_id}: actions longer than #rgb frames")
+            logger.info(f"    Skipping trial {trial_id}: actions longer than rgb frames")
             continue
 
         action_seq = fixStartEndIndices(
@@ -198,6 +198,8 @@ def main(
         if not is_valid:
             logger.info(f"    Skipping trial {trial_id}: Bad labels")
             continue
+
+        import pdb; pdb.set_trace()
 
         rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
         depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
@@ -248,6 +250,7 @@ def main(
         saveToWorkingDir(depth_frame_fn_seq, f'{trial_str}_depth-frame-fn-seq')
         saveToWorkingDir(depth_frame_timestamp_seq, f'{trial_str}_depth-frame-timestamp-seq')
         saveToWorkingDir(action_seq, f'{trial_str}_action-seq')
+        saveToWorkingDir(assembly_seq, f'{trial_str}_assembly-seq')
 
         if download_gt_keyframes:
             annotator = 'Jonathan'

@@ -188,7 +188,7 @@ def main(
         metadata = pd.read_csv(metadata_file, index_col=0)
 
     if results_file is None:
-        results_file = os.path.join(out_dir, f'results.csv')
+        results_file = os.path.join(out_dir, 'results.csv')
     else:
         results_file = os.path.expanduser(results_file)
 
@@ -209,7 +209,7 @@ def main(
             return joblib.load(fn)
         return tuple(map(loadOne, seq_ids))
 
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
     pred_assembly_seqs = loadAll(trial_ids, "pred-assembly-seq.pkl")
     gt_assembly_seqs = loadAll(trial_ids, "gt-assembly-seq.pkl")
 

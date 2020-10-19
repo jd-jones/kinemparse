@@ -46,6 +46,7 @@ def score(feature_seq, signatures):
 
 def predict(score_seq):
     idxs = score_seq.argmax(dim=0)
+    # idxs = torch.tensor(score_seq.numpy().argmax(axis=0), dtype=torch.long)
     return idxs
 
 
@@ -106,9 +107,6 @@ def main(
         fn = os.path.join(cv_data_dir, 'cv-fold-trial-ids.pkl')
         cv_fold_trial_ids = joblib.load(fn)
 
-    test_ids = set().union(*tuple(set(fold[-1]) for fold in cv_fold_trial_ids))
-    logger.info(f"{len(test_ids)} final test ids: {test_ids}")
-
     def getSplit(split_idxs):
         split_data = tuple(
             tuple(s[i] for i in split_idxs)
@@ -118,7 +116,7 @@ def main(
 
     for cv_index, (train_ids, test_ids) in enumerate(cv_fold_trial_ids):
         logger.info(
-            f'CV fold {cv_index + 1}: {len(trial_ids)} total '
+            f'CV fold {cv_index + 1}: {len(cv_fold_trial_ids)} total '
             f'({len(train_ids)} train, {len(test_ids)} test)'
         )
 
@@ -152,15 +150,8 @@ def main(
         accuracies = {'assembly': [], 'assembly_upto_eq': []}
         for gt_assembly_seq, trial_id in zip(*getSplit(test_idxs)):
 
-            # if ignore_trial_ids is not None and trial_id in ignore_trial_ids:
-            if False:
-                logger.info(f"  Ignoring trial {trial_id} in test fold")
-                continue
+            logger.info(f"  scoring trial {trial_id}: {len(train_assemblies)} train assemblies")
 
-            # FIXME: implement consistent data dimensions during serialization
-            #   (ie samples along rows)
-            # feature_seq shape is (pairs, samples, classes)
-            # should be (samples, pairs, classes)
             try:
                 fn = os.path.join(attributes_dir, f'trial={trial_id}_score-seq.pkl')
                 feature_seq = joblib.load(fn)
@@ -216,8 +207,7 @@ def main(
             acc = metrics.accuracy_upto(pred_assemblies, gt_assemblies)
             accuracies['assembly'].append(acc)
 
-            # FIXME: Improve data naming convention in decode_keyframes.py
-            saveVariable(score_seq, f'trial={trial_id}_data-scores')
+            saveVariable(score_seq.numpy(), f'trial={trial_id}_data-scores')
 
             if plot_predictions:
                 fn = os.path.join(fig_dir, f'trial={trial_id:03}.png')

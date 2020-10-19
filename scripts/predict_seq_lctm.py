@@ -181,8 +181,8 @@ def main(
 
     # Define cross-validation folds
     dataset_size = len(trial_ids)
-    # cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
-    cv_folds = ((tuple(range(dataset_size)), tuple(), tuple(range(dataset_size))),)  # FIXME
+    cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
+    # cv_folds = ((tuple(range(dataset_size)), tuple(), tuple(range(dataset_size))),)
 
     metric_dict = {
         'accuracy': [],
@@ -224,6 +224,8 @@ def main(
                     *su.countSeqs(train_labels),
                     num_states=test_samples[0].shape[0]
                 )
+                # logger.info(f"start: {np.nonzero(start_probs)[0]}")
+                # logger.info(f"end: {np.nonzero(end_probs)[0]}")
             else:
                 transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
                 for cur_state, next_states in transitions.items():
@@ -276,9 +278,20 @@ def main(
         metric_str = '  '.join(f"{k}: {v[-1]:.1f}%" for k, v in metric_dict.items())
         logger.info('[TST]  ' + metric_str)
 
-        all_labels = np.hstack(test_labels)
-        label_hist = utils.makeHistogram(len(np.unique(all_labels)), all_labels, normalize=True)
-        logger.info(f'Label distribution: {label_hist}')
+        all_test_labels = np.hstack(test_labels)
+        test_vocab = np.unique(all_test_labels)
+        test_vocab_size = len(test_vocab)
+        all_train_labels = np.hstack(train_labels)
+        train_vocab = np.unique(all_train_labels)
+        num_in_vocab = sum(np.sum(train_vocab == i) for i in test_vocab)
+        num_oov = test_vocab_size - num_in_vocab
+        prop_oov = num_oov / test_vocab_size
+        label_hist = utils.makeHistogram(
+            test_vocab_size, all_test_labels,
+            normalize=True, vocab=test_vocab
+        )
+        logger.info(f'Test label distribution: {label_hist}')
+        logger.info(f'Num OOV states: {num_oov} / {test_vocab_size} ({prop_oov * 100:.2f}%)')
 
         d = {k: v[-1] / 100 for k, v in metric_dict.items()}
         utils.writeResults(results_file, d, sweep_param_name, model_params)

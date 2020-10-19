@@ -95,12 +95,16 @@ def main(
     input_seqs = loadAll(trial_ids, 'score-seq.pkl', preds_dir)
 
     action_vocab = []
-    batch = []
+    action_batch = []
+    assembly_batch = []
     for i, trial_id in enumerate(trial_ids):
         logger.info(f"VIDEO {trial_id}:")
 
+        pred_assembly_index_seq = pred_seqs[i]
+        true_assembly_index_seq = true_seqs[i]
+
         pred_action_segs, pred_action_index_seq = actionsFromAssemblies(
-            pred_seqs[i], assembly_vocab, action_vocab
+            pred_assembly_index_seq, assembly_vocab, action_vocab
         )
 
         lib_assembly.writeAssemblies(
@@ -109,7 +113,7 @@ def main(
         )
 
         true_action_segs, true_action_index_seq = actionsFromAssemblies(
-            true_seqs[i], assembly_vocab, action_vocab
+            true_assembly_index_seq, assembly_vocab, action_vocab
         )
 
         lib_assembly.writeAssemblies(
@@ -124,17 +128,32 @@ def main(
             metric_dict[key] = value
             logger.info(f"  {key}: {value * 100:.1f}%")
 
+            key = f"{name}_assembly"
+            value = getattr(LCTM.metrics, name)(
+                pred_assembly_index_seq, true_assembly_index_seq
+            ) / 100
+            metric_dict[key] = value
+            logger.info(f"  {key}: {value * 100:.1f}%")
+
         utils.writeResults(results_file, metric_dict, sweep_param_name, {})
 
         input_seq = input_seqs[i]
-        batch.append((pred_action_index_seq, input_seq, true_action_index_seq, trial_id))
+        action_batch.append((pred_action_index_seq, input_seq, true_action_index_seq, trial_id))
+        assembly_batch.append(
+            (pred_assembly_index_seq, input_seq, true_assembly_index_seq, trial_id)
+        )
 
     lib_assembly.writeAssemblies(os.path.join(out_data_dir, 'action-vocab.txt'), action_vocab)
 
-    label_names = ('gt', 'pred')
-    for preds, inputs, gt_labels, seq_id in batch:
-        fn = os.path.join(fig_dir, f"trial={seq_id}_model-io.png")
-        utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn)
+    label_names = ('true', 'pred')
+    for preds, inputs, gt_labels, seq_id in action_batch:
+        fn = os.path.join(fig_dir, f"trial={seq_id}_model-io_action.png")
+        utils.plot_array(None, (gt_labels, preds), label_names, fn=fn, labels_together=True)
+
+    label_names = ('true', 'pred')
+    for preds, inputs, gt_labels, seq_id in assembly_batch:
+        fn = os.path.join(fig_dir, f"trial={seq_id}_model-io_assembly.png")
+        utils.plot_array(None, (gt_labels, preds), label_names, fn=fn, labels_together=True)
 
 
 if __name__ == "__main__":

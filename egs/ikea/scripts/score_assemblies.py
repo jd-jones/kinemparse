@@ -8,6 +8,7 @@ import joblib
 import numpy as np
 
 from mathtools import utils, torchutils, metrics
+from kinemparse import assembly as lib_assembly
 import make_data
 
 
@@ -52,10 +53,15 @@ def adjacencies(assembly, link_names, lower_tri_only=False):
 
 
 class AssemblyClassifier(torch.nn.Module):
-    def __init__(self, assemblies, link_names, scale=1, alpha=1, update_params=False):
+    def __init__(
+            self, assemblies, link_names,
+            scale=1, alpha=1, update_params=False, eq_classes=None):
         super().__init__()
+
         self.assembly_vocab = assemblies
         self.link_vocab = link_names
+        self.eq_classes = torch.tensor(eq_classes, dtype=torch.float)
+
         self._scale = torch.nn.Parameter(
             torch.tensor(scale, dtype=torch.float),
             requires_grad=update_params
@@ -71,6 +77,9 @@ class AssemblyClassifier(torch.nn.Module):
     def forward(self, input_seq):
         output_seq = tuple(self._score_assembly(input_seq, a) for a in self.assembly_vocab)
         output_seq = torch.stack(output_seq, axis=-1)
+
+        if self.eq_classes is not None:
+            output_seq = output_seq @ self.eq_classes
 
         return output_seq
 
@@ -120,11 +129,72 @@ class AssemblyClassifier(torch.nn.Module):
         return preds
 
 
+def makeEqClasses(assembly_vocab, part_symmetries):
+    def renameLink(assembly, old_name, new_name):
+        link_dict = {}
+        for link in assembly.links.values():
+            new_link = lib_assembly.Link(
+                link.name.replace(old_name, new_name),
+                pose=link.pose
+            )
+            if new_link.name in link_dict:
+                if link_dict[new_link.name] != new_link:
+                    raise AssertionError()
+                continue
+            else:
+                link_dict[new_link.name] = new_link
+        new_links = list(link_dict.values())
+
+        new_joints = [
+            lib_assembly.Joint(
+                joint.name.replace(old_name, new_name),
+                joint.joint_type,
+                joint.parent_name.replace(old_name, new_name),
+                joint.child_name.replace(old_name, new_name),
+                transform=joint._transform
+            )
+            for joint in assembly.joints.values()
+        ]
+
+        new_assembly = lib_assembly.Assembly(links=new_links, joints=new_joints)
+        return new_assembly
+
+    eq_class_vocab = []
+    assembly_eq_classes = []
+    for vocab_index, assembly in enumerate(assembly_vocab):
+        for new_name, old_names in part_symmetries.items():
+            for old_name in old_names:
+                assembly = renameLink(assembly, old_name, new_name)
+        eq_class_index = utils.getIndex(assembly, eq_class_vocab)
+        assembly_eq_classes.append(eq_class_index)
+
+    assembly_eq_classes = np.array(assembly_eq_classes)
+
+    eq_classes = np.zeros((len(assembly_vocab), len(eq_class_vocab)), dtype=float)
+    for vocab_index, eq_class_index in enumerate(assembly_eq_classes):
+        eq_classes[vocab_index, eq_class_index] = 1
+    eq_classes /= eq_classes.sum(axis=0)
+
+    # import pdb; pdb.set_trace()
+
+    return eq_classes, assembly_eq_classes, eq_class_vocab
+
+
 def main(
-        out_dir=None, data_dir=None, model_name=None,
+        out_dir=None, data_dir=None, model_name=None, part_symmetries=None,
         gpu_dev_id=None, batch_size=None, learning_rate=None,
         model_params={}, cv_params={}, train_params={}, viz_params={},
         plot_predictions=None, results_file=None, sweep_param_name=None):
+
+    if part_symmetries is None:
+        part_symmetries = {
+            'beam_side': (
+                'backbeam_hole_1', 'backbeam_hole_2',
+                'frontbeam_hole_1', 'frontbeam_hole_2'
+            ),
+            'beam_top': ('backbeam_hole_3', 'frontbeam_hole_3'),
+            'backrest': ('backrest_hole_1', 'backrest_hole_2')
+        }
 
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
@@ -155,10 +225,29 @@ def main(
             return joblib.load(fn)
         return tuple(map(loadOne, seq_ids))
 
+    # Load vocab
+    with open(os.path.join(data_dir, "part-vocab.yaml"), 'rt') as f:
+        link_vocab = yaml.safe_load(f)
+    assembly_vocab = joblib.load(os.path.join(data_dir, 'assembly-vocab.pkl'))
+
     # Load data
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
     feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
     label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
+
+    if part_symmetries:
+        # Construct equivalence classes from vocab
+        eq_classes, assembly_eq_classes, eq_class_vocab = makeEqClasses(
+            assembly_vocab, part_symmetries
+        )
+        lib_assembly.writeAssemblies(
+            os.path.join(fig_dir, 'eq-class-vocab.txt'),
+            eq_class_vocab
+        )
+        label_seqs = tuple(assembly_eq_classes[label_seq] for label_seq in label_seqs)
+        saveVariable(eq_class_vocab, 'assembly-vocab')
+    else:
+        eq_classes = None
 
     def impute_nan(input_seq):
         input_is_nan = np.isnan(input_seq)
@@ -167,6 +256,10 @@ def main(
         return input_seq
 
     # feature_seqs = tuple(map(impute_nan, feature_seqs))
+
+    for trial_id, label_seq, feat_seq in zip(trial_ids, label_seqs, feature_seqs):
+        saveVariable(feat_seq, f"trial={trial_id}_feature-seq")
+        saveVariable(label_seq, f"trial={trial_id}_label-seq")
 
     device = torchutils.selectDevice(gpu_dev_id)
 
@@ -226,10 +319,10 @@ def main(
         elif model_name == 'dummy':
             model = DummyClassifier(input_dim, output_dim, **model_params)
         elif model_name == 'AssemblyClassifier':
-            with open(os.path.join(data_dir, "part-vocab.yaml"), 'rt') as f:
-                link_vocab = yaml.safe_load(f)
-            assembly_vocab = joblib.load(os.path.join(data_dir, 'assembly-vocab.pkl'))
-            model = AssemblyClassifier(assembly_vocab, link_vocab, **model_params)
+            model = AssemblyClassifier(
+                assembly_vocab, link_vocab, eq_classes=eq_classes,
+                **model_params
+            )
         else:
             raise AssertionError()
 

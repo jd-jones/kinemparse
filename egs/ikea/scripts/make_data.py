@@ -151,14 +151,18 @@ def assemblyLabels(labels_arr, num_samples, assembly_vocab=[], symmetries=[]):
     assembly = lib_assembly.Assembly()
     assembly_index = getIndex(assembly)
     prev_end_idx = 0
+    prev_start_idx = -1
     for i, (start_idx, end_idx, action, part1, part2) in labels_arr.iterrows():
-        label_seq[prev_end_idx:end_idx] = assembly_index
+        if start_idx != prev_start_idx or end_idx != prev_end_idx:
+            assembly_index = getIndex(assembly)
+            label_seq[prev_end_idx:end_idx] = assembly_index
         if action == 'connect':
             assembly = assembly.add_joint(part1, part2, in_place=False, directed=False)
         elif action == 'disconnect':
             assembly = assembly.remove_joint(part1, part2, in_place=False, directed=False)
-        assembly_index = getIndex(assembly)
+        prev_start_idx = start_idx
         prev_end_idx = end_idx
+    assembly_index = getIndex(assembly)
     label_seq[end_idx:] = assembly_index
 
     return label_seq

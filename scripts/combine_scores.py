@@ -172,7 +172,7 @@ def main(
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     if results_file is None:
-        results_file = os.path.join(out_dir, f'results.csv')
+        results_file = os.path.join(out_dir, 'results.csv')
     else:
         results_file = os.path.expanduser(results_file)
 
@@ -196,26 +196,41 @@ def main(
     device = torchutils.selectDevice(gpu_dev_id)
 
     # Load data
-    dir_trial_ids = tuple(set(utils.getUniqueIds(d, prefix='trial=')) for d in score_dirs)
-    dir_trial_ids += (set(utils.getUniqueIds(data_dir, prefix='trial=')),)
+    dir_trial_ids = tuple(
+        set(utils.getUniqueIds(d, prefix='trial=', to_array=True))
+        for d in score_dirs
+    )
+    dir_trial_ids += (set(utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)),)
     trial_ids = np.array(list(sorted(set.intersection(*dir_trial_ids))))
+
+    for dir_name, t_ids in zip(score_dirs + (data_dir,), dir_trial_ids):
+        logger.info(f"{len(t_ids)} trial ids from {dir_name}:")
+        logger.info(f"  {t_ids}")
+    logger.info(f"{len(trial_ids)} trials in intersection: {trial_ids}")
 
     assembly_seqs = loadAll(trial_ids, 'assembly-seq.pkl', data_dir)
     feature_seqs = tuple(loadAll(trial_ids, 'data-scores.pkl', d) for d in score_dirs)
+    feature_seqs = tuple(zip(*feature_seqs))
 
     # Combine feature seqs
-    ret = tuple(
-        (i, np.stack(feats))
-        for i, feats in enumerate(zip(*feature_seqs))
-        if all(f.shape == feats[0].shape for f in feats)
-    )
-    idxs, feature_seqs = tuple(zip(*ret))
-    trial_ids = trial_ids[list(idxs)]
-    assembly_seqs = tuple(assembly_seqs[i] for i in idxs)
+    include_indices = []
+    for i, seq_feats in enumerate(feature_seqs):
+        feat_shapes = tuple(f.shape for f in seq_feats)
+        include_seq = all(f == feat_shapes[0] for f in feat_shapes)
+        if include_seq:
+            include_indices.append(i)
+        else:
+            warn_str = (
+                f'Excluding trial {trial_ids[i]} with mismatched feature shapes: '
+                f'{feat_shapes}'
+            )
+            logger.warning(warn_str)
 
-    # SMALL_NUMBER = -1e9
-    # for feat in feature_seqs:
-    #     feat[np.isinf(feat)] = SMALL_NUMBER
+    trial_ids = trial_ids[include_indices]
+    assembly_seqs = tuple(assembly_seqs[i] for i in include_indices)
+    feature_seqs = tuple(feature_seqs[i] for i in include_indices)
+
+    feature_seqs = tuple(np.stack(f) for f in feature_seqs)
 
     # Define cross-validation folds
     if cv_data_dir is None:
@@ -226,7 +241,7 @@ def main(
             for splits in cv_folds
         )
     else:
-        fn = os.path.join(cv_data_dir, f'cv-fold-trial-ids.pkl')
+        fn = os.path.join(cv_data_dir, 'cv-fold-trial-ids.pkl')
         cv_fold_trial_ids = joblib.load(fn)
 
     def getSplit(split_idxs):
@@ -244,20 +259,16 @@ def main(
     num_oov_total = 0
     num_changed_total = 0
     for cv_index, (train_ids, test_ids) in enumerate(cv_fold_trial_ids):
-        # train_data, test_data = tuple(map(getSplit, cv_splits))
-        # train_ids = train_data[-1]
-        # test_ids = test_data[-1]
+        try:
+            test_idxs = np.array([trial_ids.tolist().index(i) for i in test_ids])
+            include_indices.append(cv_index)
+        except ValueError:
+            logger.info(f"  Skipping fold {cv_index}: missing test data {test_ids}")
 
         logger.info(
             f'CV fold {cv_index + 1}: {len(trial_ids)} total '
             f'({len(train_ids)} train, {len(test_ids)} test)'
         )
-
-        try:
-            test_idxs = np.array([trial_ids.tolist().index(i) for i in test_ids])
-        except ValueError:
-            logger.info(f"  Skipping fold: missing test data")
-            continue
 
         # TRAIN PHASE
         if cv_data_dir is None:
@@ -276,55 +287,55 @@ def main(
             model = joblib.load(os.path.join(cv_data_dir, fn))
 
         train_features, train_assembly_seqs, train_ids = getSplit(train_idxs)
-        """
-        train_labels = tuple(
-            np.array(
-                list(labels.gen_eq_classes(assembly_seq, train_assemblies, equivalent=None)),
+
+        if False:
+            train_labels = tuple(
+                np.array(
+                    list(labels.gen_eq_classes(assembly_seq, train_assemblies, equivalent=None)),
+                )
+                for assembly_seq in train_assembly_seqs
             )
-            for assembly_seq in train_assembly_seqs
-        )
 
-        train_set = torchutils.SequenceDataset(
-            train_features, train_labels, seq_ids=train_ids,
-            device=device
-        )
-        train_loader = torch.utils.data.DataLoader(
-            train_set, batch_size=1, shuffle=True
-        )
+            train_set = torchutils.SequenceDataset(
+                train_features, train_labels, seq_ids=train_ids,
+                device=device
+            )
+            train_loader = torch.utils.data.DataLoader(
+                train_set, batch_size=1, shuffle=True
+            )
 
-        train_epoch_log = collections.defaultdict(list)
-        # val_epoch_log = collections.defaultdict(list)
-        metric_dict = {
-            'Avg Loss': metrics.AverageLoss(),
-            'Accuracy': metrics.Accuracy()
-        }
+            train_epoch_log = collections.defaultdict(list)
+            # val_epoch_log = collections.defaultdict(list)
+            metric_dict = {
+                'Avg Loss': metrics.AverageLoss(),
+                'Accuracy': metrics.Accuracy()
+            }
 
-        criterion = torch.nn.CrossEntropyLoss()
-        optimizer_ft = torch.optim.Adam(
-            model.parameters(), lr=1e-3,
-            betas=(0.9, 0.999), eps=1e-08,
-            weight_decay=0, amsgrad=False
-        )
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=1.00)
+            criterion = torch.nn.CrossEntropyLoss()
+            optimizer_ft = torch.optim.Adam(
+                model.parameters(), lr=1e-3,
+                betas=(0.9, 0.999), eps=1e-08,
+                weight_decay=0, amsgrad=False
+            )
+            lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=1.00)
 
-        model = FusionClassifier(num_sources=train_features[0].shape[0])
-        model, last_model_wts = torchutils.trainModel(
-            model, criterion, optimizer_ft, lr_scheduler,
-            train_loader,  # val_loader,
-            device=device,
-            metrics=metric_dict,
-            train_epoch_log=train_epoch_log,
-            # val_epoch_log=val_epoch_log,
-            **train_params
-        )
+            model = FusionClassifier(num_sources=train_features[0].shape[0])
+            model, last_model_wts = torchutils.trainModel(
+                model, criterion, optimizer_ft, lr_scheduler,
+                train_loader,  # val_loader,
+                device=device,
+                metrics=metric_dict,
+                train_epoch_log=train_epoch_log,
+                # val_epoch_log=val_epoch_log,
+                **train_params
+            )
 
-        torchutils.plotEpochLog(
-            train_epoch_log,
-            subfig_size=(10, 2.5),
-            title='Training performance',
-            fn=os.path.join(fig_dir, f'cvfold={cv_index}_train-plot.png')
-        )
-        """
+            torchutils.plotEpochLog(
+                train_epoch_log,
+                subfig_size=(10, 2.5),
+                title='Training performance',
+                fn=os.path.join(fig_dir, f'cvfold={cv_index}_train-plot.png')
+            )
 
         test_assemblies = train_assemblies.copy()
         for feature_seq, gt_assembly_seq, trial_id in zip(*getSplit(test_idxs)):
@@ -372,8 +383,8 @@ def main(
             else:
                 raise NotImplementedError()
 
-            # if not decode:
-            #     model = None
+            if not decode:
+                model = None
 
             if model is None:
                 pred_seq = score_seq.argmax(axis=0)
@@ -551,9 +562,9 @@ def main(
     )
 
     gt_scores = np.hstack(tuple(gt_scores))
-    plot_hists(np.exp(gt_scores), fn=os.path.join(fig_dir, f"score-hists_gt.png"))
+    plot_hists(np.exp(gt_scores), fn=os.path.join(fig_dir, "score-hists_gt.png"))
     all_scores = np.hstack(tuple(all_scores))
-    plot_hists(np.exp(all_scores), fn=os.path.join(fig_dir, f"score-hists_all.png"))
+    plot_hists(np.exp(all_scores), fn=os.path.join(fig_dir, "score-hists_all.png"))
 
 
 if __name__ == "__main__":

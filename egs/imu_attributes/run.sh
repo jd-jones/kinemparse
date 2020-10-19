@@ -2,8 +2,8 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="2"
-stop_after="2"
+start_at="0"
+stop_after="0"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 base_dir="${HOME}/data/output/blocks/child-videos_keyframes-only"
@@ -17,7 +17,7 @@ state_scores_dir="$output_dir/predict-assemblies_attr"
 keyframe_decode_scores_dir="$output_dir/register-keyframes"
 
 # READONLY
-video_scores_dir="${base_dir}/decode_rgb"
+video_scores_dir="${base_dir}/register_rgb"
 
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
@@ -116,7 +116,7 @@ if [ "$start_at" -le $STAGE ]; then
         --config_file "${config_dir}/score_attributes.yaml" \
         --out_dir "${state_scores_dir}" \
         --data_dir "${data_dir}/data" \
-        --cv_data_dir "${keyframe_decode_scores_dir}/data" \
+        --cv_data_dir "${video_scores_dir}/data" \
         --attributes_dir "${attr_scores_dir}/data" \
         --results_file "${state_scores_dir}/results.csv"
     python analysis.py \
