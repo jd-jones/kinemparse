@@ -2,8 +2,8 @@
 set -ue
 
 # SET WHICH PROCESSING STAGES ARE RUN
-start_at="9"
-stop_after="9"
+start_at="7"
+stop_after="7"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 output_dir="${HOME}/data/output/parse_airplanes"
@@ -119,11 +119,11 @@ fi
 
 if [ "${start_at}" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Smooth assembly predictions"
-    python predict_seq_lctm.py \
-        --config_file "${config_dir}/assembly/predict_seq_lctm.yaml" \
+    python -m pdb predict_seq_pytorch.py \
+        --config_file "${config_dir}/assembly/predict_seq_pytorch.yaml" \
         --out_dir "${assembly_preds_dir}" \
-        --data_dir "${assembly_data_dir}/data" \
-        --scores_dir "${assembly_data_dir}/data"
+        --data_dir "${assembly_data_dir}/data"
+        # --scores_dir "${assembly_data_dir}/data"
     python analysis.py \
         --out_dir "${assembly_preds_dir}/system-performance" \
         --results_file "${assembly_preds_dir}/results.csv"

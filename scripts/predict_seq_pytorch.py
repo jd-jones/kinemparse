@@ -3,10 +3,13 @@ import collections
 import logging
 
 import yaml
-import torch
 import joblib
+import torch
+import numpy as np
 
 from mathtools import utils, torchutils, metrics
+from seqtools import fstutils_gtn as libfst
+from seqtools import utils as su
 
 
 logger = logging.getLogger(__name__)
@@ -144,6 +147,8 @@ def main(
     feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
     label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
 
+    vocabulary = np.unique(np.hstack(label_seqs))
+
     device = torchutils.selectDevice(gpu_dev_id)
 
     # Define cross-validation folds
@@ -193,6 +198,8 @@ def main(
             f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
         )
 
+        criterion = torch.nn.CrossEntropyLoss()
+
         input_dim = train_set.num_obsv_dims
         output_dim = train_set.num_label_types
         if model_name == 'linear':
@@ -205,10 +212,21 @@ def main(
             model = TcnClassifier(input_dim, output_dim, **model_params).to(device=device)
         elif model_name == 'dummy':
             model = DummyClassifier(input_dim, output_dim, **model_params)
+        elif model_name == 'LatticeCRF':
+            transition_probs, initial_probs, final_probs = su.smoothCounts(
+                *su.countSeqs(train_labels),
+                num_states=max(vocabulary) + 1
+            )
+            model = libfst.LatticeCrf(
+                vocabulary,
+                transition_weights=torch.tensor(transition_probs, dtype=torch.float).log(),
+                initial_weights=torch.tensor(initial_probs, dtype=torch.float).log(),
+                final_weights=torch.tensor(final_probs, dtype=torch.float).log(),
+            )
+            criterion = model.nllLoss
         else:
             raise AssertionError()
 
-        criterion = torch.nn.CrossEntropyLoss()
         if model_name != 'dummy':
             train_epoch_log = collections.defaultdict(list)
             val_epoch_log = collections.defaultdict(list)

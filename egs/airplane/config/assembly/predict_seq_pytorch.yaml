@@ -1,5 +1,4 @@
-gpu_dev_id: '1'
-model_name: 'TCN'
+model_name: 'LatticeCRF'
 batch_size: 1
 learning_rate: 0.001
 cv_params: {
@@ -8,14 +7,9 @@ cv_params: {
     shuffle: True
 }
 train_params: {
-    num_epochs: 100,
-    test_metric: 'Accuracy',
-    seq_as_batch: True,
+    num_epochs: 1,
+    test_metric: 'Accuracy'
 }
 model_params: {
-    binary_multiclass: False,
-    tcn_channels: [8,  8, 16, 16, 32, 32],
-    kernel_size: 25,
-    dropout: 0.2
 }
 plot_predictions: True
