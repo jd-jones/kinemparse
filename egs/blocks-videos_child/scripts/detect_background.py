@@ -4,6 +4,7 @@ import joblib
 import yaml
 import numpy as np
 import torch
+import skimage
 from skimage import measure, feature, transform
 
 from mathtools import utils, torchutils
@@ -84,7 +85,7 @@ def maskLowerLeftBorder(
 
 def fitBackgroundDepth(
         depth_image, camera_params=None, camera_pose=None,
-        plane_distance_thresh=10, **ransac_kwargs):
+        plane_distance_thresh=10, batch_size=None, **ransac_kwargs):
     """ Fit a plane to a depth image using RANSAC.
 
     Parameters
@@ -108,6 +109,12 @@ def fitBackgroundDepth(
 
     if camera_pose is None:
         camera_pose = render.camera_pose
+
+    if batch_size is not None:
+        indices = np.arange(depth_image.shape[0])
+        np.random.shuffle(indices)
+        indices = indices[batch_size]
+        depth_image = depth_image[indices:]
 
     # Backproject the depth image to world coordinates
     is_inlier = ~imageprocessing.maskDepthArtifacts(depth_image)
@@ -396,6 +403,15 @@ def main(
             depth_train = loadFromDir(
                 f"{trial_str}_depth-frame-seq-before-first-touch",
                 background_data_dir
+            )
+
+            rgb_frame_seq = np.stack(
+                tuple(skimage.img_as_float(f) for f in rgb_frame_seq),
+                axis=0
+            )
+            rgb_train = np.stack(
+                tuple(skimage.img_as_float(f) for f in rgb_train),
+                axis=0
             )
         except FileNotFoundError as e:
             logger.info(e)
