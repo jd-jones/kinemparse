@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torchvision
 from PIL import Image, ImageDraw
+import skimage
 
 from mathtools import utils, torchutils
 from visiontools import imageprocessing
@@ -159,6 +160,10 @@ def main(
         logger.info("  Loading data...")
         try:
             rgb_frame_seq = loadFromDir(f"{trial_str}_rgb-frame-seq", data_dir)
+            rgb_frame_seq = np.stack(
+                tuple(skimage.img_as_float(f) for f in rgb_frame_seq),
+                axis=0
+            )
         except FileNotFoundError as e:
             logger.info(e)
             continue
@@ -188,7 +193,7 @@ def main(
         )
 
         logger.info("  Saving output...")
-        saveToWorkingDir(person_mask_seq.atype(bool), f'{trial_str}_person-mask-seq')
+        saveToWorkingDir(person_mask_seq.astype(bool), f'{trial_str}_person-mask-seq')
 
         if num_disp_imgs is not None:
             if rgb_frame_seq.shape[0] > num_disp_imgs:

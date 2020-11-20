@@ -6,8 +6,8 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-start_at="1"
-stop_after="1"
+start_at="2"
+stop_after="2"
 
 data_dir="${output_dir}/raw-data"
 background_dir="${output_dir}/background-detections"
