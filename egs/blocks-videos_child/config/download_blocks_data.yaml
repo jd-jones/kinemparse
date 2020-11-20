@@ -1,5 +1,3 @@
 corpus_name: 'child'
 default_annotator: 'Cathryn'
 start_video_from_first_touch: False
-use_annotated_keyframes: False
-subsample_period: 2

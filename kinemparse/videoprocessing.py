@@ -40,50 +40,6 @@ def loadVideo(
     return rgb_frame_seq, depth_frame_seq
 
 
-def foregroundPixels(
-        camera_params, camera_pose, depth_image,
-        mask_left_side=0.4, plane_distance_thresh=10):
-    """ Identify foreground pixels from a depth frame.
-
-    The scene captured by this depth frame is assumed to be supported by a plane.
-
-    Parameters
-    ----------
-    depth_image : numpy array of float, shape (img_height, img_width)
-        Depth image. Each pixel stores that location's distance from the camera,
-        in millimeters. Note that this must have type ``float`` to play nicely
-        with the plane-fitting routine it calls.
-    plane_distance_thresh : float, optional
-    mask_left_side : float, optional
-
-    Returns
-    -------
-    is_foreground : numpy array of bool, shape (img_height, img_width)
-        A mask image. Each pixel is True if that location is assigned to the
-        foreground, and False if not.
-    background_plane : geometry.Plane
-        The plane which best fits the depth image. This should match the tabletop
-        that supports the foreground of the scene.
-    """
-
-    background_mask = imageprocessing.maskDepthArtifacts(depth_image)
-
-    background_plane, plane_distance_image = imageprocessing.fitPlane(
-        depth_image, ~background_mask, plane_distance_thresh,
-        camera_params=camera_params, camera_pose=camera_pose,
-        max_trials=50
-    )
-    background_mask |= plane_distance_image < plane_distance_thresh
-
-    background_mask = imageprocessing.makeBackgroundMask(depth_image, background_mask)
-
-    background_mask = imageprocessing.maskOutsideBuildArea(
-        background_mask, mask_left_side=mask_left_side, mask_bottom=0
-    )
-
-    return ~background_mask, background_plane
-
-
 def quantizeImage(pixel_classifier, rgb_img, segment_img):
     """ Use pixel_classifier to quantize the input image.
 

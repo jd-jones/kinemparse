@@ -4,6 +4,8 @@ import logging
 import joblib
 import yaml
 import pandas as pd
+import numpy as np
+import skimage
 
 from blocks.core import duplocorpus, labels
 from mathtools import utils
@@ -88,7 +90,8 @@ def main(
         out_dir=None, corpus_name=None, default_annotator=None,
         metadata_file=None, metadata_criteria={},
         start_from=None, stop_at=None,
-        start_video_from_first_touch=None, subsample_period=None,
+        start_video_from_first_touch=None, save_video_before_first_touch=None,
+        subsample_period=None, rgb_as_float=None,
         modalities=None, use_annotated_keyframes=None, download_gt_keyframes=None):
 
     if modalities is None:
@@ -144,7 +147,7 @@ def main(
         if use_annotated_keyframes:
             annotator = 'Jonathan'
             keyframe_idxs = labels.loadKeyframeIndices(corpus, annotator, trial_id)
-            if not keyframe_idxs:
+            if not keyframe_idxs.any():
                 logger.info(f"  Skipping trial {trial_id}: no labeled keyframes")
                 continue
             selected_frame_indices = keyframe_idxs
@@ -191,18 +194,21 @@ def main(
         action_seq = fixStartEndIndices(
             action_seq, rgb_frame_timestamp_seq, selected_frame_indices
         )
-        assembly_seq, is_valid = labels.constructStateSeq(
-            trial_id, labels.constructActionSeq(trial_id, action_seq)[0],
-            structure_change_only=True, actions_as_states=False
-        )
-        if not is_valid:
-            logger.info(f"    Skipping trial {trial_id}: Bad labels")
-            continue
-
-        import pdb; pdb.set_trace()
-
         rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
         depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
+
+        try:
+            assembly_seq, is_valid = labels.parseLabelSeq(
+                action_seq, timestamps=rgb_frame_timestamp_seq,
+                structure_change_only=True,
+            )
+            if not is_valid:
+                logger.info(f"    Skipping trial {trial_id}: Bad labels")
+                continue
+            assembly_seq[-1].end_idx = len(rgb_frame_timestamp_seq)
+        except AssertionError:
+            logger.info(f"    Skipping trial {trial_id}: Bad labels")
+            continue
 
         trial_str = f"trial={trial_id}"
         if 'imu' in modalities:
@@ -236,14 +242,40 @@ def main(
             rgb_frame_seq = primesense.loadRgbFrameSeq(
                 rgb_frame_fn_seq, rgb_frame_timestamp_seq,
                 stack_frames=True
-            )[selected_frame_indices]
-            saveToWorkingDir(rgb_frame_seq, f'{trial_str}_rgb-frame-seq')
+            )
+
+            if rgb_as_float:
+                rgb_frame_seq = np.stack(
+                    tuple(skimage.img_as_float(f) for f in rgb_frame_seq),
+                    axis=0
+                )
+
+            saveToWorkingDir(
+                rgb_frame_seq[selected_frame_indices],
+                f'{trial_str}_rgb-frame-seq'
+            )
 
             depth_frame_seq = primesense.loadDepthFrameSeq(
                 depth_frame_fn_seq, depth_frame_timestamp_seq,
                 stack_frames=True
-            )[selected_frame_indices]
-            saveToWorkingDir(depth_frame_seq, f'{trial_str}_depth-frame-seq')
+            )
+
+            saveToWorkingDir(
+                depth_frame_seq[selected_frame_indices],
+                f'{trial_str}_depth-frame-seq'
+            )
+
+            if save_video_before_first_touch:
+                end_idx = max(0, first_touch_idx - 30)
+                bft_frame_indices = slice(None, end_idx, subsample_period)
+                saveToWorkingDir(
+                    rgb_frame_seq[bft_frame_indices],
+                    f'{trial_str}_rgb-frame-seq-before-first-touch'
+                )
+                saveToWorkingDir(
+                    depth_frame_seq[bft_frame_indices],
+                    f'{trial_str}_depth-frame-seq-before-first-touch'
+                )
 
         saveToWorkingDir(rgb_frame_fn_seq, f'{trial_str}_rgb-frame-fn-seq')
         saveToWorkingDir(rgb_frame_timestamp_seq, f'{trial_str}_rgb-frame-timestamp-seq')

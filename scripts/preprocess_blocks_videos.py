@@ -1,21 +1,12 @@
 import os
-import glob
 import argparse
 
 import joblib
 import yaml
 import numpy as np
 
-from blocks.core import utils
+from mathtools import utils
 from blocks.estimation import videoprocessing, render, imageprocessing
-
-
-def getUniqueTrialIds(dir_path):
-    trial_ids = set(
-        int(os.path.basename(fn).split('-')[1].split('_')[0])
-        for fn in glob.glob(os.path.join(dir_path, f"trial-*.pkl"))
-    )
-    return sorted(tuple(trial_ids))
 
 
 def main(
@@ -43,7 +34,7 @@ def main(
 
     # corpus = duplocorpus.DuploCorpus(corpus_name)
 
-    trial_ids = getUniqueTrialIds(data_dir)
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
 
     camera_pose = render.camera_pose
     camera_params = render.intrinsic_matrix
@@ -56,7 +47,7 @@ def main(
         if stop_at is not None and seq_idx > stop_at:
             break
 
-        trial_str = f"trial-{trial_id}"
+        trial_str = f"trial={trial_id}"
 
         logger.info(f"Processing video {seq_idx + 1} / {len(trial_ids)}  (trial {trial_id})")
         # task_id = corpus.getTaskIndex(trial_id)
@@ -101,7 +92,7 @@ def main(
             if utils.in_ipython_console():
                 file_path = None
             else:
-                trial_str = f"trial-{trial_id}"
+                trial_str = f"trial={trial_id}"
                 file_path = os.path.join(fig_dir, f'{trial_str}_best-frames.png')
             imageprocessing.displayImages(
                 *rgb_frame_seq, *depth_frame_seq, *segment_frame_seq,

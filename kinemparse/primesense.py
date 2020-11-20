@@ -18,7 +18,7 @@ def checkSeqTime(frame_timestamp_seq):
 
 
 def unmirrorStateSeqs(timestamps, state_seqs, path_ids):
-    return utils.iterate(unmirrorStateSeq, timestamps, state_seqs, path_ids)
+    return utils.batchProcess(unmirrorStateSeq, timestamps, state_seqs, path_ids)
 
 
 def unmirrorStateSeq(timestamp_seq, state_seq, path_id):
@@ -55,7 +55,7 @@ def unmirrorStateSeq(timestamp_seq, state_seq, path_id):
 
 
 def loadDepthFrameSeqs(frame_fn_seqs, frame_timestamp_seqs):
-    return utils.iterate(loadDepthFrameSeq, frame_fn_seqs, frame_timestamp_seqs)
+    return utils.batchProcess(loadDepthFrameSeq, frame_fn_seqs, frame_timestamp_seqs)
 
 
 def loadDepthFrameSeq(frame_fn_seq, frame_timestamp_seq, stack_frames=False, **load_kwargs):
@@ -64,7 +64,7 @@ def loadDepthFrameSeq(frame_fn_seq, frame_timestamp_seq, stack_frames=False, **l
 
     mirror = checkSeqTime(frame_timestamp_seq)
     f = functools.partial(loadDepthFrame, mirror=mirror, **load_kwargs)
-    depth_frame_seq = utils.iterate(f, frame_fn_seq)
+    depth_frame_seq = utils.batchProcess(f, frame_fn_seq)
 
     if stack_frames:
         depth_frame_seq = np.stack(depth_frame_seq)
@@ -84,7 +84,7 @@ def loadDepthFrame(path, mirror=False, as_float=False, normalize=False):
 
 
 def loadRgbFrameSeqs(frame_fn_seqs, frame_timestamp_seqs):
-    return utils.iterate(loadRgbFrameSeq, frame_fn_seqs, frame_timestamp_seqs)
+    return utils.batchProcess(loadRgbFrameSeq, frame_fn_seqs, frame_timestamp_seqs)
 
 
 def loadRgbFrameSeq(frame_fn_seq, frame_timestamp_seq=None, stack_frames=False):
@@ -116,7 +116,7 @@ def loadRgbFrameSeq(frame_fn_seq, frame_timestamp_seq=None, stack_frames=False):
     else:
         mirror = checkSeqTime(frame_timestamp_seq)
 
-    frame_seq = utils.iterate(
+    frame_seq = utils.batchProcess(
         loadRgbFrame,
         frame_fn_seq,
         static_kwargs={'mirror': mirror}
@@ -161,7 +161,7 @@ def loadRgbFrame(path, mirror=False, as_float=False):
 
 
 def resampleFrameFnSeqs(frame_fn_seqs, frame_timestamp_seqs, seq_bounds):
-    resampled_pairs = utils.iterate(
+    resampled_pairs = utils.batchProcess(
         resampleFrameFnSeq,
         frame_fn_seqs, frame_timestamp_seqs, seq_bounds
     )
@@ -180,7 +180,7 @@ def resampleFrameFnSeq(frame_fn_seq, frame_timestamp_seq, seq_bound):
 
 
 def estimateKeyframeFnSeqs(frame_fn_seqs, frame_timestamp_seqs, keyframe_timestamp_seqs):
-    keyframe_fn_seqs = utils.iterate(
+    keyframe_fn_seqs = utils.batchProcess(
         estimateKeyframeFnSeq,
         frame_fn_seqs, frame_timestamp_seqs, keyframe_timestamp_seqs
     )
