@@ -4,7 +4,6 @@ import joblib
 import yaml
 import numpy as np
 import torch
-import torchgeometry
 from skimage import measure, feature, transform
 
 from mathtools import utils, torchutils
@@ -276,8 +275,7 @@ class RgbBackgroundModel(torch.nn.Module):
             criterion = torch.nn.BCEWithLogitsLoss()
             targets_dtype = torch.float
         else:
-            # criterion = torch.nn.CrossEntropyLoss()
-            criterion = torchgeometry.losses.FocalLoss(alpha=0.5, gamma=2.0, reduction='sum')
+            criterion = torch.nn.CrossEntropyLoss()
             targets_dtype = torch.long
 
         optimizer = torch.optim.Adam(

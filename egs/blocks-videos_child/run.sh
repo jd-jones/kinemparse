@@ -6,8 +6,8 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-start_at="3"
-stop_after="3"
+start_at="1"
+stop_after="1"
 
 data_dir="${output_dir}/raw-data"
 background_dir="${output_dir}/background-detections"
@@ -47,7 +47,6 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --out_dir "${background_dir}" \
         --data_dir "${data_dir}/data" \
         --background_data_dir "${data_dir}/data" \
-        --gpu_dev_id "'2'" \
         --depth_bg_detection_kwargs "{'plane_distance_thresh': 10, 'max_trials': 50}" \
         --rgb_bg_detection_kwargs "{'px_distance_thresh': 0.2}" \
         --num_disp_imgs "10"
