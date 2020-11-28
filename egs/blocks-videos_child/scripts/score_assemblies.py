@@ -1,307 +1,29 @@
 import os
 import collections
 import logging
-import math
 
 import yaml
 import torch
 import joblib
 import numpy as np
-from scipy.spatial.transform import Rotation
-from skimage import measure
 
 from mathtools import utils, torchutils, metrics
-from visiontools import render, imageprocessing
-
-# FIXME: hack for loading pickled pretrained model
-from train_assembly_detector import AugmentedAutoEncoder
+from visiontools import imageprocessing
+from kinemparse import sim2real
 
 
 logger = logging.getLogger(__name__)
 
 
-class PretrainedClassifier(torch.nn.Module):
-    def __init__(self, pretrained_model, debug_fig_dir=None):
-        super().__init__()
-        self.model = pretrained_model
-        self.debug_fig_dir = debug_fig_dir
-
-    def forward(self, inputs):
-        inputs = inputs[0]
-
-        outputs = self.model(inputs)
-
-        if self.debug_fig_dir is not None:
-            self.model.plotBatches(
-                [(None, outputs[-10:], inputs[-10:], None, None)],
-                self.debug_fig_dir
-            )
-
-        outputs = outputs[None, ...]
-        return outputs
-
-
-class AssemblyClassifier(torch.nn.Module):
-    def __init__(self, vocab, shrink_by=3, num_rotation_samples=36, template_batch_size=None):
-        super().__init__()
-
-        intrinsic_matrix = torch.tensor(render.intrinsic_matrix, dtype=torch.float).cuda()
-        camera_pose = torch.tensor(render.camera_pose, dtype=torch.float).cuda()
-        colors = torch.tensor(render.object_colors, dtype=torch.float).cuda()
-
-        intrinsic_matrix[:2, 2] /= shrink_by
-        self.renderer = render.TorchSceneRenderer(
-            intrinsic_matrix=intrinsic_matrix,
-            camera_pose=camera_pose,
-            colors=colors,
-            light_intensity_ambient=1,
-            image_size=render.IMAGE_WIDTH // shrink_by,
-            orig_size=render.IMAGE_WIDTH // shrink_by
-        )
-
-        self.vocab = vocab
-
-        angles = torch.arange(num_rotation_samples).float() * (2 * np.pi / num_rotation_samples)
-        rotations = Rotation.from_euler('Z', angles)
-        t = torch.stack((torch.zeros_like(angles),) * 3, dim=0).float().cuda()
-        R = torch.tensor(rotations.as_dcm()).permute(1, 2, 0).float().cuda()
-
-        self.template_vocab = tuple(a for a in vocab if len(a.connected_components) == 1)
-
-        # FIXME: SOME RENDERED IMAGES HAVE CHANNEL VALUES > 1.0
-        self.templates = torch.stack(
-            tuple(self.renderTemplates(self.renderer, a, t, R)[0] for a in self.template_vocab),
-            dim=0
-        )
-
-        # assemblies, poses, height, width, channels -->
-        # assemblies, poses, channels, height, width
-        self.templates = self.templates.permute(0, 1, 4, 2, 3).contiguous().cpu()
-
-        if template_batch_size is None:
-            template_batch_size = self.templates.shape[0]
-        self.template_batch_size = template_batch_size
-        self.num_template_batches = math.ceil(self.templates.shape[0] / self.template_batch_size)
-
-        self.dummy = torch.nn.Parameter(torch.tensor([]), requires_grad=True)
-
-        self._index = 0
-
-    def renderTemplates(self, renderer, assembly, t, R):
-        if R.shape[-1] != t.shape[-1]:
-            err_str = f"R shape {R.shape} doesn't match t shape {t.shape}"
-            raise AssertionError(err_str)
-
-        num_templates = R.shape[-1]
-
-        component_poses = ((np.eye(3), np.zeros(3)),)
-        assembly = assembly.setPose(component_poses, in_place=False)
-
-        init_vertices = render.makeBatch(assembly.vertices, dtype=torch.float).cuda()
-        faces = render.makeBatch(assembly.faces, dtype=torch.int).cuda()
-        textures = render.makeBatch(assembly.textures, dtype=torch.float).cuda()
-
-        vertices = torch.einsum('nvj,jit->nvit', [init_vertices, R]) + t
-        vertices = vertices.permute(-1, 0, 1, 2)
-
-        faces = faces.expand(num_templates, *faces.shape)
-        textures = textures.expand(num_templates, *textures.shape)
-
-        rgb_images_obj, depth_images_obj = renderer.render(
-            torch.reshape(vertices, (-1, *vertices.shape[2:])),
-            torch.reshape(faces, (-1, *faces.shape[2:])),
-            torch.reshape(textures, (-1, *textures.shape[2:]))
-        )
-        rgb_images_scene, depth_images_scene, label_images_scene = render.reduceByDepth(
-            torch.reshape(rgb_images_obj, vertices.shape[:2] + rgb_images_obj.shape[1:]),
-            torch.reshape(depth_images_obj, vertices.shape[:2] + depth_images_obj.shape[1:]),
-        )
-
-        return rgb_images_scene, depth_images_scene
-
-    def predict(self, outputs):
-        __, preds = torch.max(outputs, -1)
-        return preds
-
-    def forward(self, inputs):
-        """
-        inputs : shape (1, batch, in_channels, img_height, img_width)
-        templates: shape (num_states, num_poses, in_channels, kernel_height, kernel_width)
-        outputs : shape (1, batch, num_states)
-        """
-
-        inputs = inputs[0]
-
-        def conv_template_batch(batch_index):
-            start = batch_index * self.template_batch_size
-            end = start + self.template_batch_size
-            templates = self.templates[start:end].cuda()
-            outputs = torch.nn.functional.conv2d(
-                inputs,
-                torch.reshape(templates, (-1, *templates.shape[2:]))
-            )
-            outputs = torch.reshape(
-                outputs,
-                (inputs.shape[:1] + templates.shape[0:2] + outputs.shape[2:])
-            )
-            # Pick the best template for each state
-            outputs, argmaxima = torch.max(outputs, 2)
-            return outputs
-
-        outputs = torch.cat(
-            tuple(conv_template_batch(i) for i in range(self.num_template_batches)),
-            dim=1
-        )
-
-        # Pick the best location for each template
-        outputs, _ = torch.max(outputs, -1)
-        outputs, _ = torch.max(outputs, -1)
-
-        outputs = outputs[None, ...]
-
-        return outputs
-
-
-class BlocksVideoDataset(torchutils.PickledVideoDataset):
-    def __init__(self, *args, background=None, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def _transform(self, data_seqs):
-        rgb_seq, bg_masks, person_masks = data_seqs
-
-        rgb_saturated = torch.tensor(
-            np.moveaxis(
-                np.stack(tuple(
-                    imageprocessing.saturateImage(rgb, to_float=False)
-                    for rgb in rgb_seq
-                )), 3, 1
-            ), device=self._device, dtype=torch.float
-        )
-
-        depth_bg_masks = torch.tensor(
-            np.moveaxis(bg_masks[..., None], 3, 1),
-            dtype=torch.uint8, device=self._device
-        )
-
-        person_masks = torch.tensor(
-            np.moveaxis(person_masks[..., None], 3, 1),
-            dtype=torch.uint8, device=self._device
-        )
-
-        blocks_masks = ((depth_bg_masks + person_masks) < 1).float()
-        rgb_saturated *= blocks_masks
-
-        return rgb_saturated
-
-    def _load(self, i):
-        if self.batch_size is not None:
-            seq_idx, win_idx = self.unflatten[i]
-
-            seq_id = self._seq_ids[seq_idx]
-            label_seq = self._labels[seq_idx]
-            data_seqs = self._load_data(seq_id)
-
-            start_idx = win_idx
-            end_idx = start_idx + self.batch_size
-            data_seqs = tuple(data_seq[start_idx:end_idx] for data_seq in data_seqs)
-            label_seq = label_seq[start_idx:end_idx]
-        else:
-            seq_id = self._seq_ids[i]
-            label_seq = self._labels[i]
-            data_seqs = self._load_data(seq_id)
-
-        return data_seqs, label_seq, seq_id
-
-    def __getitem__(self, i):
-        data_seqs, label_seq, seq_id = self._load(i)
-        data_seq = self._transform(data_seqs)
-
-        # shape (sequence_len, num_dims) --> (num_dims, sequence_len)
-        if self.transpose_data:
-            data_seq = data_seq.transpose(0, 1)
-
-        if self.sliding_window_args is not None:
-            # Unfold gives shape (sequence_len, window_len);
-            # after transpose, data_seq has shape (window_len, sequence_len)
-            data_seq = data_seq.unfold(*self.sliding_window_args).transpose(-1, -2)
-            label_seq = label_seq.unfold(*self.sliding_window_args).median(dim=-1).values
-
-        return data_seq, label_seq, seq_id
-
-
-class PretrainDataset(BlocksVideoDataset):
-    def _transform(self, data_seqs):
-        def makeCrops(rgb, mask):
-            labels, num = measure.label(mask.astype(int), return_num=True)
-
-            if not num:
-                return np.zeros((1, 128, 128, 3))
-
-            def makeCrop(i):
-                crop = np.zeros((128, 128, 3))
-
-                img_coords = np.column_stack(np.where(labels == i))
-
-                seg_center = img_coords.mean(axis=0).astype(int)
-                crop_center = np.array([x // 2 for x in crop.shape[:2]])
-
-                crop_coords = img_coords - seg_center + crop_center
-                coords_ok = np.all((crop_coords > 0) * (crop_coords < 128), axis=1)
-                crop_coords = crop_coords[coords_ok, :]
-                img_coords = img_coords[coords_ok, :]
-
-                crop[crop_coords[:, 0], crop_coords[:, 1]] = rgb[img_coords[:, 0], img_coords[:, 1]]
-
-                return crop
-
-            return np.stack(tuple(makeCrop(i) for i in range(1, num + 1)))
-
-        rgb_seq, bg_masks, person_masks = data_seqs
-
-        blocks_masks = ~(bg_masks.astype(bool) + person_masks.astype(bool))
-        blocks_masks[:, :, :110] = False
-
-        rgb_seq = np.stack(tuple(
-            imageprocessing.saturateImage(rgb, to_float=False)
-            for rgb in rgb_seq
-        ))
-
-        rgb_seq[~blocks_masks] = 0
-
-        rgb_seq = np.vstack(
-            tuple(makeCrops(rgb, mask) for rgb, mask in zip(rgb_seq, blocks_masks))
-        )
-
-        rgb_seq = torch.tensor(
-            np.moveaxis(rgb_seq, 3, 1),
-            device=self._device, dtype=torch.float
-        )
-
-        return rgb_seq
-
-
-def viz_model_params(model, templates_dir):
-    templates = model.templates.cpu().numpy()
-    # FIXME: SOME RENDERED IMAGES HAVE CHANNEL VALUES > 1.0
-    templates[templates > 1] = 1
-
-    for i, assembly_templates in enumerate(templates):
-        imageprocessing.displayImages(
-            *assembly_templates, num_rows=6, figsize=(15, 15),
-            file_path=os.path.join(templates_dir, f"{i}.png")
-        )
-
-
 def main(
-        out_dir=None, data_dir=None, background_dir=None, detections_dir=None,
-        pretrained_model_dir=None, model_name=None,
-        gpu_dev_id=None, batch_size=None, learning_rate=None,
+        out_dir=None, data_dir=None, segs_dir=None, pretrained_model_dir=None,
+        model_name=None, gpu_dev_id=None, batch_size=None, learning_rate=None,
+        start_from=None, stop_at=None,
         model_params={}, cv_params={}, train_params={}, viz_params={},
         num_disp_imgs=None, viz_templates=None, results_file=None, sweep_param_name=None):
 
     data_dir = os.path.expanduser(data_dir)
-    background_dir = os.path.expanduser(background_dir)
-    detections_dir = os.path.expanduser(detections_dir)
+    segs_dir = os.path.expanduser(segs_dir)
     pretrained_model_dir = os.path.expanduser(pretrained_model_dir)
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
@@ -328,13 +50,11 @@ def main(
 
     def loadData(seq_id):
         rgb_frames = joblib.load(os.path.join(data_dir, f"trial={seq_id}_rgb-frame-seq.pkl"))
-        bg_masks = joblib.load(
-            os.path.join(background_dir, f"trial={seq_id}_bg-mask-seq-depth.pkl")
-        )
-        person_masks = joblib.load(
-            os.path.join(detections_dir, f"trial={seq_id}_person-mask-seq.pkl")
-        )
-        return rgb_frames, bg_masks, person_masks
+        seg_frames = joblib.load(
+            os.path.join(segs_dir, f"trial={seq_id}_seg-labels-seq.pkl")
+        ).astype(int)
+        seg_frames[:, :, :110] = 0
+        return rgb_frames, seg_frames
 
     def loadAssemblies(seq_id, vocab):
         assembly_seq = joblib.load(os.path.join(data_dir, f"trial={seq_id}_assembly-seq.pkl"))
@@ -375,10 +95,15 @@ def main(
         )
         return split_data
 
-    dataset = PretrainDataset
-    # dataset = BlocksVideoDataset
+    dataset = sim2real.BlocksConnectionDataset
 
     for cv_index, cv_splits in enumerate(cv_folds):
+        if start_from is not None and cv_index < start_from:
+            continue
+
+        if stop_at is not None and cv_index > stop_at:
+            break
+
         train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
 
         criterion = torch.nn.CrossEntropyLoss()
@@ -386,25 +111,25 @@ def main(
 
         train_labels, train_ids = train_data
         train_set = dataset(
-            loadData, train_labels,
+            vocab, loadData, train_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
-            batch_size=batch_size,
+            batch_size=batch_size
         )
         train_loader = torch.utils.data.DataLoader(train_set, batch_size=1, shuffle=True)
 
         test_labels, test_ids = test_data
         test_set = dataset(
-            loadData, test_labels,
+            vocab, loadData, test_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
-            batch_size=batch_size,
+            batch_size=batch_size
         )
-        test_loader = torch.utils.data.DataLoader(test_set, batch_size=1, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(test_set, batch_size=1, shuffle=False)
 
         val_labels, val_ids = val_data
         val_set = dataset(
-            loadData, val_labels,
+            vocab, loadData, val_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
-            batch_size=batch_size,
+            batch_size=batch_size
         )
         val_loader = torch.utils.data.DataLoader(val_set, batch_size=1, shuffle=True)
 
@@ -414,24 +139,19 @@ def main(
         )
 
         if model_name == 'template':
-            model = AssemblyClassifier(vocab, **model_params)
+            model = sim2real.AssemblyClassifier(vocab, **model_params)
         elif model_name == 'pretrained':
             pretrained_model = joblib.load(
-                os.path.join(pretrained_model_dir, "cvfold=0_AAE-best.pkl")
+                os.path.join(pretrained_model_dir, "cvfold=0_model-best.pkl")
             )
-            model = PretrainedClassifier(pretrained_model, debug_fig_dir=io_dir)
+            model = sim2real.SceneClassifier(pretrained_model)
+            metric_names = ('Loss', 'Accuracy', 'Precision', 'Recall', 'F1')
+            criterion = torch.nn.BCEWithLogitsLoss()
+            criterion = torchutils.BootstrappedCriterion(
+                0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
+            )
         else:
             raise AssertionError()
-
-        train_epoch_log = collections.defaultdict(list)
-        val_epoch_log = collections.defaultdict(list)
-        metric_dict = {
-            'Avg Loss': metrics.AverageLoss(),
-            'Accuracy': metrics.Accuracy(),
-            'Precision': metrics.Precision(),
-            'Recall': metrics.Recall(),
-            'F1': metrics.Fmeasure()
-        }
 
         optimizer_ft = torch.optim.Adam(
             model.parameters(), lr=learning_rate,
@@ -440,6 +160,9 @@ def main(
         )
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=1.00)
 
+        train_epoch_log = collections.defaultdict(list)
+        val_epoch_log = collections.defaultdict(list)
+        metric_dict = {name: metrics.makeMetric(name) for name in metric_names}
         model, last_model_wts = torchutils.trainModel(
             model, criterion, optimizer_ft, lr_scheduler,
             train_loader, val_loader,
@@ -451,13 +174,7 @@ def main(
         )
 
         # Test model
-        metric_dict = {
-            'Avg Loss': metrics.AverageLoss(),
-            'Accuracy': metrics.Accuracy(),
-            'Precision': metrics.Precision(),
-            'Recall': metrics.Recall(),
-            'F1': metrics.Fmeasure()
-        }
+        metric_dict = {name: metrics.makeMetric(name) for name in metric_names}
         test_io_history = torchutils.predictSamples(
             model.to(device=device), test_loader,
             criterion=criterion, device=device,
@@ -468,12 +185,24 @@ def main(
         metric_str = '  '.join(str(m) for m in metric_dict.values())
         logger.info('[TST]  ' + metric_str)
 
-        utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
+        utils.writeResults(
+            results_file, {name: m.value for name, m in metric_dict.items()},
+            sweep_param_name, model_params
+        )
 
-        def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
-            saveVariable(pred_seq.cpu().numpy(), f'trial={trial_id}_pred-label-seq')
-            saveVariable(score_seq.cpu().numpy(), f'trial={trial_id}_score-seq')
-            saveVariable(label_seq.cpu().numpy(), f'trial={trial_id}_true-label-seq')
+        def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, batch_id):
+            saveVariable(
+                pred_seq.cpu().numpy(),
+                f'cvfold={cv_index}_batch={batch_id}_pred-label-seq'
+            )
+            saveVariable(
+                score_seq.cpu().numpy(),
+                f'cvfold={cv_index}_batch={batch_id}_score-seq'
+            )
+            saveVariable(
+                label_seq.cpu().numpy(),
+                f'cvfold={cv_index}_batch={batch_id}_true-label-seq'
+            )
         for io in test_io_history:
             saveTrialData(*io)
 
@@ -507,7 +236,13 @@ def main(
             )
 
         if model_name == 'pretrained' and num_disp_imgs is not None:
-            model.model.plotBatches(test_io_history, io_dir)
+            cvfold_dir = os.path.join(io_dir, f'cvfold={cv_index}')
+            if not os.path.exists(cvfold_dir):
+                os.makedirs(cvfold_dir)
+            model.plotBatches(
+                test_io_history, cvfold_dir,
+                images_per_fig=num_disp_imgs, dataset=test_set
+            )
 
         if model_name == 'template' and num_disp_imgs is not None:
             io_dir = os.path.join(fig_dir, 'model-io')
@@ -547,7 +282,7 @@ def main(
             )
 
         if viz_templates:
-            viz_model_params(model, templates_dir=None)
+            sim2real.viz_model_params(model, templates_dir=None)
 
 
 if __name__ == "__main__":

@@ -191,9 +191,10 @@ def main(
             np.vstack,
             zip(*(detectBatch(i) for i in range(num_batches)))
         )
+        person_mask_seq = person_mask_seq.astype(bool)
 
         logger.info("  Saving output...")
-        saveToWorkingDir(person_mask_seq.astype(bool), f'{trial_str}_person-mask-seq')
+        saveToWorkingDir(person_mask_seq, f'{trial_str}_person-mask-seq')
 
         if num_disp_imgs is not None:
             if rgb_frame_seq.shape[0] > num_disp_imgs:

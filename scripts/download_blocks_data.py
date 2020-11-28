@@ -244,6 +244,10 @@ def main(
                 stack_frames=True
             )
 
+            if not len(rgb_frame_seq):
+                logger.warning(f"    Skipping trial {trial_id}: RGB frames are empty!")
+                continue
+
             if rgb_as_float:
                 rgb_frame_seq = np.stack(
                     tuple(skimage.img_as_float(f) for f in rgb_frame_seq),
@@ -259,6 +263,10 @@ def main(
                 depth_frame_fn_seq, depth_frame_timestamp_seq,
                 stack_frames=True
             )
+
+            if not len(rgb_frame_seq):
+                logger.warning(f"    Skipping trial {trial_id}: depth frames are empty!")
+                continue
 
             saveToWorkingDir(
                 depth_frame_seq[selected_frame_indices],

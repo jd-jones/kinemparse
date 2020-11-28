@@ -6,15 +6,15 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-start_at="2"
-stop_after="2"
+start_at="5"
+stop_after="5"
 
 data_dir="${output_dir}/raw-data"
 background_dir="${output_dir}/background-detections"
 detections_dir="${output_dir}/object-detections"
+seg_labels_dir="${output_dir}/image-segment-labels"
 sim_pretrain_dir="${output_dir}/pretrained-models-sim"
-connection_pretrain_dir="${output_dir}/pretrained-models-connection"
-assembly_scores_dir="${output_dir}/assembly-scores"
+assembly_scores_dir="${output_dir}/assembly-scores_epochs=5"
 decode_dir="${output_dir}/decode"
 
 cd ${scripts_dir}
@@ -71,19 +71,14 @@ fi
 ((++STAGE))
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Pre-train assembly detector"
-    python train_assembly_detector.py \
-        --out_dir "${sim_pretrain_dir}" \
+    echo "STAGE ${STAGE}: Label foreground segments"
+    python make_seg_labels.py \
+        --out_dir "${seg_labels_dir}" \
         --data_dir "${data_dir}/data" \
-        --gpu_dev_id "'2'" \
-        --batch_size "10" \
-        --learning_rate "0.0002" \
-        --model_name "AAE" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 2, 'shuffle': True}" \
-        --train_params "{'num_epochs': 10, 'test_metric': 'Reciprocal Loss', 'seq_as_batch': False}" \
-        --model_params "{}" \
-        --num_disp_imgs "10" \
-        --viz_params "{}"
+        --bg_masks_dir "${background_dir}/data" \
+        --person_masks_dir "${detections_dir}/data" \
+        --sat_thresh "0.15" \
+        --num_disp_imgs "10"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -93,15 +88,14 @@ fi
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Pre-train assembly detector"
     python train_assembly_detector.py \
-        --out_dir "${connection_pretrain_dir}" \
+        --out_dir "${sim_pretrain_dir}" \
         --data_dir "${data_dir}/data" \
         --pretrain_dir "${sim_pretrain_dir}/data" \
         --gpu_dev_id "'2'" \
         --batch_size "10" \
         --learning_rate "0.001" \
         --model_name "Connections" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 2, 'shuffle': True}" \
-        --train_params "{'num_epochs': 100, 'test_metric': 'Accuracy', 'seq_as_batch': False}" \
+        --train_params "{'num_epochs': 100, 'test_metric': 'F1', 'seq_as_batch': False}" \
         --model_params "{}" \
         --num_disp_imgs "10" \
         --viz_params "{}"
@@ -112,22 +106,23 @@ fi
 ((++STAGE))
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Register templates"
+    echo "STAGE ${STAGE}: Score assemblies"
     python score_assemblies.py \
         --out_dir "${assembly_scores_dir}" \
         --data_dir "${data_dir}/data" \
-        --background_dir "${background_dir}/data" \
-        --detections_dir "${detections_dir}/data" \
+        --segs_dir "${seg_labels_dir}/data" \
         --pretrained_model_dir "${sim_pretrain_dir}/data" \
         --gpu_dev_id "'2'" \
         --model_name "pretrained" \
         --batch_size "10" \
         --learning_rate "0.001" \
-        --cv_params "{'val_ratio': 0.25}" \
-        --train_params "{'num_epochs': 0, 'test_metric': Accuracy, 'seq_as_batch': True}" \
-        --model_params "{'shrink_by': 3, 'num_rotation_samples': 36, 'template_batch_size': 75}" \
+        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
+        --train_params "{'num_epochs': 0, 'test_metric': 'F1', 'seq_as_batch': True}" \
         --num_disp_imgs "10" \
         --viz_params "{}"
+    python analysis.py \
+        --out_dir "${assembly_scores_dir}/system-performance" \
+        --results_file "${assembly_scores_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

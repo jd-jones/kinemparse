@@ -405,6 +405,10 @@ def main(
                 background_data_dir
             )
 
+            if isinstance(depth_train, tuple) and isinstance(depth_frame_seq, tuple):
+                logger.info("  Skipping video: depth frames missing")
+                continue
+
             rgb_frame_seq = np.stack(
                 tuple(skimage.img_as_float(f) for f in rgb_frame_seq),
                 axis=0
@@ -413,6 +417,7 @@ def main(
                 tuple(skimage.img_as_float(f) for f in rgb_train),
                 axis=0
             )
+
         except FileNotFoundError as e:
             logger.info(e)
             continue
