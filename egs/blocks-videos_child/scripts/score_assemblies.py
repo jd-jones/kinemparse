@@ -53,7 +53,7 @@ def main(
         seg_frames = joblib.load(
             os.path.join(segs_dir, f"trial={seq_id}_seg-labels-seq.pkl")
         ).astype(int)
-        seg_frames[:, :, :110] = 0
+        # seg_frames[:, :, :110] = 0
         return rgb_frames, seg_frames
 
     def loadAssemblies(seq_id, vocab):

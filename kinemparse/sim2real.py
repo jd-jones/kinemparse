@@ -8,7 +8,7 @@ import kornia
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from mathtools import torchutils, torch_future
+from mathtools import utils, torchutils, torch_future
 from visiontools import render, imageprocessing
 
 
@@ -266,8 +266,9 @@ class BlocksConnectionDataset(BlocksVideoDataset):
 
 class RenderDataset(torch.utils.data.Dataset):
     def __init__(
-            self, vocab, device=None, batch_size=None,
-            intrinsic_matrix=None, camera_pose=None, colors=None, crop_size=128):
+            self, vocab, device=None, batch_size=None, occlusion_masks=None,
+            intrinsic_matrix=None, camera_pose=None, colors=None, crop_size=128,
+            kornia_tfs={}):
         if intrinsic_matrix is None:
             intrinsic_matrix = torch.tensor(render.intrinsic_matrix, dtype=torch.float).cuda()
 
@@ -277,11 +278,12 @@ class RenderDataset(torch.utils.data.Dataset):
         if colors is None:
             colors = torch.tensor(render.object_colors, dtype=torch.float).cuda()
 
+        self.occlusion_masks = occlusion_masks
         self.crop_size = crop_size
         self.image_size = min(render.IMAGE_WIDTH, render.IMAGE_HEIGHT)
 
         # FIXME: camera intrisics are calibrated for 240x320 camera,
-        #    but we render with at 240x240 resolution
+        #    but we render at 240x240 resolution
 
         self.renderer = render.TorchSceneRenderer(
             intrinsic_matrix=intrinsic_matrix,
@@ -298,15 +300,100 @@ class RenderDataset(torch.utils.data.Dataset):
         self.device = device
         self.batch_size = batch_size
 
+        # setattr(kornia.geometry, 'pi', kornia.geometry.pi.to(device=self.device))
+        self._kornia_tfs = self._init_kornia_tfs(kornia_tfs=kornia_tfs)
+
+    def _init_kornia_tfs(self, kornia_tfs={}):
+        tfs = torch.nn.Sequential(*(
+            getattr(kornia.augmentation, name)(**params)
+            for name, params in kornia_tfs.items()
+        ))
+        return tfs
+
     def __len__(self):
         return len(self.vocab)
 
     def __getitem__(self, i):
+        image = self._getImage(i)
+        target = self._getTarget(i)
+        return image, target, -1
+
+    def _getTarget(self, i):
+        return i
+
+    def _getImage(self, i, pose=None):
         assembly = self.vocab[i]
-        R, t = self.samplePose()
-        rgb_batch, depth_batch, label_batch = renderTemplates(self.renderer, assembly, t, R)
-        image = _crop(rgb_batch[0], label_batch[0], self.crop_size)
-        return image, i, -1
+
+        if pose is None:
+            R, t = self.samplePose()
+        else:
+            R, t = pose
+
+        imgs_batch = renderTemplates(self.renderer, assembly, t, R)
+        imgs_batch = self._pad_images(*imgs_batch)
+        imgs_batch = self._occlude_images(*imgs_batch)
+
+        rgb_batch, depth_batch, label_batch = imgs_batch
+        rgb_crop = _crop(rgb_batch[0], label_batch[0], self.crop_size)
+
+        rgb_crop = rgb_crop.permute(-1, 0, 1)
+        # rgb_crop = self._augment_image(rgb_crop)[0]
+
+        return rgb_crop
+
+    def _pad_images(self, rgb, depth, label, target_shape=None):
+        """ Expand images from 240x240 to 240x320 """
+
+        if target_shape is None:
+            target_shape = (render.IMAGE_HEIGHT, render.IMAGE_WIDTH)
+
+        target_height, target_width = target_shape
+        batch_size, img_height, img_width, num_channels = rgb.shape
+
+        if img_height != target_height:
+            raise AssertionError()
+
+        pad_shape = (batch_size, target_height, target_width - img_width)
+
+        padding = torch.zeros((*pad_shape, num_channels), dtype=rgb.dtype, device=rgb.device)
+        rgb = torch.cat((padding, rgb), dim=2)
+
+        padding = torch.zeros(pad_shape, dtype=label.dtype, device=label.device)
+        label = torch.cat((padding, label), dim=2)
+
+        padding = torch.full(
+            pad_shape, self.renderer.far,
+            dtype=depth.dtype, device=depth.device
+        )
+        depth = torch.cat((padding, depth), dim=2)
+
+        return rgb, depth, label
+
+    def _occlude_images(self, rgb, depth, label, in_place=True):
+        if not in_place:
+            raise NotImplementedError()
+
+        is_occluded = self.sampleOcclusion()
+
+        rgb[is_occluded] = 0
+        depth[is_occluded] = self.renderer.far
+        label[is_occluded] = 0
+
+        return rgb, depth, label
+
+    def _augment_image(self, rgb):
+        return self._kornia_tfs(rgb.cpu()).cuda()
+
+    def sampleOcclusion(self, num_samples=1):
+        if self.occlusion_masks is None:
+            raise NotImplementedError()
+            occlusion_masks = None
+            return occlusion_masks
+
+        occlusion_masks = utils.sampleWithoutReplacement(
+            self.occlusion_masks, num_samples=num_samples
+        )
+        return torch.tensor(occlusion_masks, dtype=torch.uint8, device=self.device)
 
     def sampleOrientation(self, num_samples=1):
         """
@@ -371,18 +458,9 @@ class RenderDataset(torch.utils.data.Dataset):
 
 
 class DenoisingDataset(RenderDataset):
-    def __getitem__(self, i):
-        assembly = self.vocab[i]
-
-        R, t = self.samplePose()
-        rgb_batch, depth_batch, label_batch = renderTemplates(self.renderer, assembly, t, R)
-        randomized_image = _crop(rgb_batch[0], label_batch[0], self.crop_size).permute(-1, 0, 1)
-
-        R, t = self.canonicalPose()
-        rgb_batch, depth_batch, label_batch = renderTemplates(self.renderer, assembly, t, R)
-        canonical_image = _crop(rgb_batch[0], label_batch[0], self.crop_size).permute(-1, 0, 1)
-
-        return randomized_image, canonical_image, -1
+    def _getTarget(self, i):
+        target_image = self._getImage(i, pose=self.canonicalPose())
+        return target_image
 
     def canonicalPose(self, num_samples=1):
         angles = torch.zeros(num_samples, dtype=torch.float)
@@ -393,16 +471,10 @@ class DenoisingDataset(RenderDataset):
 
 
 class ConnectionDataset(RenderDataset):
-    def __getitem__(self, i):
+    def _getTarget(self, i):
         assembly = self.vocab[i]
-
-        R, t = self.samplePose()
-        rgb_batch, depth_batch, label_batch = renderTemplates(self.renderer, assembly, t, R)
-        randomized_image = _crop(rgb_batch[0], label_batch[0], self.crop_size).permute(-1, 0, 1)
-
-        connections = torch.tensor(assembly.connections, dtype=torch.float).view(-1).contiguous()
-
-        return randomized_image, connections, -1
+        connections = torch.tensor(assembly.connections, dtype=torch.float)
+        return connections.view(-1).contiguous()
 
     @property
     def target_shape(self):

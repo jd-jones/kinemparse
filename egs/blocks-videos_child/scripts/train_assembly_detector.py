@@ -9,15 +9,52 @@ import numpy as np
 
 from mathtools import utils, metrics, torchutils
 from kinemparse import sim2real
+from blocks.core.blockassembly import BlockAssembly
+from blocks.core import definitions as defn
 
 
 logger = logging.getLogger(__name__)
 
 
+def make_single_block_state(block_index):
+    state = BlockAssembly()
+    state.addBlock(block_index)
+
+    state.blocks[block_index].component_index = state._next_component_index
+    state.blocks[block_index].theta_global = 0
+    state.blocks[block_index].t_global = np.zeros(3)
+
+    state._addToConnectedComponent(block_index)
+    return state
+
+
+def loadMasks(masks_dir=None, trial_ids=None, num_per_video=10):
+    if masks_dir is None:
+        return None
+
+    def loadMasks(video_id):
+        masks = joblib.load(os.path.join(masks_dir, f'trial={video_id}_person-mask-seq.pkl'))
+
+        any_detections = masks.any(axis=-1).any(axis=-1)
+        masks = masks[any_detections]
+
+        masks = utils.sampleWithoutReplacement(masks, num_samples=num_per_video)
+        return masks
+
+    masks_dir = os.path.expanduser(masks_dir)
+
+    if trial_ids is None:
+        trial_ids = utils.getUniqueIds(masks_dir, prefix='trial=', to_array=True)
+
+    masks = np.vstack(tuple(map(loadMasks, trial_ids)))
+    return masks
+
+
 def main(
-        out_dir=None, data_dir=None, pretrain_dir=None, model_name=None,
-        gpu_dev_id=None, batch_size=None, learning_rate=None,
-        model_params={}, cv_params={}, train_params={}, viz_params={},
+        out_dir=None, data_dir=None, pretrain_dir=None,
+        model_name=None, gpu_dev_id=None, batch_size=None, learning_rate=None,
+        model_params={}, cv_params={}, train_params={}, viz_params={}, load_masks_params={},
+        kornia_tfs={},
         num_disp_imgs=None, results_file=None, sweep_param_name=None):
 
     data_dir = os.path.expanduser(data_dir)
@@ -60,7 +97,7 @@ def main(
     # Load data
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
 
-    vocab = []
+    vocab = [BlockAssembly()] + [make_single_block_state(i) for i in range(len(defn.blocks))]
     label_seqs = tuple(loadAssemblies(t_id, vocab) for t_id in trial_ids)
 
     logger.info(f"Loaded {len(trial_ids)} sequences; {len(vocab)} unique assemblies")
@@ -83,14 +120,27 @@ def main(
     elif model_name == 'Connections':
         dataset = sim2real.ConnectionDataset
 
+    occlusion_masks = loadMasks(**load_masks_params)
+    if occlusion_masks is not None:
+        logger.info(f"Loaded {occlusion_masks.shape[0]} occlusion masks")
+
     for cv_index, cv_splits in enumerate(range(1)):
-        train_set = dataset(vocab, device=device)
+        train_set = dataset(
+            vocab, device=device, occlusion_masks=occlusion_masks,
+            kornia_tfs=kornia_tfs
+        )
         train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
 
-        test_set = dataset(vocab, device=device)
+        test_set = dataset(
+            vocab, device=device, occlusion_masks=occlusion_masks,
+            kornia_tfs=kornia_tfs
+        )
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
-        val_set = dataset(vocab, device=device)
+        val_set = dataset(
+            vocab, device=device, occlusion_masks=occlusion_masks,
+            kornia_tfs=kornia_tfs
+        )
         val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 
         if model_name == 'AAE':

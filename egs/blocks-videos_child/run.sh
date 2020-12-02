@@ -6,15 +6,16 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-start_at="5"
-stop_after="5"
+start_at="4"
+stop_after="6"
 
 data_dir="${output_dir}/raw-data"
 background_dir="${output_dir}/background-detections"
 detections_dir="${output_dir}/object-detections"
 seg_labels_dir="${output_dir}/image-segment-labels"
 sim_pretrain_dir="${output_dir}/pretrained-models-sim"
-assembly_scores_dir="${output_dir}/assembly-scores_epochs=5"
+assembly_scores_dir="${output_dir}/assembly-scores_epochs=0"
+postprocessed_assembly_scores_dir="${output_dir}/assembly-scores-postprocessed_epochs=0"
 decode_dir="${output_dir}/decode"
 
 cd ${scripts_dir}
@@ -93,9 +94,18 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --pretrain_dir "${sim_pretrain_dir}/data" \
         --gpu_dev_id "'2'" \
         --batch_size "10" \
-        --learning_rate "0.001" \
+        --learning_rate "0.0002" \
         --model_name "Connections" \
-        --train_params "{'num_epochs': 100, 'test_metric': 'F1', 'seq_as_batch': False}" \
+        --kornia_tfs "{ \
+            'ColorJitter': { \
+                'brightness': 0.1, \
+                'contrast': 0.1, \
+                'saturation': 0.0, \
+                'hue': 0.1 \
+            } \
+        }" \
+        --load_masks_params "{'masks_dir': '${detections_dir}/data', 'num_per_video': 10}" \
+        --train_params "{'num_epochs': 1500, 'test_metric': 'F1', 'seq_as_batch': False}" \
         --model_params "{}" \
         --num_disp_imgs "10" \
         --viz_params "{}"
@@ -114,15 +124,28 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --pretrained_model_dir "${sim_pretrain_dir}/data" \
         --gpu_dev_id "'2'" \
         --model_name "pretrained" \
-        --batch_size "10" \
+        --batch_size "20" \
         --learning_rate "0.001" \
         --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
         --train_params "{'num_epochs': 0, 'test_metric': 'F1', 'seq_as_batch': True}" \
-        --num_disp_imgs "10" \
         --viz_params "{}"
     python analysis.py \
         --out_dir "${assembly_scores_dir}/system-performance" \
         --results_file "${assembly_scores_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Postprocess assembly scores"
+    python postprocess_assembly_scores.py \
+        --out_dir "${postprocessed_assembly_scores_dir}" \
+        --data_dir "${data_dir}/data" \
+        --segs_dir "${seg_labels_dir}/data" \
+        --scores_dir "${assembly_scores_dir}/data" \
+        --num_disp_imgs "10"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
