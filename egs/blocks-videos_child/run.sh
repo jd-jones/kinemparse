@@ -6,7 +6,7 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-start_at="4"
+start_at="6"
 stop_after="6"
 
 data_dir="${output_dir}/raw-data"
@@ -14,8 +14,9 @@ background_dir="${output_dir}/background-detections"
 detections_dir="${output_dir}/object-detections"
 seg_labels_dir="${output_dir}/image-segment-labels"
 sim_pretrain_dir="${output_dir}/pretrained-models-sim"
-assembly_scores_dir="${output_dir}/assembly-scores_epochs=0"
-postprocessed_assembly_scores_dir="${output_dir}/assembly-scores-postprocessed_epochs=0"
+assembly_scores_dir="${output_dir}/assembly-scores_epochs=50"
+postprocessed_assembly_scores_dir="${output_dir}/assembly-scores-postprocessed_epochs=50"
+seq_preds_dir="${output_dir}/seq-preds"
 decode_dir="${output_dir}/decode"
 
 cd ${scripts_dir}
@@ -125,21 +126,13 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --gpu_dev_id "'2'" \
         --model_name "pretrained" \
         --batch_size "20" \
-        --learning_rate "0.001" \
+        --learning_rate "0.0002" \
         --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
-        --train_params "{'num_epochs': 0, 'test_metric': 'F1', 'seq_as_batch': True}" \
+        --train_params "{'num_epochs': 50, 'test_metric': 'F1', 'seq_as_batch': True}" \
         --viz_params "{}"
     python analysis.py \
         --out_dir "${assembly_scores_dir}/system-performance" \
         --results_file "${assembly_scores_dir}/results.csv"
-fi
-if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
-fi
-((++STAGE))
-
-if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Postprocess assembly scores"
     python postprocess_assembly_scores.py \
         --out_dir "${postprocessed_assembly_scores_dir}" \
         --data_dir "${data_dir}/data" \
@@ -153,18 +146,28 @@ fi
 ((++STAGE))
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Decode best paths"
-    python decode_keyframes.py \
-        --config_file "$config_dir/decode_keyframes.yaml" \
-        --out_dir "$decode_dir" \
-        --data_dir "$data_dir/data" \
-        --preprocess_dir "$preprocess_dir/data" \
-        --detections_dir "$detections_dir/data" \
-        --data_scores_dir "$register_dir/data"
-    python score_results.py \
-        --config_file "$config_dir/score_results.yaml" \
-        --out_dir "$decode_dir/system-performance" \
-        --decode_dir "$decode_dir/data"
+    echo "STAGE ${STAGE}: Predict actions"
+    python predict_seq_pytorch.py \
+        --out_dir "${seq_preds_dir}" \
+        --data_dir "${postprocessed_assembly_scores_dir}/data" \
+        --feature_fn_format "score-seq.pkl" \
+        --label_fn_format "true-label-seq.pkl" \
+        --gpu_dev_id "'2'" \
+        --model_name "'TCN'" \
+        --batch_size "1" \
+        --learning_rate "0.0002" \
+        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
+        --train_params "{'num_epochs': 250, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
+        --model_params "{ \
+            'binary_multiclass': True, \
+            'tcn_channels': [8,  8, 16, 16, 32, 32], \
+            'kernel_size': 5, \
+            'dropout': 0.2 \
+        }" \
+        --plot_predictions "True"
+    python analysis.py \
+        --out_dir "${seq_preds_dir}/system-performance" \
+        --results_file "${seq_preds_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

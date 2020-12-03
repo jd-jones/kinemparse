@@ -113,7 +113,7 @@ def main(
         train_set = dataset(
             vocab, loadData, train_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
-            batch_size=batch_size
+            batch_size=batch_size, batch_mode='sample'
         )
         train_loader = torch.utils.data.DataLoader(train_set, batch_size=1, shuffle=True)
 
@@ -121,7 +121,7 @@ def main(
         test_set = dataset(
             vocab, loadData, test_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
-            batch_size=batch_size
+            batch_size=batch_size, batch_mode='flatten'
         )
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=1, shuffle=False)
 
@@ -129,7 +129,7 @@ def main(
         val_set = dataset(
             vocab, loadData, val_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
-            batch_size=batch_size
+            batch_size=batch_size, batch_mode='sample'
         )
         val_loader = torch.utils.data.DataLoader(val_set, batch_size=1, shuffle=True)
 
@@ -146,7 +146,7 @@ def main(
             )
             model = sim2real.SceneClassifier(pretrained_model)
             metric_names = ('Loss', 'Accuracy', 'Precision', 'Recall', 'F1')
-            criterion = torch.nn.BCEWithLogitsLoss()
+            # criterion = torch.nn.BCEWithLogitsLoss()
             criterion = torchutils.BootstrappedCriterion(
                 0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
             )

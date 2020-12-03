@@ -28,7 +28,8 @@ class PickledVideoDataset(torch.utils.data.Dataset):
 
     def __init__(
             self, data_loader, labels, device=None, labels_dtype=None,
-            sliding_window_args=None, transpose_data=False, seq_ids=None, batch_size=None):
+            sliding_window_args=None, transpose_data=False, seq_ids=None,
+            batch_size=None, batch_mode=None):
         """
         Parameters
         ----------
@@ -62,6 +63,7 @@ class PickledVideoDataset(torch.utils.data.Dataset):
         self.sliding_window_args = sliding_window_args
         self.transpose_data = transpose_data
         self.batch_size = batch_size
+        self.batch_mode = batch_mode
 
         self._load_data = data_loader
 
@@ -74,7 +76,7 @@ class PickledVideoDataset(torch.utils.data.Dataset):
 
         self._seq_lens = tuple(x.shape[0] for x in self._labels)
 
-        if self.batch_size is not None:
+        if self.batch_size is not None and self.batch_mode == 'flatten':
             self.unflatten = tuple(
                 (seq_index, win_index)
                 for seq_index, seq_len in enumerate(self._seq_lens)
@@ -85,9 +87,9 @@ class PickledVideoDataset(torch.utils.data.Dataset):
         logger.info(f"{self.num_label_types} unique labels")
 
     def __len__(self):
-        if self.batch_size is None:
-            return len(self._seq_ids)
-        return len(self.unflatten)
+        if self.batch_mode == 'flatten':
+            return len(self.unflatten)
+        return len(self._seq_ids)
 
     def __getitem__(self, i):
         if self.batch_size is not None:
@@ -153,7 +155,7 @@ class BlocksVideoDataset(PickledVideoDataset):
         return rgb_saturated
 
     def _load(self, i):
-        if self.batch_size is not None:
+        if self.batch_size is not None and self.batch_mode == 'flatten':
             seq_idx, win_idx = self.unflatten[i]
 
             seq_id = self._seq_ids[seq_idx]
@@ -164,6 +166,17 @@ class BlocksVideoDataset(PickledVideoDataset):
             end_idx = start_idx + self.batch_size
             data_seqs = tuple(data_seq[start_idx:end_idx] for data_seq in data_seqs)
             label_seq = label_seq[start_idx:end_idx]
+        elif self.batch_size is not None and self.batch_mode == 'sample':
+            seq_id = self._seq_ids[i]
+            label_seq = self._labels[i]
+            data_seqs = self._load_data(seq_id)
+
+            batch_idxs = utils.sampleWithoutReplacement(
+                label_seq, num_samples=self.batch_size,
+                return_indices=True
+            )
+            data_seqs = tuple(x[batch_idxs] for x in data_seqs)
+            label_seq = label_seq[batch_idxs]
         else:
             seq_id = self._seq_ids[i]
             label_seq = self._labels[i]

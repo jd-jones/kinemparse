@@ -8,7 +8,7 @@ import torch
 import numpy as np
 
 from mathtools import utils, torchutils, metrics
-from seqtools import fstutils_gtn as libfst
+# from seqtools import fstutils_gtn as libfst
 from seqtools import utils as su
 
 
@@ -108,6 +108,7 @@ class TcnClassifier(torch.nn.Module):
 def main(
         out_dir=None, data_dir=None, model_name=None,
         gpu_dev_id=None, batch_size=None, learning_rate=None,
+        feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
         model_params={}, cv_params={}, train_params={}, viz_params={},
         plot_predictions=None, results_file=None, sweep_param_name=None):
 
@@ -120,10 +121,8 @@ def main(
 
     if results_file is None:
         results_file = os.path.join(out_dir, 'results.csv')
-        write_mode = 'w'
     else:
         results_file = os.path.expanduser(results_file)
-        write_mode = 'a'
 
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
@@ -143,11 +142,9 @@ def main(
         return tuple(map(loadOne, seq_ids))
 
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
-    feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
-    label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
-
-    vocabulary = np.unique(np.hstack(label_seqs))
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
+    feature_seqs = loadAll(trial_ids, feature_fn_format, data_dir)
+    label_seqs = loadAll(trial_ids, label_fn_format, data_dir)
 
     device = torchutils.selectDevice(gpu_dev_id)
 
@@ -162,13 +159,23 @@ def main(
         )
         return split_data
 
+    if model_params.get('binary_multiclass', None):
+        # criterion = torch.nn.BCEWithLogitsLoss()
+        criterion = torchutils.BootstrappedCriterion(
+            0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
+        )
+        labels_dtype = torch.float
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
+        labels_dtype = torch.long
+
     for cv_index, cv_splits in enumerate(cv_folds):
         train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
 
         train_feats, train_labels, train_ids = train_data
         train_set = torchutils.SequenceDataset(
             train_feats, train_labels,
-            device=device, labels_dtype=torch.long, seq_ids=train_ids,
+            device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
             transpose_data=True
         )
         train_loader = torch.utils.data.DataLoader(
@@ -178,7 +185,7 @@ def main(
         test_feats, test_labels, test_ids = test_data
         test_set = torchutils.SequenceDataset(
             test_feats, test_labels,
-            device=device, labels_dtype=torch.long, seq_ids=test_ids,
+            device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
             transpose_data=True
         )
         test_loader = torch.utils.data.DataLoader(
@@ -188,7 +195,7 @@ def main(
         val_feats, val_labels, val_ids = val_data
         val_set = torchutils.SequenceDataset(
             val_feats, val_labels,
-            device=device, labels_dtype=torch.long, seq_ids=val_ids,
+            device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
             transpose_data=True
         )
         val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
@@ -197,8 +204,6 @@ def main(
             f'CV fold {cv_index + 1} / {len(cv_folds)}: {len(trial_ids)} total '
             f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
         )
-
-        criterion = torch.nn.CrossEntropyLoss()
 
         input_dim = train_set.num_obsv_dims
         output_dim = train_set.num_label_types
@@ -213,6 +218,8 @@ def main(
         elif model_name == 'dummy':
             model = DummyClassifier(input_dim, output_dim, **model_params)
         elif model_name == 'LatticeCRF':
+            libfst = None  # FIXME
+            vocabulary = np.unique(np.hstack(label_seqs))
             transition_probs, initial_probs, final_probs = su.smoothCounts(
                 *su.countSeqs(train_labels),
                 num_states=max(vocabulary) + 1
@@ -274,10 +281,9 @@ def main(
         metric_str = '  '.join(str(m) for m in metric_dict.values())
         logger.info('[TST]  ' + metric_str)
 
-        d = {k: v.value for k, v in metric_dict.items()}
         utils.writeResults(
-            results_file, d, sweep_param_name, model_params,
-            write_mode=write_mode
+            results_file, {k: v.value for k, v in metric_dict.items()},
+            sweep_param_name, model_params
         )
 
         if plot_predictions:
@@ -294,7 +300,7 @@ def main(
                 )
                 for preds, _, inputs, gt_labels, seq_id in zip(*batch):
                     fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
-                    utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn)
+                    utils.plot_array(inputs, (gt_labels.T, preds.T), label_names, fn=fn)
 
         def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
             saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
