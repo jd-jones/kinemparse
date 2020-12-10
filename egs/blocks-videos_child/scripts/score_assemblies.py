@@ -64,14 +64,31 @@ def main(
             labels[assembly.start_idx:assembly.end_idx] = i
         return labels
 
+    def loadVariable(var_name):
+        return joblib.load(os.path.join(pretrained_model_dir, f'{var_name}.pkl'))
+
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
     # Load data
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
 
-    vocab = []
+    vocab = loadVariable('vocab')
+    parts_vocab = loadVariable('parts-vocab')
+    edge_labels = loadVariable('part-labels')
+
+    # vocab = []
+    # parts_vocab, edge_labels = labels_lib.make_parts_vocab(vocab, lower_tri_only=True)
+    # edge_labels = np.stack(tuple(a.connections for a in self.vocab))
+    # edge_labels = connections.reshape(edge_labels.shape[0], -1)
+    # label_dtype = torch.float
+
     label_seqs = tuple(loadAssemblies(t_id, vocab) for t_id in trial_ids)
+    label_dtype = torch.long
+
+    saveVariable(vocab, 'vocab')
+    saveVariable(parts_vocab, 'parts-vocab')
+    saveVariable(edge_labels, 'part-labels')
 
     trial_ids = np.array([
         trial_id for trial_id, l_seq in zip(trial_ids, label_seqs)
@@ -111,7 +128,7 @@ def main(
 
         train_labels, train_ids = train_data
         train_set = dataset(
-            vocab, loadData, train_labels,
+            vocab, edge_labels, label_dtype, loadData, train_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
             batch_size=batch_size, batch_mode='sample'
         )
@@ -119,7 +136,7 @@ def main(
 
         test_labels, test_ids = test_data
         test_set = dataset(
-            vocab, loadData, test_labels,
+            vocab, edge_labels, label_dtype, loadData, test_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
             batch_size=batch_size, batch_mode='flatten'
         )
@@ -127,7 +144,7 @@ def main(
 
         val_labels, val_ids = val_data
         val_set = dataset(
-            vocab, loadData, val_labels,
+            vocab, edge_labels, label_dtype, loadData, val_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
             batch_size=batch_size, batch_mode='sample'
         )
@@ -141,14 +158,16 @@ def main(
         if model_name == 'template':
             model = sim2real.AssemblyClassifier(vocab, **model_params)
         elif model_name == 'pretrained':
-            pretrained_model = joblib.load(
-                os.path.join(pretrained_model_dir, "cvfold=0_model-best.pkl")
-            )
+            pretrained_model = loadVariable("cvfold=0_model-best")
             model = sim2real.SceneClassifier(pretrained_model)
             metric_names = ('Loss', 'Accuracy', 'Precision', 'Recall', 'F1')
             # criterion = torch.nn.BCEWithLogitsLoss()
+            # criterion = torchutils.BootstrappedCriterion(
+            #     0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
+            # )
+            # criterion = torch.nn.CrossEntropyLoss()
             criterion = torchutils.BootstrappedCriterion(
-                0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
+                0.25, base_criterion=torch.nn.functional.cross_entropy,
             )
         else:
             raise AssertionError()

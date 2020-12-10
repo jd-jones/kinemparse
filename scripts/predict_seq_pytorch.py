@@ -69,16 +69,23 @@ class ConvClassifier(torch.nn.Module):
 
 class TcnClassifier(torch.nn.Module):
     def __init__(
-            self, input_dim, out_set_size,
+            self, input_dim, out_set_size, num_multiclass=None,
             binary_multiclass=False, tcn_channels=None, **tcn_kwargs):
         super().__init__()
 
         self.input_dim = input_dim
         self.out_set_size = out_set_size
         self.binary_multiclass = binary_multiclass
+        self.num_multiclass = num_multiclass
 
         self.TCN = torchutils.TemporalConvNet(input_dim, tcn_channels, **tcn_kwargs)
-        self.linear = torch.nn.Linear(tcn_channels[-1], self.out_set_size)
+        if self.num_multiclass is None:
+            self.linear = torch.nn.Linear(tcn_channels[-1], self.out_set_size)
+        else:
+            self.linear = torch.nn.Linear(
+                tcn_channels[-1],
+                self.out_set_size * self.num_multiclass
+            )
 
         logger.info(
             f'Initialized TCN classifier. '
@@ -89,27 +96,35 @@ class TcnClassifier(torch.nn.Module):
         tcn_out = self.TCN(input_seq).transpose(1, 2)
         linear_out = self.linear(tcn_out)
 
+        if self.num_multiclass is not None:
+            linear_out = linear_out.view(
+                *linear_out.shape[0:2], self.out_set_size, self.num_multiclass
+            )
+
         if return_feats:
             return linear_out, tcn_out
         return linear_out
 
     def predict(self, outputs, return_scores=False):
+        """ outputs has shape (num_batch, num_samples, num_classes, ...) """
+
         if self.binary_multiclass:
             return (outputs > 0.5).float()
 
-        __, preds = torch.max(outputs, -1)
+        __, preds = torch.max(outputs, dim=2)
 
         if return_scores:
-            scores = torch.nn.softmax(outputs, dim=-1)
+            scores = torch.nn.softmax(outputs, dim=1)
             return preds, scores
+
         return preds
 
 
 def main(
-        out_dir=None, data_dir=None, model_name=None,
+        out_dir=None, data_dir=None, model_name=None, predict_mode='classify',
         gpu_dev_id=None, batch_size=None, learning_rate=None,
         feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
-        model_params={}, cv_params={}, train_params={}, viz_params={},
+        dataset_params={}, model_params={}, cv_params={}, train_params={}, viz_params={},
         plot_predictions=None, results_file=None, sweep_param_name=None):
 
     data_dir = os.path.expanduser(data_dir)
@@ -159,15 +174,20 @@ def main(
         )
         return split_data
 
-    if model_params.get('binary_multiclass', None):
+    if predict_mode == 'binary multiclass':
         # criterion = torch.nn.BCEWithLogitsLoss()
         criterion = torchutils.BootstrappedCriterion(
             0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
         )
         labels_dtype = torch.float
-    else:
+    elif predict_mode == 'multiclass':
         criterion = torch.nn.CrossEntropyLoss()
         labels_dtype = torch.long
+    elif predict_mode == 'classify':
+        criterion = torch.nn.CrossEntropyLoss()
+        labels_dtype = torch.long
+    else:
+        raise AssertionError()
 
     for cv_index, cv_splits in enumerate(cv_folds):
         train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
@@ -176,7 +196,7 @@ def main(
         train_set = torchutils.SequenceDataset(
             train_feats, train_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
-            transpose_data=True
+            **dataset_params
         )
         train_loader = torch.utils.data.DataLoader(
             train_set, batch_size=batch_size, shuffle=True
@@ -186,7 +206,7 @@ def main(
         test_set = torchutils.SequenceDataset(
             test_feats, test_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
-            transpose_data=True
+            **dataset_params
         )
         test_loader = torch.utils.data.DataLoader(
             test_set, batch_size=batch_size, shuffle=False
@@ -196,7 +216,7 @@ def main(
         val_set = torchutils.SequenceDataset(
             val_feats, val_labels,
             device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
-            transpose_data=True
+            **dataset_params
         )
         val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 
@@ -214,7 +234,19 @@ def main(
         elif model_name == 'conv':
             model = ConvClassifier(input_dim, output_dim, **model_params).to(device=device)
         elif model_name == 'TCN':
-            model = TcnClassifier(input_dim, output_dim, **model_params).to(device=device)
+            if predict_mode == 'multiclass':
+                num_multiclass = train_set[0][1].shape[-1]
+                output_dim = max([
+                    train_set.num_label_types,
+                    test_set.num_label_types,
+                    val_set.num_label_types
+                ])
+            else:
+                num_multiclass = None
+            model = TcnClassifier(
+                input_dim, output_dim, num_multiclass=num_multiclass,
+                **model_params
+            ).to(device=device)
         elif model_name == 'dummy':
             model = DummyClassifier(input_dim, output_dim, **model_params)
         elif model_name == 'LatticeCRF':

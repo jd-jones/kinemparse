@@ -203,19 +203,13 @@ class BlocksVideoDataset(PickledVideoDataset):
 
 class BlocksConnectionDataset(BlocksVideoDataset):
     def __init__(
-            self, vocabulary, *args,
+            self, vocabulary, edge_labels, label_dtype, *args,
             background=None, debug_fig_dir=None, crop_images=True, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.crop_images = crop_images
         self.vocab = vocabulary
-        self.connections = torch.tensor(
-            np.stack(tuple(a.connections for a in self.vocab)),
-            device=self._device,
-            dtype=torch.float
-        )
-
-        self.connections = torch.reshape(self.connections, (self.connections.shape[0], -1))
+        self.edge_labels = torch.tensor(edge_labels, device=self._device, dtype=label_dtype)
 
         self._debug_fig_dir = debug_fig_dir
 
@@ -244,7 +238,7 @@ class BlocksConnectionDataset(BlocksVideoDataset):
 
         rgb_seq, segs_seq = data_seqs
 
-        label_seq = self.connections[label_seq]
+        label_seq = self.edge_labels[label_seq]
 
         rgb_seq = np.stack(tuple(
             imageprocessing.saturateImage(rgb, to_float=True)
@@ -313,7 +307,6 @@ class RenderDataset(torch.utils.data.Dataset):
         self.device = device
         self.batch_size = batch_size
 
-        # setattr(kornia.geometry, 'pi', kornia.geometry.pi.to(device=self.device))
         self._kornia_tfs = self._init_kornia_tfs(kornia_tfs=kornia_tfs)
 
     def _init_kornia_tfs(self, kornia_tfs={}):
@@ -495,6 +488,54 @@ class ConnectionDataset(RenderDataset):
         return assembly.connections.shape
 
 
+class LabeledConnectionDataset(ConnectionDataset):
+    def __init__(
+            self, parts_vocab, part_labels, vocab,
+            device=None, batch_size=None, occlusion_masks=None,
+            intrinsic_matrix=None, camera_pose=None, colors=None, crop_size=128,
+            kornia_tfs={}):
+        if intrinsic_matrix is None:
+            intrinsic_matrix = torch.tensor(render.intrinsic_matrix, dtype=torch.float).cuda()
+
+        if camera_pose is None:
+            camera_pose = torch.tensor(render.camera_pose, dtype=torch.float).cuda()
+
+        if colors is None:
+            colors = torch.tensor(render.object_colors, dtype=torch.float).cuda()
+
+        self.device = device
+        self.batch_size = batch_size
+
+        self.occlusion_masks = occlusion_masks
+        self.crop_size = crop_size
+        self.image_size = min(render.IMAGE_WIDTH, render.IMAGE_HEIGHT)
+
+        # FIXME: camera intrisics are calibrated for 240x320 camera,
+        #    but we render at 240x240 resolution
+
+        self.renderer = render.TorchSceneRenderer(
+            intrinsic_matrix=intrinsic_matrix,
+            camera_pose=camera_pose,
+            colors=colors,
+            light_intensity_ambient=1,
+            image_size=self.image_size,
+            orig_size=self.image_size
+        )
+
+        self.parts_vocab = parts_vocab
+        self.part_labels = torch.tensor(part_labels, dtype=torch.long, device=self.device)
+
+        # FIXME: handle multi-component assemblies properly
+        has_one_component = [len(a.connected_components) == 1 for a in vocab]
+        self.vocab = tuple(a for a, b in zip(vocab, has_one_component) if b)
+        self.part_labels = self.part_labels[has_one_component]
+
+        self._kornia_tfs = self._init_kornia_tfs(kornia_tfs=kornia_tfs)
+
+    def _getTarget(self, i):
+        return self.part_labels[i]
+
+
 # -=( MODELS )==---------------------------------------------------------------
 class SceneClassifier(torch.nn.Module):
     def __init__(self, pretrained_model, pred_thresh=0.5):
@@ -516,7 +557,7 @@ class SceneClassifier(torch.nn.Module):
         return outputs
 
     def predict(self, outputs):
-        return (torch.sigmoid(outputs) > self.pred_thresh).float()
+        return self._model.predict(outputs)
 
     def plotBatches(self, io_batches, fig_dir, dataset=None, images_per_fig=None):
         for i, batch in enumerate(io_batches):
@@ -593,6 +634,79 @@ class ConnectionClassifier(torch.nn.Module):
 
                 imageprocessing.displayImages(
                     *b_inputs, *b_scores, *b_preds, *b_labels, num_rows=4,
+                    file_path=os.path.join(fig_dir, f"batch({i},{j}).png")
+                )
+
+
+class LabeledConnectionClassifier(torch.nn.Module):
+    def __init__(self, out_dim, num_vertices, edges, feature_dim=None, feature_extractor=None):
+        super().__init__()
+
+        self.out_dim = out_dim
+        self.num_vertices = num_vertices
+        self.edges = edges
+
+        if feature_extractor is None:
+            pretrained_model = torchvision.models.resnet18(pretrained=True, progress=True)
+            layers = list(pretrained_model.children())[:-1]
+            feature_extractor = torch.nn.Sequential(*layers)
+            feature_dim = 512
+
+        self.feature_extractor = feature_extractor
+        self.fc = torch.nn.Linear(feature_dim, out_dim * self.edges.shape[0])
+
+    def forward(self, inputs):
+        features = self.feature_extractor(inputs)
+        outputs = self.fc(features.squeeze(dim=-1).squeeze(dim=-1))
+        outputs = outputs.view(outputs.shape[0], self.out_dim, len(self.edges))
+        return outputs
+
+    def predict(self, outputs):
+        preds = outputs.argmax(dim=1)
+        return preds
+
+    def edgeLabelsAsArray(self, batch):
+        arr = torch.zeros(
+            batch.shape[0], self.num_vertices, self.num_vertices,
+            dtype=batch.dtype, device=batch.device
+        )
+        arr[:, self.edges[:, 0], self.edges[:, 1]] = batch
+        arr[:, self.edges[:, 1], self.edges[:, 0]] = batch
+        return arr
+
+    def plotBatches(self, io_batches, fig_dir, dataset=None, images_per_fig=None):
+        for i, batch in enumerate(io_batches):
+            preds, scores, inputs, labels, seq_id = batch
+            num_batch = preds.shape[0]
+
+            if images_per_fig is None:
+                images_per_fig = num_batch
+
+            num_batches = math.ceil(num_batch / images_per_fig)
+            for j in range(num_batches):
+                start = j * num_batches
+                end = start + images_per_fig
+
+                b_scores = scores[start:end]
+                b_preds = preds[start:end]
+                b_labels = labels[start:end]
+                b_inputs = inputs[start:end]
+
+                b_size = b_scores.shape[0]
+                if not b_size:
+                    continue
+
+                b_inputs = np.moveaxis(b_inputs.cpu().numpy(), 1, -1)
+                b_inputs[b_inputs > 1] = 1
+
+                # b_scores = self.edgeLabelsAsArray(b_scores).cpu().numpy()
+                b_preds = self.edgeLabelsAsArray(b_preds).cpu().numpy()
+                b_labels = self.edgeLabelsAsArray(b_labels).cpu().numpy()
+
+                imageprocessing.displayImages(
+                    *b_inputs,
+                    # *b_scores,
+                    *b_preds, *b_labels, num_rows=3,
                     file_path=os.path.join(fig_dir, f"batch({i},{j}).png")
                 )
 

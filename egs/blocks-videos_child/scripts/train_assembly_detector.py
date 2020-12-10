@@ -9,8 +9,10 @@ import numpy as np
 
 from mathtools import utils, metrics, torchutils
 from kinemparse import sim2real
+
 from blocks.core.blockassembly import BlockAssembly
 from blocks.core import definitions as defn
+from blocks.core import labels as labels_lib
 
 
 logger = logging.getLogger(__name__)
@@ -98,18 +100,17 @@ def main(
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
 
     vocab = [BlockAssembly()] + [make_single_block_state(i) for i in range(len(defn.blocks))]
-    label_seqs = tuple(loadAssemblies(t_id, vocab) for t_id in trial_ids)
+    for t_id in trial_ids:
+        loadAssemblies(t_id, vocab)
+    parts_vocab, part_labels = labels_lib.make_parts_vocab(
+        vocab, lower_tri_only=True, append_to_vocab=True
+    )
 
     logger.info(f"Loaded {len(trial_ids)} sequences; {len(vocab)} unique assemblies")
 
-    trial_ids = np.array([
-        trial_id for trial_id, l_seq in zip(trial_ids, label_seqs)
-        if l_seq is not None
-    ])
-    label_seqs = tuple(
-        l_seq for l_seq in label_seqs
-        if l_seq is not None
-    )
+    saveVariable(vocab, 'vocab')
+    saveVariable(parts_vocab, 'parts-vocab')
+    saveVariable(part_labels, 'part-labels')
 
     device = torchutils.selectDevice(gpu_dev_id)
 
@@ -119,6 +120,8 @@ def main(
         dataset = sim2real.RenderDataset
     elif model_name == 'Connections':
         dataset = sim2real.ConnectionDataset
+    elif model_name == 'Labeled Connections':
+        dataset = sim2real.LabeledConnectionDataset
 
     occlusion_masks = loadMasks(**load_masks_params)
     if occlusion_masks is not None:
@@ -126,18 +129,21 @@ def main(
 
     for cv_index, cv_splits in enumerate(range(1)):
         train_set = dataset(
+            parts_vocab, part_labels,
             vocab, device=device, occlusion_masks=occlusion_masks,
             kornia_tfs=kornia_tfs
         )
         train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
 
         test_set = dataset(
+            parts_vocab, part_labels,
             vocab, device=device, occlusion_masks=occlusion_masks,
             kornia_tfs=kornia_tfs
         )
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
         val_set = dataset(
+            parts_vocab, part_labels,
             vocab, device=device, occlusion_masks=occlusion_masks,
             kornia_tfs=kornia_tfs
         )
@@ -154,11 +160,21 @@ def main(
             metric_names = ('Reciprocal Loss',)
         elif model_name == 'Resnet':
             model = sim2real.ImageClassifier(train_set.num_classes)
-            criterion = torch.nn.CrossEntropy()
+            criterion = torch.nn.CrossEntropyLoss()
             metric_names = ('Loss', 'Accuracy')
         elif model_name == 'Connections':
             model = sim2real.ConnectionClassifier(train_set.label_shape[0])
             criterion = torch.nn.BCEWithLogitsLoss()
+            metric_names = ('Loss', 'Accuracy', 'Precision', 'Recall', 'F1')
+        elif model_name == 'Labeled Connections':
+            out_dim = int(part_labels.max()) + 1
+            num_vertices = len(defn.blocks)
+            edges = np.column_stack(np.tril_indices(num_vertices, k=-1))
+            model = sim2real.LabeledConnectionClassifier(out_dim, num_vertices, edges)
+            # criterion = torch.nn.CrossEntropyLoss()
+            criterion = torchutils.BootstrappedCriterion(
+                0.25, base_criterion=torch.nn.functional.cross_entropy,
+            )
             metric_names = ('Loss', 'Accuracy', 'Precision', 'Recall', 'F1')
 
         model = model.to(device=device)

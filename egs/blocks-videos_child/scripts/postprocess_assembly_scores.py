@@ -5,76 +5,18 @@ import collections
 import yaml
 import joblib
 import numpy as np
-from matplotlib import pyplot as plt
-import networkx as nx
 
 from mathtools import utils
-from blocks.core import definitions as defn
 
 
 logger = logging.getLogger(__name__)
 
 
-def plot_io(rgb_seq, seg_seq, pred_seq, true_seq, file_path=None):
-    def plot_graph(ax, array):
-        g = nx.from_numpy_array(array, create_using=nx.DiGraph)
-        pos = nx.circular_layout(g)
-
-        for color in ("red", "blue", "green", "yellow"):
-            color_nodes = [i for i, name in enumerate(defn.blocks) if name.startswith(color)]
-            nx.draw_networkx_nodes(
-                g, pos, ax=ax, nodelist=color_nodes,
-                node_shape='s', node_color=color
-            )
-
-        labels = {i: n.split()[1][0].upper() for i, n in enumerate(defn.blocks)}
-        nx.draw_networkx_labels(g, pos, labels, ax=ax)
-
-        nx.draw_networkx_edges(g, pos, ax=ax)
-
-    def plot_image(axis, array):
-        axis.imshow(array)
-        axis.axis('off')
-
-    pred_seq = np.reshape(pred_seq, (pred_seq.shape[0], 8, 8))
-    true_seq = np.reshape(true_seq, (true_seq.shape[0], 8, 8))
-
-    num_rows = 4
-    num_cols = rgb_seq.shape[0]
-
-    if not all(x.shape[0] == num_cols for x in (rgb_seq, seg_seq, pred_seq, true_seq)):
-        raise AssertionError()
-
-    row_size = 3
-    col_size = 3
-    figsize = (num_cols * col_size, num_rows * row_size)
-    f, axes = plt.subplots(num_rows, num_cols, figsize=figsize)
-
-    for i_col in range(num_cols):
-        plot_image(axes[0, i_col], rgb_seq[i_col])
-        plot_image(axes[1, i_col], seg_seq[i_col])
-        plot_graph(axes[2, i_col], pred_seq[i_col])
-        plot_graph(axes[3, i_col], true_seq[i_col])
-    axes[0, 0].set_ylabel('RGB FRAMES')
-    axes[1, 0].set_ylabel('FOREGROUND SEGMENTS')
-    axes[2, 0].set_ylabel('PREDICTED CONNECTIONS')
-    axes[3, 0].set_ylabel('TRUE CONNECTIONS')
-    plt.tight_layout()
-
-    if file_path is None:
-        plt.show()
-    else:
-        plt.savefig(file_path)
-        plt.close()
-
-
 def main(
-        out_dir=None, data_dir=None, segs_dir=None, scores_dir=None,
-        start_from=None, stop_at=None, num_disp_imgs=None,
+        out_dir=None, data_dir=None, scores_dir=None, start_from=None, stop_at=None,
         results_file=None, sweep_param_name=None):
 
     data_dir = os.path.expanduser(data_dir)
-    segs_dir = os.path.expanduser(segs_dir)
     scores_dir = os.path.expanduser(scores_dir)
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
@@ -120,6 +62,13 @@ def main(
         batch_true = loadVariable(f"{prefix}_true-label-seq").astype(int)
         return batch_score, batch_pred, batch_true
 
+    vocab = loadVariable('vocab')
+    parts_vocab = loadVariable('parts-vocab')
+    edge_labels = loadVariable('part-labels')
+    saveVariable(vocab, 'vocab')
+    saveVariable(parts_vocab, 'parts-vocab')
+    saveVariable(edge_labels, 'part-labels')
+
     cv_fold_indices = utils.getUniqueIds(scores_dir, prefix='cvfold=', to_array=True)
     num_cv_folds = len(cv_fold_indices)
 
@@ -138,7 +87,6 @@ def main(
 
             trial_prefix = f"trial={seq_id}"
             rgb_seq = loadVariable(f"{trial_prefix}_rgb-frame-seq", from_dir=data_dir)
-            seg_seq = loadVariable(f"{trial_prefix}_seg-labels-seq", from_dir=segs_dir)
             if score_seq.shape[0] != rgb_seq.shape[0]:
                 err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
                 raise AssertionError(err_str)
@@ -146,19 +94,6 @@ def main(
             saveVariable(score_seq, f"{trial_prefix}_score-seq")
             saveVariable(pred_seq, f"{trial_prefix}_pred-label-seq")
             saveVariable(true_seq, f"{trial_prefix}_true-label-seq")
-
-            if num_disp_imgs is not None:
-                if rgb_seq.shape[0] > num_disp_imgs:
-                    idxs = np.arange(rgb_seq.shape[0])
-                    np.random.shuffle(idxs)
-                    idxs = idxs[:num_disp_imgs]
-                    idxs = np.sort(idxs)
-                else:
-                    idxs = slice(None, None, None)
-                plot_io(
-                    rgb_seq[idxs], seg_seq[idxs], pred_seq[idxs], true_seq[idxs],
-                    file_path=os.path.join(io_dir, f"{trial_prefix}.png")
-                )
 
 
 if __name__ == "__main__":
