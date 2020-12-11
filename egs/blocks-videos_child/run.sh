@@ -6,19 +6,23 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-start_at="4"
-stop_after="5"
+start_at="10"
+stop_after="10"
 
 data_dir="${output_dir}/raw-data"
 background_dir="${output_dir}/background-detections"
 detections_dir="${output_dir}/object-detections"
 seg_labels_dir="${output_dir}/image-segment-labels"
 sim_pretrain_dir="${output_dir}/pretrained-models-sim"
-postprocessed_assembly_scores_dir="${output_dir}/assembly-scores"
-assembly_scores_dir="${postprocessed_assembly_scores_dir}_batches"
-assembly_eval_dir="${postprocessed_assembly_scores_dir}/eval"
-seq_preds_dir="${output_dir}/seq-preds"
-seq_eval_dir="${seq_preds_dir}/eval"
+edge_label_dir="${output_dir}/edge-label-preds"
+edge_label_smoothed_dir="${output_dir}/edge-label-preds-smoothed"
+assembly_scores_dir="${output_dir}/assembly-scores_no-smooth"
+decode_dir="${output_dir}/assembly-decode_no-smooth"
+
+edge_label_batches_dir="${edge_label_dir}/batches"
+edge_label_eval_dir="${edge_label_dir}/eval"
+smoothed_eval_dir="${edge_label_smoothed_dir}/eval"
+decode_eval_dir="${decode_dir}/eval"
 
 cd ${scripts_dir}
 
@@ -110,9 +114,9 @@ fi
 ((++STAGE))
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Score assemblies"
-    python score_assemblies.py \
-        --out_dir "${assembly_scores_dir}" \
+    echo "STAGE ${STAGE}: Predict edge labels"
+    python predict_edge_labels.py \
+        --out_dir "${edge_label_batches_dir}" \
         --data_dir "${data_dir}/data" \
         --segs_dir "${seg_labels_dir}/data" \
         --pretrained_model_dir "${sim_pretrain_dir}/data" \
@@ -124,12 +128,12 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --train_params "{'num_epochs': 50, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
         --viz_params "{}"
     python analysis.py \
-        --out_dir "${assembly_scores_dir}/system-performance" \
-        --results_file "${assembly_scores_dir}/results.csv"
+        --out_dir "${edge_label_batches_dir}/system-performance" \
+        --results_file "${edge_label_batches_dir}/results.csv"
     python postprocess_assembly_scores.py \
-        --out_dir "${postprocessed_assembly_scores_dir}" \
+        --out_dir "${edge_label_dir}" \
         --data_dir "${data_dir}/data" \
-        --scores_dir "${assembly_scores_dir}/data"
+        --scores_dir "${edge_label_batches_dir}/data"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -137,17 +141,17 @@ fi
 ((++STAGE))
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Evaluate assembly scores"
+    echo "STAGE ${STAGE}: Evaluate edge label predictions"
     python eval_system_output.py \
-        --out_dir "${assembly_eval_dir}" \
+        --out_dir "${edge_label_eval_dir}" \
         --data_dir "${data_dir}/data" \
         --segs_dir "${seg_labels_dir}/data" \
-        --scores_dir "${postprocessed_assembly_scores_dir}/data" \
-        --gpu_dev_id "'2'"   # \
-        # --num_disp_imgs "10"
+        --scores_dir "${edge_label_dir}/data" \
+        --gpu_dev_id "'2'" \
+        --num_disp_imgs "10"
     python analysis.py \
-        --out_dir "${assembly_eval_dir}/system-performance" \
-        --results_file "${assembly_eval_dir}/results.csv"
+        --out_dir "${edge_label_eval_dir}/system-performance" \
+        --results_file "${edge_label_eval_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -157,8 +161,8 @@ fi
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Smooth predictions"
     python predict_seq_pytorch.py \
-        --out_dir "${seq_preds_dir}" \
-        --data_dir "${postprocessed_assembly_scores_dir}/data" \
+        --out_dir "${edge_label_smoothed_dir}" \
+        --data_dir "${edge_label_dir}/data" \
         --feature_fn_format "score-seq.pkl" \
         --label_fn_format "true-label-seq.pkl" \
         --gpu_dev_id "'2'" \
@@ -168,7 +172,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --learning_rate "0.0002" \
         --dataset_params "{'transpose_data': True, 'flatten_feats': True}" \
         --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
-        --train_params "{'num_epochs': 250, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
+        --train_params "{'num_epochs': 500, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
         --model_params "{ \
             'tcn_channels': [8,  8, 16, 16, 32, 32], \
             'kernel_size': 5, \
@@ -176,8 +180,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         }" \
         --plot_predictions "True"
     python analysis.py \
-        --out_dir "${seq_preds_dir}/system-performance" \
-        --results_file "${seq_preds_dir}/results.csv"
+        --out_dir "${edge_label_smoothed_dir}/system-performance" \
+        --results_file "${edge_label_smoothed_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -187,12 +191,12 @@ fi
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate smoothed predictions"
     python eval_system_output.py \
-        --out_dir "${seq_eval_dir}" \
+        --out_dir "${smoothed_eval_dir}" \
         --data_dir "${data_dir}/data" \
         --segs_dir "${seg_labels_dir}/data" \
-        --scores_dir "${seq_preds_dir}/data" \
-        --gpu_dev_id "'2'"   # \
-        # --num_disp_imgs "10"
+        --scores_dir "${edge_label_smoothed_dir}/data" \
+        --gpu_dev_id "'2'" \
+        --num_disp_imgs "10"
     python analysis.py \
         --out_dir "${seq_eval_dir}/system-performance" \
         --results_file "${seq_eval_dir}/results.csv"
@@ -201,3 +205,65 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Score assemblies"
+    python score_assemblies.py \
+        --out_dir "${assembly_scores_dir}" \
+        --data_dir "${data_dir}/data" \
+        --attributes_dir "${edge_label_smoothed_dir}/data" \
+        --gpu_dev_id "'2'" \
+        --plot_predictions "True"
+    python analysis.py \
+        --out_dir "${assembly_scores_dir}/system-performance" \
+        --results_file "${assembly_scores_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Decode assembly predictions"
+    python predict_seq_lctm.py \
+        --out_dir "${decode_dir}" \
+        --data_dir "${assembly_scores_dir}/data" \
+        --scores_dir "${assembly_scores_dir}/data" \
+        --cv_params "{'val_ratio': 0}" \
+        --model_name "PretrainedModel" \
+        --pre_init_pw "True" \
+        --model_params "{ \
+            'inference': 'segmental', 'segmental': True, \
+            'start_prior': True, 'end_prior': True \
+        }" \
+        --viz_params "{'labels_together': True}" \
+        --plot_predictions "True"
+    python analysis.py \
+        --out_dir "${decode_dir}/system-performance" \
+        --results_file "${decode_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Evaluate decoder predictions"
+    python eval_system_output.py \
+        --out_dir "${decode_eval_dir}" \
+        --data_dir "${data_dir}/data" \
+        --segs_dir "${seg_labels_dir}/data" \
+        --scores_dir "${decode_dir}/data" \
+        --vocab_dir "${edge_label_dir}/data" \
+        --gpu_dev_id "'2'" \
+        --label_type "assembly" \
+        --num_disp_imgs "10"
+    python analysis.py \
+        --out_dir "${decode_eval_dir}/system-performance" \
+        --results_file "${decode_eval_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+

@@ -148,6 +148,10 @@ def main(
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
 
+    io_fig_dir = os.path.join(fig_dir, 'model-io')
+    if not os.path.exists(io_fig_dir):
+        os.makedirs(io_fig_dir)
+
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
@@ -158,7 +162,6 @@ def main(
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
-    # Load data
     def loadAll(seq_ids, var_name, data_dir):
         def loadOne(seq_id):
             fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
@@ -167,10 +170,12 @@ def main(
 
     # Load data
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
-    feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
     label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
+    num_states = max(labels.max() for labels in label_seqs) + 1
 
-    if scores_dir is not None:
+    if scores_dir is None:
+        feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
+    else:
         scores_dir = os.path.expanduser(scores_dir)
         feature_seqs = tuple(
             joblib.load(
@@ -178,11 +183,11 @@ def main(
             ).swapaxes(0, 1)
             for trial_id in trial_ids
         )
+        num_states = feature_seqs[0].shape[0]
 
     # Define cross-validation folds
     dataset_size = len(trial_ids)
     cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
-    # cv_folds = ((tuple(range(dataset_size)), tuple(), tuple(range(dataset_size))),)
 
     metric_dict = {
         'accuracy': [],
@@ -204,12 +209,6 @@ def main(
         val_samples, val_labels, val_ids = val_data
         test_samples, test_labels, test_ids = test_data
 
-        # Transpose input data so they have shape (num_features, num_samples),
-        # to conform with LCTM interface
-        # train_samples = preprocess(train_samples)
-        # test_samples = preprocess(test_samples)
-        # val_samples = preprocess(val_samples)
-
         logger.info(
             f'CV fold {cv_index + 1}: {len(trial_ids)} total '
             f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
@@ -219,13 +218,10 @@ def main(
 
         if pre_init_pw:
             if transitions is None:
-                # FIXME
                 transition_probs, start_probs, end_probs = su.smoothCounts(
                     *su.countSeqs(train_labels),
-                    num_states=test_samples[0].shape[0]
+                    num_states=num_states
                 )
-                # logger.info(f"start: {np.nonzero(start_probs)[0]}")
-                # logger.info(f"end: {np.nonzero(end_probs)[0]}")
             else:
                 transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
                 for cur_state, next_states in transitions.items():
@@ -245,7 +241,7 @@ def main(
                 model, train_samples, train_labels,
                 pretrain=pretrain, transition_scores=transition_scores,
                 start_scores=start_scores, end_scores=end_scores,
-                num_states=test_samples[0].shape[0]  # FIXME
+                num_states=num_states
             )
         else:
             model.fit(train_samples, train_labels, **train_params)
@@ -267,7 +263,6 @@ def main(
 
         # Test model
         pred_labels = model.predict(test_samples)
-        # test_samples = tuple(map(lambda x: x.swapaxes(0, 1), test_samples))
         test_io_history = tuple(
             zip([pred_labels], [test_samples], [test_samples], [test_labels], [test_ids])
         )
@@ -278,29 +273,10 @@ def main(
         metric_str = '  '.join(f"{k}: {v[-1]:.1f}%" for k, v in metric_dict.items())
         logger.info('[TST]  ' + metric_str)
 
-        all_test_labels = np.hstack(test_labels)
-        test_vocab = np.unique(all_test_labels)
-        test_vocab_size = len(test_vocab)
-        all_train_labels = np.hstack(train_labels)
-        train_vocab = np.unique(all_train_labels)
-        num_in_vocab = sum(np.sum(train_vocab == i) for i in test_vocab)
-        num_oov = test_vocab_size - num_in_vocab
-        prop_oov = num_oov / test_vocab_size
-        label_hist = utils.makeHistogram(
-            test_vocab_size, all_test_labels,
-            normalize=True, vocab=test_vocab
-        )
-        logger.info(f'Test label distribution: {label_hist}')
-        logger.info(f'Num OOV states: {num_oov} / {test_vocab_size} ({prop_oov * 100:.2f}%)')
-
         d = {k: v[-1] / 100 for k, v in metric_dict.items()}
         utils.writeResults(results_file, d, sweep_param_name, model_params)
 
         if plot_predictions:
-            io_fig_dir = os.path.join(fig_dir, 'model-io')
-            if not os.path.exists(io_fig_dir):
-                os.makedirs(io_fig_dir)
-
             label_names = ('gt', 'pred')
             preds, scores, inputs, gt_labels, ids = zip(*test_io_history)
             for batch in test_io_history:
@@ -311,7 +287,7 @@ def main(
         def saveTrialData(batch):
             for pred_seq, score_seq, feat_seq, label_seq, trial_id in zip(*batch):
                 saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
-                saveVariable(score_seq, f'trial={trial_id}_score-seq')
+                saveVariable(score_seq.T, f'trial={trial_id}_score-seq')
                 saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
         for batch in test_io_history:
             saveTrialData(batch)

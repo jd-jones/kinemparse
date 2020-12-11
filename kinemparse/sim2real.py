@@ -1034,7 +1034,10 @@ def renderTemplates(renderer, assembly, t, R):
 
     num_templates = R.shape[-1]
 
-    component_poses = ((np.eye(3), np.zeros(3)),)
+    component_poses = tuple(
+        (np.eye(3), np.zeros(3))
+        for k in assembly.connected_components.keys()
+    )
     assembly = assembly.setPose(component_poses, in_place=False)
 
     init_vertices = render.makeBatch(assembly.vertices, dtype=torch.float).cuda()

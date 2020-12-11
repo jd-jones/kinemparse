@@ -11,6 +11,7 @@ import torch
 
 from mathtools import utils, torchutils, metrics
 from kinemparse import sim2real
+from visiontools import imageprocessing
 
 from blocks.core import definitions as defn
 
@@ -84,7 +85,7 @@ def plot_io_DEPRECATED(rgb_seq, seg_seq, pred_seq, true_seq, file_path=None):
         plt.close()
 
 
-def plot_io(rgb_seq, seg_seq, pred_seq, true_seq, dataset, file_path=None):
+def render(dataset, assembly):
     def canonicalPose(num_samples=1):
         angles = torch.zeros(num_samples, dtype=torch.float)
         rotations = Rotation.from_euler('Z', angles)
@@ -92,15 +93,19 @@ def plot_io(rgb_seq, seg_seq, pred_seq, true_seq, dataset, file_path=None):
         t = torch.stack((torch.zeros_like(angles),) * 3, dim=1).float().cuda()
         return R, t
 
-    def render(assembly):
-        R, t = canonicalPose()
-        rgb_batch, depth_batch, label_batch = sim2real.renderTemplates(
-            dataset.renderer, assembly, t, R
-        )
-        rgb_crop = sim2real._crop(rgb_batch[0], label_batch[0], dataset.crop_size // 2)
-        rgb_crop /= rgb_crop.max()
-        return rgb_crop.cpu().numpy()
+    if not assembly.blocks:
+        return np.zeros((dataset.crop_size // 2, dataset.crop_size // 2, 3))
 
+    R, t = canonicalPose()
+    rgb_batch, depth_batch, label_batch = sim2real.renderTemplates(
+        dataset.renderer, assembly, t, R
+    )
+    rgb_crop = sim2real._crop(rgb_batch[0], label_batch[0], dataset.crop_size // 2)
+    rgb_crop /= rgb_crop.max()
+    return rgb_crop.cpu().numpy()
+
+
+def plot_io(rgb_seq, seg_seq, pred_seq, true_seq, dataset, file_path=None):
     num_vertices = len(defn.blocks)
     edges = np.column_stack(np.tril_indices(num_vertices, k=-1))
 
@@ -127,7 +132,7 @@ def plot_io(rgb_seq, seg_seq, pred_seq, true_seq, dataset, file_path=None):
             if edge_label:
                 edge_key = frozenset(edges[e, :].tolist())
                 assembly = dataset.parts_vocab[edge_key][edge_label - 1]
-                image = render(assembly)
+                image = render(dataset, assembly)
             else:
                 image = np.zeros((240, 240, 3))
             axes[e + 2, t].imshow(image)
@@ -142,7 +147,7 @@ def plot_io(rgb_seq, seg_seq, pred_seq, true_seq, dataset, file_path=None):
         plt.close()
 
 
-def eval_metrics(pred_seq, true_seq, name_suffix=''):
+def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
     tp = metrics.truePositives(pred_seq, true_seq)
     tn = metrics.trueNegatives(pred_seq, true_seq)
     fp = metrics.falsePositives(pred_seq, true_seq)
@@ -162,17 +167,34 @@ def eval_metrics(pred_seq, true_seq, name_suffix=''):
         'Edge F1' + name_suffix: edge_f1
     }
 
-    return metric_dict
+    append_to.update(metric_dict)
+    return append_to
+
+
+def oov_rate(test_labels, train_labels):
+    all_test_labels = np.hstack(test_labels)
+    test_vocab = np.unique(all_test_labels)
+
+    all_train_labels = np.hstack(train_labels)
+    train_vocab = np.unique(all_train_labels)
+
+    test_vocab_size = len(test_vocab)
+    num_in_vocab = sum(np.sum(train_vocab == i) for i in test_vocab)
+    num_oov = test_vocab_size - num_in_vocab
+    prop_oov = num_oov / test_vocab_size
+
+    return prop_oov
 
 
 def main(
-        out_dir=None, data_dir=None, segs_dir=None, scores_dir=None,
-        gpu_dev_id=None, start_from=None, stop_at=None, num_disp_imgs=None,
+        out_dir=None, data_dir=None, segs_dir=None, scores_dir=None, vocab_dir=None,
+        label_type='edges', gpu_dev_id=None, start_from=None, stop_at=None, num_disp_imgs=None,
         results_file=None, sweep_param_name=None, model_params={}):
 
     data_dir = os.path.expanduser(data_dir)
     segs_dir = os.path.expanduser(segs_dir)
     scores_dir = os.path.expanduser(scores_dir)
+    vocab_dir = os.path.expanduser(vocab_dir)
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -213,35 +235,64 @@ def main(
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
     seq_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
+    label_seqs = tuple(
+        loadVariable(f"trial={seq_id}_true-label-seq", from_dir=scores_dir)
+        for seq_id in seq_ids
+    )
+    num_seqs = len(label_seqs)
 
-    vocab = loadVariable('vocab')
-    parts_vocab = loadVariable('parts-vocab')
-    part_labels = loadVariable('part-labels')
+    vocab = loadVariable('vocab', from_dir=vocab_dir)
+    parts_vocab = loadVariable('parts-vocab', from_dir=vocab_dir)
+    part_labels = loadVariable('part-labels', from_dir=vocab_dir)
 
     device = torchutils.selectDevice(gpu_dev_id)
     dataset = sim2real.LabeledConnectionDataset(parts_vocab, part_labels, vocab, device=device)
 
-    for seq_id in seq_ids:
+    for seq_index, seq_id in enumerate(seq_ids):
         logger.info(f"  Processing sequence {seq_id}...")
 
         trial_prefix = f"trial={seq_id}"
         rgb_seq = loadVariable(f"{trial_prefix}_rgb-frame-seq", from_dir=data_dir)
         seg_seq = loadVariable(f"{trial_prefix}_seg-labels-seq", from_dir=segs_dir)
-        score_seq = loadVariable(f"{trial_prefix}_score-seq", from_dir=scores_dir)
+        # score_seq = loadVariable(f"{trial_prefix}_score-seq", from_dir=scores_dir)
+        score_seq = loadVariable(f"{trial_prefix}_score-seq", from_dir=scores_dir).T
         pred_seq = loadVariable(f"{trial_prefix}_pred-label-seq", from_dir=scores_dir)
-        true_seq = loadVariable(f"{trial_prefix}_true-label-seq", from_dir=scores_dir)
         if score_seq.shape[0] != rgb_seq.shape[0]:
             err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
             raise AssertionError(err_str)
 
-        metric_dict = eval_metrics(pred_seq, true_seq)
-        metric_dict_no_labels = eval_metrics(
-            (pred_seq != 0).astype(int),
-            (true_seq != 0).astype(int),
-            name_suffix=' (no labels)'
-        )
-        metric_dict.update(metric_dict_no_labels)
+        true_seq = label_seqs[seq_index]
 
+        if label_type == 'assembly':
+            pred_images = tuple(
+                render(dataset, vocab[seg_label])
+                for seg_label in utils.computeSegments(pred_seq)[0]
+            )
+            imageprocessing.displayImages(
+                *pred_images,
+                file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}_pred-assemblies.png")
+            )
+            true_images = tuple(
+                render(dataset, vocab[seg_label])
+                for seg_label in utils.computeSegments(true_seq)[0]
+            )
+            imageprocessing.displayImages(
+                *true_images,
+                file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}_true-assemblies.png")
+            )
+
+            prop_oov = oov_rate(
+                [true_seq],
+                tuple(label_seqs[i] for i in range(num_seqs) if i != seq_index)
+            )
+            metric_dict = {'OOV rate': prop_oov}
+
+            pred_seq = part_labels[pred_seq]
+            true_seq = part_labels[true_seq]
+        else:
+            metric_dict = {}
+
+        metric_dict = eval_metrics(pred_seq, true_seq, append_to=metric_dict)
         for name, value in metric_dict.items():
             logger.info(f"    {name}: {value * 100:.2f}%")
 
