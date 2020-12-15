@@ -23,39 +23,37 @@ def make_labels(assembly_seq, vocab):
     return labels
 
 
-def make_features(feature_seq, raw_scores=False):
-    if raw_scores:
-        raise NotImplementedError()
+def make_attribute_features(score_seq):
+    prob_seq = F.softmax(score_seq, dim=1)
+    feat_seq = torch.reshape(
+        prob_seq.transpose(-1, -2),
+        (prob_seq.shape[0], -1)
+    )
 
-    feature_seq = 2 * torch.nn.functional.softmax(feature_seq[..., 0:2], dim=-1) - 1
-
-    return feature_seq
-
-
-def make_signatures(unique_assemblies):
-    signatures = torch.stack([
-        torch.tensor(labels.inSameComponent(a, lower_tri_only=True))
-        for a in unique_assemblies
-    ])
-    signatures = 2 * signatures.float() - 1
-
-    return signatures
+    return 2 * feat_seq.float() - 1
 
 
 class AttributeModel(torch.nn.Module):
-    def __init__(self, attribute_labels, device=None):
+    def __init__(self, rgb_attribute_labels, imu_attribute_labels, device=None):
         super().__init__()
 
         self.device = device
+
+        self.rgb_signatures = self._make_signatures(rgb_attribute_labels)
+        self.imu_signatures = self._make_signatures(imu_attribute_labels)
+
+    def _make_signatures(self, attribute_labels):
         attribute_labels = torch.tensor(attribute_labels, dtype=torch.long, device=self.device)
         attribute_labels = torch.reshape(
             F.one_hot(attribute_labels),
             (attribute_labels.shape[0], -1)
         )
-        self.signatures = 2 * attribute_labels.float() - 1
+        return 2 * attribute_labels.float() - 1
 
-    def forward(self, inputs):
-        outputs = F.log_softmax(self.signatures @ inputs.transpose(0, 1), dim=0)
+    def forward(self, rgb_inputs, imu_inputs):
+        rgb_outputs = F.log_softmax(self.rgb_signatures @ rgb_inputs.transpose(0, 1), dim=0)
+        imu_outputs = F.log_softmax(self.imu_signatures @ imu_inputs.transpose(0, 1), dim=0)
+        outputs = rgb_outputs + imu_outputs
         return outputs
 
     def predict(self, outputs):
@@ -80,20 +78,23 @@ def eval_metrics(pred_seq, true_seq, name_suffix=''):
     return metric_dict
 
 
+def resample(rgb_attribute_seq, rgb_timestamp_seq, imu_attribute_seq, imu_timestamp_seq):
+    imu_attribute_seq = utils.resampleSeq(imu_attribute_seq, imu_timestamp_seq, rgb_timestamp_seq)
+    return rgb_attribute_seq, imu_attribute_seq
+
+
 def main(
-        out_dir=None, data_dir=None, attributes_dir=None,
-        use_gt_segments=None, segments_dir=None, cv_data_dir=None, ignore_trial_ids=None,
-        gpu_dev_id=None,
-        plot_predictions=None, results_file=None, sweep_param_name=None,
+        out_dir=None, rgb_data_dir=None, rgb_attributes_dir=None, rgb_vocab_dir=None,
+        imu_data_dir=None, imu_attributes_dir=None,
+        gpu_dev_id=None, plot_predictions=None, results_file=None, sweep_param_name=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}):
 
-    data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
-    attributes_dir = os.path.expanduser(attributes_dir)
-    if segments_dir is not None:
-        segments_dir = os.path.expanduser(segments_dir)
-    if cv_data_dir is not None:
-        cv_data_dir = os.path.expanduser(cv_data_dir)
+    rgb_data_dir = os.path.expanduser(rgb_data_dir)
+    rgb_attributes_dir = os.path.expanduser(rgb_attributes_dir)
+    rgb_vocab_dir = os.path.expanduser(rgb_vocab_dir)
+    imu_data_dir = os.path.expanduser(imu_data_dir)
+    imu_attributes_dir = os.path.expanduser(imu_attributes_dir)
 
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
@@ -106,37 +107,47 @@ def main(
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
 
-    out_data_dir = os.path.join(out_dir, 'data')
-    if not os.path.exists(out_data_dir):
-        os.makedirs(out_data_dir)
+    out_rgb_data_dir = os.path.join(out_dir, 'data')
+    if not os.path.exists(out_rgb_data_dir):
+        os.makedirs(out_rgb_data_dir)
 
-    def loadVariable(var_name, from_dir=data_dir):
+    def loadVariable(var_name, from_dir=rgb_data_dir):
         var = joblib.load(os.path.join(from_dir, f"{var_name}.pkl"))
         return var
 
     def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
+        joblib.dump(var, os.path.join(out_rgb_data_dir, f'{var_name}.pkl'))
 
-    def loadAll(seq_ids, var_name, data_dir, prefix='trial='):
+    def loadAll(seq_ids, var_name, rgb_data_dir, prefix='trial='):
         def loadOne(seq_id):
-            fn = os.path.join(data_dir, f'{prefix}{seq_id}_{var_name}')
+            fn = os.path.join(rgb_data_dir, f'{prefix}{seq_id}_{var_name}')
             return joblib.load(fn)
         return tuple(map(loadOne, seq_ids))
 
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
+    rgb_trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
+    imu_trial_ids = utils.getUniqueIds(imu_data_dir, prefix='trial=', to_array=True)
+    trial_ids = np.array(sorted(set(rgb_trial_ids.tolist()) & set(imu_trial_ids.tolist())))
+    logger.info(
+        f"Processing {len(trial_ids)} videos common to "
+        f"RGB ({len(rgb_trial_ids)} total) and IMU ({len(imu_trial_ids)} total)"
+    )
 
-    vocab = loadVariable('vocab', from_dir=attributes_dir)
+    vocab = loadVariable('vocab', from_dir=rgb_vocab_dir)
     # parts_vocab = loadVariable('parts-vocab')
-    edge_labels = loadVariable('part-labels', from_dir=attributes_dir)
+    rgb_edge_labels = loadVariable('part-labels', from_dir=rgb_vocab_dir)
+    imu_edge_labels = np.stack([
+        labels.inSameComponent(a, lower_tri_only=True)
+        for a in vocab
+    ])
 
     device = torchutils.selectDevice(gpu_dev_id)
-    model = AttributeModel(edge_labels, device=device)
+    model = AttributeModel(rgb_edge_labels, imu_edge_labels, device=device)
 
     if plot_predictions:
         figsize = (12, 3)
         fig, axis = plt.subplots(1, figsize=figsize)
-        axis.imshow(edge_labels.T, interpolation='none', aspect='auto')
+        axis.imshow(rgb_edge_labels.T, interpolation='none', aspect='auto')
         plt.savefig(os.path.join(fig_dir, "edge-labels.png"))
         plt.close()
 
@@ -144,26 +155,38 @@ def main(
         logger.info(f"Processing sequence {trial_id}...")
 
         trial_prefix = f"trial={trial_id}"
-        assembly_seq = loadVariable(f'{trial_prefix}_assembly-seq')
-        attribute_seq = torch.tensor(
-            loadVariable(f"{trial_prefix}_score-seq", from_dir=attributes_dir),
-            dtype=torch.float, device=device
-        )
-        attribute_seq = F.softmax(attribute_seq, dim=1)
-        attribute_seq = torch.reshape(
-            attribute_seq.transpose(-1, -2),
-            (attribute_seq.shape[0], -1)
-        )
 
+        assembly_seq = loadVariable(f'{trial_prefix}_assembly-seq')
         true_label_seq = torch.tensor(
             make_labels(assembly_seq, vocab),
             dtype=torch.long, device=device
         )
 
-        score_seq = model(2 * attribute_seq - 1)
+        rgb_attribute_seq = torch.tensor(
+            loadVariable(f"{trial_prefix}_score-seq", from_dir=rgb_attributes_dir),
+            dtype=torch.float, device=device
+        )
+        rgb_timestamp_seq = loadVariable(
+            f"{trial_prefix}_rgb-frame-timestamp-seq",
+            from_dir=rgb_data_dir
+        )
+        imu_attribute_seq = torch.tensor(
+            loadVariable(f"{trial_prefix}_score-seq", from_dir=imu_attributes_dir),
+            dtype=torch.float, device=device
+        ).permute(1, 2, 0)[:, :2]  # FIXME: save in the correct shape to avoid this reshape
+        imu_timestamp_seq = loadVariable(f"{trial_prefix}_timestamp-seq", from_dir=imu_data_dir)
+        rgb_attribute_seq, imu_attribute_seq = resample(
+            rgb_attribute_seq, rgb_timestamp_seq,
+            imu_attribute_seq, imu_timestamp_seq
+        )
+
+        rgb_attribute_seq = make_attribute_features(rgb_attribute_seq)
+        imu_attribute_seq = make_attribute_features(imu_attribute_seq)
+
+        score_seq = model(rgb_attribute_seq, imu_attribute_seq)
         pred_label_seq = model.predict(score_seq)
 
-        attribute_seq = attribute_seq.cpu().numpy()
+        rgb_attribute_seq = rgb_attribute_seq.cpu().numpy()
         score_seq = score_seq.cpu().numpy()
         true_label_seq = true_label_seq.cpu().numpy()
         pred_label_seq = pred_label_seq.cpu().numpy()
@@ -174,7 +197,7 @@ def main(
         if plot_predictions:
             fn = os.path.join(fig_dir, f'{trial_prefix}.png')
             utils.plot_array(
-                attribute_seq.T,
+                rgb_attribute_seq.T,
                 (true_label_seq, pred_label_seq, score_seq),
                 ('gt', 'pred', 'scores'),
                 fn=fn

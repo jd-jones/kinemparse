@@ -31,12 +31,16 @@ if [ "$start_at" -le $STAGE ]; then
     echo "STAGE ${STAGE}: Download data"
     python download_blocks_data.py \
         --out_dir "${raw_data_dir}" \
+        --metadata_file "~/data/blocks/data/blocks_file_index.xlsx" \
+        --metadata_criteria "{'GroupID': 'Child'}" \
         --corpus_name "child" \
         --default_annotator "Cathryn" \
-        --modalities "['imu']" \
-        --metadata_file "$HOME/data/blocks/data/blocks_file_index.xlsx" \
-        --metadata_criteria "{'GroupID': 'Child'}"
-        # --start_from 354
+        --use_annotated_keyframes "False" \
+        --subsample_period '2' \
+        --start_video_from_first_touch "True" \
+        --save_video_before_first_touch "True" \
+        --rgb_as_float "False" \
+        --modalities "['imu']"
 fi
 if [ "$stop_after" -eq $STAGE ]; then
     exit 1

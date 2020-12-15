@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def parseActions(action_seq, rgb_timestamp_seq, imu_timestamp_seq):
-    assembly_seq = labels.parseLabelSeq(
+    assembly_seq, is_valid = labels.parseLabelSeq(
         # None, timestamps=rgb_timestamp_seq, action_seq=action_seq,
         action_seq, timestamps=rgb_timestamp_seq,
         structure_change_only=True

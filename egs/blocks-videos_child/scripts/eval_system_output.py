@@ -234,7 +234,7 @@ def main(
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
-    seq_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
+    seq_ids = utils.getUniqueIds(scores_dir, prefix='trial=', to_array=True)
     label_seqs = tuple(
         loadVariable(f"trial={seq_id}_true-label-seq", from_dir=scores_dir)
         for seq_id in seq_ids
@@ -254,8 +254,7 @@ def main(
         trial_prefix = f"trial={seq_id}"
         rgb_seq = loadVariable(f"{trial_prefix}_rgb-frame-seq", from_dir=data_dir)
         seg_seq = loadVariable(f"{trial_prefix}_seg-labels-seq", from_dir=segs_dir)
-        # score_seq = loadVariable(f"{trial_prefix}_score-seq", from_dir=scores_dir)
-        score_seq = loadVariable(f"{trial_prefix}_score-seq", from_dir=scores_dir).T
+        score_seq = loadVariable(f"{trial_prefix}_score-seq", from_dir=scores_dir)
         pred_seq = loadVariable(f"{trial_prefix}_pred-label-seq", from_dir=scores_dir)
         if score_seq.shape[0] != rgb_seq.shape[0]:
             err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"

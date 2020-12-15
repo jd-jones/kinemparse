@@ -131,6 +131,7 @@ def splitSeqs(feature_seqs, label_seqs, trial_ids, active_only=False):
 
     def splitSeq(arrays):
         return tuple(row for array in arrays for row in array)
+
     feature_seqs = splitSeq(map(lambda x: x.swapaxes(0, 1), feature_seqs))
     label_seqs = splitSeq(map(lambda x: x.T, label_seqs))
 
@@ -182,7 +183,7 @@ def main(
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
     if results_file is None:
-        results_file = os.path.join(out_dir, f'results.csv')
+        results_file = os.path.join(out_dir, 'results.csv')
     else:
         results_file = os.path.expanduser(results_file)
 
