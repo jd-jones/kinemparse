@@ -6,6 +6,7 @@ import copy
 
 import xml.etree.ElementTree as ET
 import numpy as np
+import torch
 from scipy.spatial.transform import Rotation
 
 from mathtools.pose import RigidTransform
@@ -15,10 +16,23 @@ logger = logging.getLogger(__name__)
 
 
 # --=( MAIN CLASSES )==--------------------------------------------------------
+class Mesh(object):
+    def __init__(self, vertices, faces, textures=None, color=None):
+        if color is not None:
+            texture_size = 2
+            textures = np.zeros((faces.shape[0], texture_size, texture_size, texture_size, 3))
+            textures[..., :] = color
+
+        self.vertices = vertices
+        self.faces = faces
+        self.textures = textures
+
+
 class Link(object):
-    def __init__(self, name, pose=None):
+    def __init__(self, name, pose=None, mesh=None):
         self.name = name
         self._transform = pose
+        self.mesh = mesh
 
     def __eq__(self, other):
         names_equal = self.name == other.name
@@ -69,8 +83,20 @@ class Assembly(object):
     WARN_TRANSFORM = False
 
     def __init__(self, links=[], joints=[], symmetries=None):
-        self.links = {link.name: link for link in links}
-        self.joints = {joint.name: joint for joint in joints}
+        if isinstance(links, list) or isinstance(links, tuple):
+            links = {link.name: link for link in links}
+        elif not isinstance(links, dict):
+            err_str = f"Links has type {type(links)}, but should be dict, list, or tuple"
+            raise AssertionError(err_str)
+
+        if isinstance(joints, list) or isinstance(joints, tuple):
+            joints = {joint.name: joint for joint in joints}
+        elif not isinstance(joints, dict):
+            err_str = f"Joints has type {type(joints)}, but should be dict, list, or tuple"
+            raise AssertionError(err_str)
+
+        self.links = links
+        self.joints = joints
 
         for joint_name, joint in self.joints.items():
             if joint.joint_type == 'floating':
@@ -101,7 +127,36 @@ class Assembly(object):
 
         self.symmetries = symmetries
 
-    def add_joint(self, parent, child, directed=True, in_place=False):
+    def compute_link_poses(self):
+        edges = self.adjacency_matrix
+        visited = np.zeros(edges.shape[0], dtype=np.bool)
+        for link_name, link in self.links.items():
+            link_index = link_name  # FIXME
+
+            stack = [link_index]
+            while stack:
+                index = stack.pop()
+                visited[index] = True
+                for neighbor_idx in edges[index, :].nonzero()[0]:
+                    neighbor_pose = self.pose  # + joint.pose  # FIXME
+                    if visited[neighbor_idx]:
+                        if neighbor_pose != self.links[neighbor_idx].pose:
+                            raise AssertionError()
+                    else:
+                        self.links[neighbor_idx].pose = neighbor_pose
+                    stack.append(neighbor_idx)
+
+    @property
+    def adjacency_matrix(self):
+        num_links = len(self.links)
+        adjacencies = np.zeros((num_links, num_links), dtype=bool)
+        for joint_name, joint in self.joints.items():
+            parent_index = joint.parent_name  # FIXME
+            child_index = joint.child_name    # FIXME
+            adjacencies[parent_index, child_index] = True
+        return adjacencies
+
+    def add_joint(self, parent, child, directed=True, in_place=False, transform=None):
         if not in_place:
             a_copy = copy.deepcopy(self)
             a_copy = a_copy.add_joint(parent, child, directed=directed, in_place=True)
@@ -119,7 +174,7 @@ class Assembly(object):
             self.links[child] = Link(child, pose=None)
 
         joint_name = f"{parent}_{child}_joint"
-        joint = Joint(joint_name, 'fixed', parent, child, transform=None)
+        joint = Joint(joint_name, 'fixed', parent, child, transform=transform)
         self.joints[joint_name] = joint
 
         return self
@@ -182,6 +237,7 @@ class Assembly(object):
         joints_predicate = all(
             self.joints[name] == other.joints[name]
             for name in self.joint_names
+            if not self.joints[name].joint_type == 'imaginary'
         )
 
         return links_predicate and joints_predicate
@@ -197,6 +253,18 @@ class Assembly(object):
 
     def __gt__(self, other):
         return other < self
+
+    def __add__(self, other):
+        # FIXME: this won't detect or avoid collisions
+        sum_ = copy.deepcopy(self)
+        for joint in other.joints.values():
+            cur_joint = sum_.joints.get(joint.name, None)
+            if cur_joint is None:
+                sum_.joints[joint.name] = joint
+            elif cur_joint != joint:
+                raise AssertionError(f"{joint.name} inconsistent between self and other")
+
+        return sum_
 
     def __sub__(self, other):
         if self < other:
@@ -252,6 +320,13 @@ class Assembly(object):
     def from_xacro(cls, *args, **kwargs):
         return _from_xacro(*args, **kwargs)
 
+    @classmethod
+    def from_blockassembly(cls, *args, **kwargs):
+        return _assembly_from_blocks(*args, **kwargs)
+
+    def to_blockassembly(cls, *args, **kwargs):
+        return _assembly_to_blocks(*args, **kwargs)
+
 
 class AssemblyAction(Assembly):
     def __init__(self, sign=1, *args, **kwargs):
@@ -291,6 +366,54 @@ def writeAssemblies(fn, assemblies):
             f.write('----------' + '\n')
 
 
+def render(renderer, assembly, t, R):
+    t = t.permute(1, 0)
+    R = R.permute(2, 1, 0)
+
+    if R.shape[-1] != t.shape[-1]:
+        err_str = f"R shape {R.shape} doesn't match t shape {t.shape}"
+        raise AssertionError(err_str)
+
+    num_templates = R.shape[-1]
+
+    # component_poses = tuple(
+    #     (np.eye(3), np.zeros(3))
+    #     for k in assembly.connected_components.keys()
+    # )
+    # assembly = assembly.setPose(component_poses, in_place=False)
+    init_vertices = torch.stack(
+        tuple(link.mesh.vertices for l_name, link in assembly.links.items()),
+        dim=0
+    )
+    faces = torch.stack(
+        tuple(link.mesh.faces for l_name, link in assembly.links.items()),
+        dim=0
+    )
+    textures = torch.stack(
+        tuple(link.mesh.textures for l_name, link in assembly.links.items()),
+        dim=0
+    )
+
+    vertices = torch.einsum('nvj,jit->nvit', [init_vertices, R]) + t
+    vertices = vertices.permute(-1, 0, 1, 2)
+
+    faces = faces.expand(num_templates, *faces.shape)
+    textures = textures.expand(num_templates, *textures.shape)
+
+    rgb_images_obj, depth_images_obj = renderer.render(
+        torch.reshape(vertices, (-1, *vertices.shape[2:])),
+        torch.reshape(faces, (-1, *faces.shape[2:])),
+        torch.reshape(textures, (-1, *textures.shape[2:]))
+    )
+    rgb_images_scene, depth_images_scene, label_images_scene = render.reduceByDepth(
+        torch.reshape(rgb_images_obj, vertices.shape[:2] + rgb_images_obj.shape[1:]),
+        torch.reshape(depth_images_obj, vertices.shape[:2] + depth_images_obj.shape[1:]),
+        max_depth=renderer.far
+    )
+
+    return rgb_images_scene, depth_images_scene, label_images_scene
+
+
 # --=( HELPER FUNCTIONS )==----------------------------------------------------
 def remove_sym(joints):
     new_joints = []
@@ -306,6 +429,112 @@ def has_sym(joint, joints):
         for j in joints
     )
     return any(is_sym)
+
+
+def _assembly_from_blocks(block_assembly):
+    def get_all_stud_coords(block):
+        top = block.local_stud_coords
+        bottom = top - np.array([[0, 0, block.size_z]])
+        return np.vstack((top, bottom))
+
+    def make_block_subassembly(block):
+        def makeMesh(block):
+            return Mesh(block.local_vertices, block.faces, block.textures)
+
+        positions = get_all_stud_coords(block)  # FIXME: convert to mm
+        rotation = Rotation.from_euler('Z', 0, degrees=True)
+
+        links = [Link(block.index, pose=None, mesh=makeMesh(block))] + [
+            Link((block.index, i), pose=None)
+            for i, position in enumerate(positions)
+        ]
+
+        joints = [
+            Joint(
+                (block.index, (block.index, i)), 'fixed',
+                block.index, (block.index, i),
+                transform=RigidTransform(position, copy.deepcopy(rotation))
+            )
+            for i, position in enumerate(positions)
+        ]
+        block = Assembly(links=links, joints=joints, symmetries=None)
+        return block
+
+    def combine_block_subassemblies(blocks, block_assembly):
+        def makeJoints(parent, child):
+            parent_studs = parent.inGlobalFrame(get_all_stud_coords(parent))
+            child_studs = child.inGlobalFrame(get_all_stud_coords(child))
+            # FIXME
+            is_connected = (parent_studs == child_studs).all(axis=1)
+            stud_edges = np.nonzero(is_connected)[0]
+
+            joints = {
+                ((parent.index, parent_stud_id), (child.index, child_stud_id)): Joint(
+                    ((parent.index, parent_stud_id), (child.index, child_stud_id)),
+                    'fixed',
+                    (parent.index, parent_stud_id),
+                    (child.index, child_stud_id),
+                    transform=None
+                )
+                for parent_stud_id, child_stud_id in stud_edges
+            }
+            joints[((parent.index), (child.index))] = Joint(
+                ((parent.index), (child.index)),
+                'imaginary', parent.index, child.index,
+                transform=getTransform(parent, child)
+            )
+            return joints
+
+        def getTransform(parent, child):
+            t_parent, theta_z_parent = parent.getPose()
+            t_child, theta_z_child = child.getPose()
+            t_diff = t_parent - t_child
+
+            theta_z_diff = theta_z_parent - theta_z_child
+            R_diff = Rotation.from_euler('Z', theta_z_diff, degrees=True)
+
+            transform = RigidTransform(t_diff, R_diff)
+            return transform
+
+        links = {}
+        for name, block in blocks.items():
+            links.update(block.links)
+        # links = list(itertools.chain(*[block.links for name, block in blocks.items()]))
+
+        joints = {}
+        for name, block in blocks.items():
+            joints.update(block.joints)
+        edges = np.column_stack(np.nonzero(block_assembly.symmetrized_connections))
+        for parent_index, child_index in edges:
+            interblock_joints = makeJoints(
+                block_assembly.blocks[parent_index],
+                block_assembly.blocks[child_index]
+            )
+            joints.update(interblock_joints)
+
+        # intrablock_joints = list(itertools.chain(
+        #     *[block.joints for name, block in blocks.items()])
+        # )
+        # interblock_joints = list(itertools.chain(*[
+        #     makeJoints(block_assembly.blocks[parent_index], block_assembly.blocks[child_index])
+        #     for parent_index, child_index in edges
+        # ]))
+        # joints = intrablock_joints + interblock_joints
+
+        assembly = Assembly(links=links, joints=joints, symmetries=None)
+        return assembly
+
+    block_subassemblies = {
+        index: make_block_subassembly(block)
+        for index, block in block_assembly.blocks.items()
+    }
+
+    assembly = combine_block_subassemblies(block_subassemblies, block_assembly)
+    return assembly
+
+
+def _assembly_to_blocks(block_assembly):
+    raise NotImplementedError()
 
 
 def _from_xacro(xacro_fn, params={}):

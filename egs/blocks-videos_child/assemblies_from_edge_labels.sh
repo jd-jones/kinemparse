@@ -8,21 +8,24 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-# DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
+# READONLY DIRS
 seg_labels_dir="${output_dir}/image-segment-labels"
 rgb_data_dir="${output_dir}/raw-data"
 rgb_vocab_dir="${output_dir}/pretrained-models-sim"
-rgb_edge_label_dir="${output_dir}/edge-label-preds-smoothed_rgb"
+rgb_edge_label_dir="${output_dir}/edge-label-preds_rgb"
 imu_data_dir="${output_dir}/connections-dataset"
 imu_edge_label_dir="${output_dir}/edge-label-preds_imu"
-assembly_scores_dir="${output_dir}/assembly-scores_fused"
-decode_dir="${output_dir}/assembly-decode_fused"
+
+# DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
+assembly_scores_dir="${output_dir}/assembly-scores_TEST"
+decode_dir="${output_dir}/assembly-decode_TEST"
 
 decode_eval_dir="${decode_dir}/eval"
 
 start_at="0"
 stop_after="100"
 
+debug_str=""
 
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
 for arg in "$@"; do
@@ -40,6 +43,9 @@ for arg in "$@"; do
 			stop_after="${arg#*=}"
 			shift
 			;;
+        --debug)
+            debug_str="-m pdb"
+            ;;
 		*) # Unknown option: print help and exit
             # TODO: print help
             exit 0
@@ -55,13 +61,14 @@ STAGE=0
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Score assemblies"
-    python score_assemblies.py \
+    python ${debug_str} score_assemblies.py \
         --out_dir "${assembly_scores_dir}" \
         --rgb_data_dir "${rgb_data_dir}/data" \
         --rgb_attributes_dir "${rgb_edge_label_dir}/data" \
         --rgb_vocab_dir "${rgb_vocab_dir}/data" \
         --imu_data_dir "${imu_data_dir}/data" \
         --imu_attributes_dir "${imu_edge_label_dir}/data" \
+        --modalities "['imu', 'rgb']" \
         --gpu_dev_id "'2'" \
         --plot_predictions "True"
     python analysis.py \
@@ -76,7 +83,7 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Decode assembly predictions"
-    python predict_seq_lctm.py \
+    python ${debug_str} predict_seq_lctm.py \
         --out_dir "${decode_dir}" \
         --data_dir "${assembly_scores_dir}/data" \
         --scores_dir "${assembly_scores_dir}/data" \
@@ -101,15 +108,15 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate decoder predictions"
-    python eval_system_output.py \
+    python ${debug_str} eval_system_output.py \
         --out_dir "${decode_eval_dir}" \
         --data_dir "${rgb_data_dir}/data" \
         --segs_dir "${seg_labels_dir}/data" \
         --scores_dir "${decode_dir}/data" \
         --vocab_dir "${rgb_vocab_dir}/data" \
         --gpu_dev_id "'2'" \
-        --label_type "assembly" # \
-        # --num_disp_imgs "10"
+        --label_type "assembly" \
+        --num_disp_imgs "10"
     python analysis.py \
         --out_dir "${decode_eval_dir}/system-performance" \
         --results_file "${decode_eval_dir}/results.csv"

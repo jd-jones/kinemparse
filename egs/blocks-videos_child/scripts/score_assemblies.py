@@ -10,6 +10,7 @@ from matplotlib import pyplot as plt
 
 from mathtools import utils, metrics, torchutils
 from blocks.core import labels
+from kinemparse.assembly import Assembly
 
 
 logger = logging.getLogger(__name__)
@@ -34,13 +35,15 @@ def make_attribute_features(score_seq):
 
 
 class AttributeModel(torch.nn.Module):
-    def __init__(self, rgb_attribute_labels, imu_attribute_labels, device=None):
+    def __init__(self, *attribute_labels, device=None):
         super().__init__()
 
         self.device = device
 
-        self.rgb_signatures = self._make_signatures(rgb_attribute_labels)
-        self.imu_signatures = self._make_signatures(imu_attribute_labels)
+        self.signatures = torch.cat(
+            tuple(self._make_signatures(labels) for labels in attribute_labels),
+            dim=1
+        )
 
     def _make_signatures(self, attribute_labels):
         attribute_labels = torch.tensor(attribute_labels, dtype=torch.long, device=self.device)
@@ -50,10 +53,8 @@ class AttributeModel(torch.nn.Module):
         )
         return 2 * attribute_labels.float() - 1
 
-    def forward(self, rgb_inputs, imu_inputs):
-        rgb_outputs = F.log_softmax(self.rgb_signatures @ rgb_inputs.transpose(0, 1), dim=0)
-        imu_outputs = F.log_softmax(self.imu_signatures @ imu_inputs.transpose(0, 1), dim=0)
-        outputs = rgb_outputs + imu_outputs
+    def forward(self, inputs):
+        outputs = F.log_softmax(self.signatures @ inputs.transpose(0, 1), dim=0)
         return outputs
 
     def predict(self, outputs):
@@ -85,7 +86,7 @@ def resample(rgb_attribute_seq, rgb_timestamp_seq, imu_attribute_seq, imu_timest
 
 def main(
         out_dir=None, rgb_data_dir=None, rgb_attributes_dir=None, rgb_vocab_dir=None,
-        imu_data_dir=None, imu_attributes_dir=None,
+        imu_data_dir=None, imu_attributes_dir=None, modalities=['rgb', 'imu'],
         gpu_dev_id=None, plot_predictions=None, results_file=None, sweep_param_name=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}):
 
@@ -135,19 +136,25 @@ def main(
 
     vocab = loadVariable('vocab', from_dir=rgb_vocab_dir)
     # parts_vocab = loadVariable('parts-vocab')
-    rgb_edge_labels = loadVariable('part-labels', from_dir=rgb_vocab_dir)
-    imu_edge_labels = np.stack([
-        labels.inSameComponent(a, lower_tri_only=True)
-        for a in vocab
-    ])
+    edge_labels = {
+        'rgb': loadVariable('part-labels', from_dir=rgb_vocab_dir),
+        'imu': np.stack([
+            labels.inSameComponent(a, lower_tri_only=True)
+            for a in vocab
+        ])
+    }
+    attribute_labels = tuple(edge_labels[name] for name in modalities)
+
+    new_vocab = tuple(Assembly.from_blockassembly(a) for a in vocab)
+    import pdb; pdb.set_trace()
 
     device = torchutils.selectDevice(gpu_dev_id)
-    model = AttributeModel(rgb_edge_labels, imu_edge_labels, device=device)
+    model = AttributeModel(*attribute_labels, device=device)
 
     if plot_predictions:
         figsize = (12, 3)
         fig, axis = plt.subplots(1, figsize=figsize)
-        axis.imshow(rgb_edge_labels.T, interpolation='none', aspect='auto')
+        axis.imshow(edge_labels['rgb'].T, interpolation='none', aspect='auto')
         plt.savefig(os.path.join(fig_dir, "edge-labels.png"))
         plt.close()
 
@@ -180,10 +187,13 @@ def main(
             imu_attribute_seq, imu_timestamp_seq
         )
 
-        rgb_attribute_seq = make_attribute_features(rgb_attribute_seq)
-        imu_attribute_seq = make_attribute_features(imu_attribute_seq)
+        attribute_feats = {
+            'rgb': make_attribute_features(rgb_attribute_seq),
+            'imu': make_attribute_features(imu_attribute_seq)
+        }
+        attribute_feats = torch.cat(tuple(attribute_feats[name] for name in modalities), dim=1)
 
-        score_seq = model(rgb_attribute_seq, imu_attribute_seq)
+        score_seq = model(attribute_feats)
         pred_label_seq = model.predict(score_seq)
 
         rgb_attribute_seq = rgb_attribute_seq.cpu().numpy()
