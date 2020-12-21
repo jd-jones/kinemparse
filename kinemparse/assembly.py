@@ -293,7 +293,8 @@ class Assembly(object):
         return difference
 
     def __repr__(self):
-        return '{' + ', '.join(self.joints.keys()) + '}'
+        joint_names = tuple(f"{key}" for key in self.joints.keys())
+        return '{' + ', '.join(joint_names) + '}'
 
     def __str__(self):
         link_strs = tuple(link.name for link in self.links.values())
@@ -322,10 +323,10 @@ class Assembly(object):
 
     @classmethod
     def from_blockassembly(cls, *args, **kwargs):
-        return _assembly_from_blocks(*args, **kwargs)
+        return _from_blockassembly(*args, **kwargs)
 
     def to_blockassembly(cls, *args, **kwargs):
-        return _assembly_to_blocks(*args, **kwargs)
+        return _to_blockassembly(*args, **kwargs)
 
 
 class AssemblyAction(Assembly):
@@ -431,7 +432,7 @@ def has_sym(joint, joints):
     return any(is_sym)
 
 
-def _assembly_from_blocks(block_assembly):
+def _from_blockassembly(block_assembly):
     def get_all_stud_coords(block):
         top = block.local_stud_coords
         bottom = top - np.array([[0, 0, block.size_z]])
@@ -464,9 +465,14 @@ def _assembly_from_blocks(block_assembly):
         def makeJoints(parent, child):
             parent_studs = parent.inGlobalFrame(get_all_stud_coords(parent))
             child_studs = child.inGlobalFrame(get_all_stud_coords(child))
-            # FIXME
-            is_connected = (parent_studs == child_studs).all(axis=1)
-            stud_edges = np.nonzero(is_connected)[0]
+
+            # array has dims: parent studs, child studs, 3
+            stud_distances = parent_studs[:, None, :] - child_studs[None, :, :]
+            is_connected_ud = (stud_distances == 0).all(axis=2)
+            is_connected_ew = (np.abs(stud_distances) == np.array([[[1, 0, 0]]])).all(axis=2)
+            is_connected_ns = (np.abs(stud_distances) == np.array([[[0, 1, 0]]])).all(axis=2)
+            is_connected = is_connected_ud | is_connected_ew | is_connected_ns
+            stud_edges = np.column_stack(np.nonzero(is_connected))
 
             joints = {
                 ((parent.index, parent_stud_id), (child.index, child_stud_id)): Joint(
@@ -499,11 +505,11 @@ def _assembly_from_blocks(block_assembly):
         links = {}
         for name, block in blocks.items():
             links.update(block.links)
-        # links = list(itertools.chain(*[block.links for name, block in blocks.items()]))
 
         joints = {}
         for name, block in blocks.items():
             joints.update(block.joints)
+
         edges = np.column_stack(np.nonzero(block_assembly.symmetrized_connections))
         for parent_index, child_index in edges:
             interblock_joints = makeJoints(
@@ -511,15 +517,6 @@ def _assembly_from_blocks(block_assembly):
                 block_assembly.blocks[child_index]
             )
             joints.update(interblock_joints)
-
-        # intrablock_joints = list(itertools.chain(
-        #     *[block.joints for name, block in blocks.items()])
-        # )
-        # interblock_joints = list(itertools.chain(*[
-        #     makeJoints(block_assembly.blocks[parent_index], block_assembly.blocks[child_index])
-        #     for parent_index, child_index in edges
-        # ]))
-        # joints = intrablock_joints + interblock_joints
 
         assembly = Assembly(links=links, joints=joints, symmetries=None)
         return assembly
@@ -533,7 +530,7 @@ def _assembly_from_blocks(block_assembly):
     return assembly
 
 
-def _assembly_to_blocks(block_assembly):
+def _to_blockassembly(block_assembly):
     raise NotImplementedError()
 
 
