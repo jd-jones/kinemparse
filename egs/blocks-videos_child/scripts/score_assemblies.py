@@ -7,10 +7,14 @@ import torch
 from torch.nn import functional as F
 import joblib
 from matplotlib import pyplot as plt
+from scipy.spatial.transform import Rotation
 
 from mathtools import utils, metrics, torchutils
 from blocks.core import labels
 from kinemparse.assembly import Assembly
+from kinemparse import assembly as lib_assembly
+from kinemparse import sim2real
+from visiontools import render, imageprocessing
 
 
 logger = logging.getLogger(__name__)
@@ -146,9 +150,52 @@ def main(
     attribute_labels = tuple(edge_labels[name] for name in modalities)
 
     new_vocab = tuple(Assembly.from_blockassembly(a) for a in vocab)
+    device = torchutils.selectDevice(gpu_dev_id)
+
+    intrinsic_matrix = torch.tensor(render.intrinsic_matrix, dtype=torch.float).cuda()
+    camera_pose = torch.tensor(render.camera_pose, dtype=torch.float).cuda()
+    colors = torch.tensor(render.object_colors, dtype=torch.float).cuda()
+    image_size = min(render.IMAGE_WIDTH, render.IMAGE_HEIGHT)
+    renderer = render.TorchSceneRenderer(
+        intrinsic_matrix=intrinsic_matrix,
+        camera_pose=camera_pose,
+        colors=colors,
+        light_intensity_ambient=1,
+        image_size=image_size,
+        orig_size=image_size
+    )
+
+    def canonicalPose(num_samples=1):
+        angles = torch.zeros(num_samples, dtype=torch.float)
+        rotations = Rotation.from_euler('Z', angles)
+        R = torch.tensor(rotations.as_matrix()).float().cuda()
+        t = torch.stack((torch.zeros_like(angles),) * 3, dim=1).float().cuda()
+        return R, t
+
+    R, t = canonicalPose()
+
+    for i, assembly in enumerate(vocab[1:25], start=1):
+        rgb_images, depth_images, label_images = sim2real.renderTemplates(
+            renderer, assembly, t, R
+        )
+        rgb_images[rgb_images > 1] = 1
+        imageprocessing.displayImages(
+            *(rgb_images.cpu().numpy()),
+            file_path=os.path.join(fig_dir, f"{i:03d}_old.png")
+        )
+
+    for i, assembly in enumerate(new_vocab[1:25], start=1):
+        G = lib_assembly.draw_graph(assembly, name=f'{i:03d}_graph')
+        G.render(directory=fig_dir, format='png', cleanup=True)
+
+        rgb_images, depth_images, label_images = lib_assembly.render(renderer, assembly, t, R)
+        rgb_images[rgb_images > 1] = 1
+        imageprocessing.displayImages(
+            *(rgb_images.cpu().numpy()),
+            file_path=os.path.join(fig_dir, f"{i:03d}_new.png")
+        )
     import pdb; pdb.set_trace()
 
-    device = torchutils.selectDevice(gpu_dev_id)
     model = AttributeModel(*attribute_labels, device=device)
 
     if plot_predictions:

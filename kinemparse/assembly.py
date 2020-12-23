@@ -4,12 +4,14 @@ import itertools
 import re
 import copy
 
+import graphviz as gv
 import xml.etree.ElementTree as ET
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 
 from mathtools.pose import RigidTransform
+from visiontools import render as lib_render
 
 
 logger = logging.getLogger(__name__)
@@ -107,23 +109,24 @@ class Assembly(object):
                 continue
             child = self.links[joint.child_name]
             parent = self.links[joint.parent_name]
-            if joint._transform is None:
-                warn_str = (
-                    f"For ({joint.parent_name} -> {joint.child_name}), "
-                    f"joint transform is {joint._transform}"
-                )
-                if Assembly.WARN_TRANSFORM:
-                    logger.warning(warn_str)
-                continue
-            if parent._transform is None:
-                warn_str = (
-                    f"For joint ({joint.parent_name} -> {joint.child_name}), "
-                    f"parent pose is {parent._transform}"
-                )
-                if Assembly.WARN_TRANSFORM:
-                    logger.warning(warn_str)
-                continue
-            child._transform = parent._transform * joint._transform
+            if child._transform is None:
+                if joint._transform is None:
+                    warn_str = (
+                        f"For ({joint.parent_name} -> {joint.child_name}), "
+                        f"joint transform is {joint._transform}"
+                    )
+                    if Assembly.WARN_TRANSFORM:
+                        logger.warning(warn_str)
+                    continue
+                if parent._transform is None:
+                    warn_str = (
+                        f"For joint ({joint.parent_name} -> {joint.child_name}), "
+                        f"parent pose is {parent._transform}"
+                    )
+                    if Assembly.WARN_TRANSFORM:
+                        logger.warning(warn_str)
+                    continue
+                child._transform = parent._transform * joint._transform
 
         self.symmetries = symmetries
 
@@ -367,6 +370,50 @@ def writeAssemblies(fn, assemblies):
             f.write('----------' + '\n')
 
 
+def draw_graph(assembly, name=''):
+    # Block height when drawn as graph node, in inches
+    # height = 0.25
+    # width = 0.25
+    # shape = 'box'
+
+    # Create a directed graph representing the block construction and add
+    # all blocks as nodes
+    graph = gv.Digraph(name=name)
+
+    for link_id, link in assembly.links.items():
+        graph.node(str(link.name))
+        # width = height if shape == 'square' else 2 * height
+        # gv_shape = 'Msquare' if shape == 'square' else 'box'
+        # graph.node(
+        #     str(link_id),
+        #     height=str(height),
+        #     width=str(width),
+        #     shape=shape,
+        #     style='filled',
+        #     body='size=4,4'
+        # )
+
+    for joint_id, joint in assembly.joints.items():
+        if joint.joint_type == 'imaginary':
+            continue
+        graph.edge(str(joint.parent_name), str(joint.child_name))
+
+    # num_rows, num_cols = assembly.connections.shape
+    # directed = assembly.directed_connections
+    # undirected = assembly.undirected_connections
+    # for row in range(num_rows):
+    #    for col in range(num_cols):
+    #        if directed[row,col]:
+    #            graph.edge(str(row), str(col))
+    #        # Without the < check I would draw two undirected edges instead
+    #        # of one
+    #        if row < col and undirected[row,col]:
+    #            graph.edge(str(row), str(col), dir='none')
+
+    # graph.render(filename=fn, directory=file_path)
+    return graph
+
+
 def render(renderer, assembly, t, R):
     t = t.permute(1, 0)
     R = R.permute(2, 1, 0)
@@ -377,23 +424,19 @@ def render(renderer, assembly, t, R):
 
     num_templates = R.shape[-1]
 
-    # component_poses = tuple(
-    #     (np.eye(3), np.zeros(3))
-    #     for k in assembly.connected_components.keys()
-    # )
-    # assembly = assembly.setPose(component_poses, in_place=False)
-    init_vertices = torch.stack(
-        tuple(link.mesh.vertices for l_name, link in assembly.links.items()),
-        dim=0
-    )
-    faces = torch.stack(
-        tuple(link.mesh.faces for l_name, link in assembly.links.items()),
-        dim=0
-    )
-    textures = torch.stack(
-        tuple(link.mesh.textures for l_name, link in assembly.links.items()),
-        dim=0
-    )
+    def get_vertices(link):
+        return link.pose.apply(link.mesh.vertices)
+
+    mesh_links = tuple(link for _, link in assembly.links.items() if link.mesh is not None)
+    init_vertices = np.stack(tuple(get_vertices(link) for link in mesh_links), axis=0)
+    faces = np.stack(tuple(link.mesh.faces for link in mesh_links), axis=0)
+    textures = np.stack(tuple(link.mesh.textures for link in mesh_links), axis=0)
+
+    # import pdb; pdb.set_trace()
+
+    init_vertices = torch.tensor(init_vertices, dtype=torch.float).cuda()
+    faces = torch.tensor(faces, dtype=torch.int).cuda()
+    textures = torch.tensor(textures, dtype=torch.float).cuda()
 
     vertices = torch.einsum('nvj,jit->nvit', [init_vertices, R]) + t
     vertices = vertices.permute(-1, 0, 1, 2)
@@ -406,7 +449,7 @@ def render(renderer, assembly, t, R):
         torch.reshape(faces, (-1, *faces.shape[2:])),
         torch.reshape(textures, (-1, *textures.shape[2:]))
     )
-    rgb_images_scene, depth_images_scene, label_images_scene = render.reduceByDepth(
+    rgb_images_scene, depth_images_scene, label_images_scene = lib_render.reduceByDepth(
         torch.reshape(rgb_images_obj, vertices.shape[:2] + rgb_images_obj.shape[1:]),
         torch.reshape(depth_images_obj, vertices.shape[:2] + depth_images_obj.shape[1:]),
         max_depth=renderer.far
@@ -433,19 +476,41 @@ def has_sym(joint, joints):
 
 
 def _from_blockassembly(block_assembly):
+    UNIT_LEN_IN_MM = np.array([15.9, 15.9, 19.2])
+
+    def get_pose(block):
+        theta_z, t = block.getPose()
+        t = t.copy() * UNIT_LEN_IN_MM
+        R = Rotation.from_euler('Z', theta_z, degrees=True)
+
+        pose = RigidTransform(translation=t, rotation=R)
+        return pose
+
+    def get_transform(parent, child):
+        theta_z_parent, t_parent = parent.getPose()
+        theta_z_child, t_child = child.getPose()
+        t_diff = (t_parent - t_child) * UNIT_LEN_IN_MM
+
+        theta_z_diff = theta_z_parent - theta_z_child
+        R_diff = Rotation.from_euler('Z', theta_z_diff, degrees=True)
+
+        transform = RigidTransform(translation=t_diff, rotation=R_diff)
+        return transform
+
     def get_all_stud_coords(block):
         top = block.local_stud_coords
         bottom = top - np.array([[0, 0, block.size_z]])
-        return np.vstack((top, bottom))
+        return np.vstack((top, bottom)) * UNIT_LEN_IN_MM
 
     def make_block_subassembly(block):
         def makeMesh(block):
-            return Mesh(block.local_vertices, block.faces, block.textures)
+            vertices = block.local_vertices * UNIT_LEN_IN_MM
+            return Mesh(vertices, block.faces, block.textures)
 
-        positions = get_all_stud_coords(block)  # FIXME: convert to mm
+        positions = get_all_stud_coords(block)
         rotation = Rotation.from_euler('Z', 0, degrees=True)
 
-        links = [Link(block.index, pose=None, mesh=makeMesh(block))] + [
+        links = [Link(block.index, pose=get_pose(block), mesh=makeMesh(block))] + [
             Link((block.index, i), pose=None)
             for i, position in enumerate(positions)
         ]
@@ -454,7 +519,7 @@ def _from_blockassembly(block_assembly):
             Joint(
                 (block.index, (block.index, i)), 'fixed',
                 block.index, (block.index, i),
-                transform=RigidTransform(position, copy.deepcopy(rotation))
+                transform=RigidTransform(translation=position, rotation=copy.deepcopy(rotation))
             )
             for i, position in enumerate(positions)
         ]
@@ -463,16 +528,21 @@ def _from_blockassembly(block_assembly):
 
     def combine_block_subassemblies(blocks, block_assembly):
         def makeJoints(parent, child):
-            parent_studs = parent.inGlobalFrame(get_all_stud_coords(parent))
-            child_studs = child.inGlobalFrame(get_all_stud_coords(child))
+            parent_studs = get_pose(parent).apply(get_all_stud_coords(parent)) / UNIT_LEN_IN_MM
+            child_studs = get_pose(child).apply(get_all_stud_coords(child)) / UNIT_LEN_IN_MM
 
             # array has dims: parent studs, child studs, 3
             stud_distances = parent_studs[:, None, :] - child_studs[None, :, :]
+
+            unit_ew = np.array([1, 0, 0])  # * UNIT_LEN_IN_MM
+            unit_ns = np.array([0, 1, 0])  # * UNIT_LEN_IN_MM
             is_connected_ud = (stud_distances == 0).all(axis=2)
-            is_connected_ew = (np.abs(stud_distances) == np.array([[[1, 0, 0]]])).all(axis=2)
-            is_connected_ns = (np.abs(stud_distances) == np.array([[[0, 1, 0]]])).all(axis=2)
+            is_connected_ew = (np.abs(stud_distances) == unit_ew[None, None, :]).all(axis=2)
+            is_connected_ns = (np.abs(stud_distances) == unit_ns[None, None, :]).all(axis=2)
             is_connected = is_connected_ud | is_connected_ew | is_connected_ns
             stud_edges = np.column_stack(np.nonzero(is_connected))
+
+            # import pdb; pdb.set_trace()
 
             joints = {
                 ((parent.index, parent_stud_id), (child.index, child_stud_id)): Joint(
@@ -487,20 +557,9 @@ def _from_blockassembly(block_assembly):
             joints[((parent.index), (child.index))] = Joint(
                 ((parent.index), (child.index)),
                 'imaginary', parent.index, child.index,
-                transform=getTransform(parent, child)
+                transform=get_transform(parent, child)
             )
             return joints
-
-        def getTransform(parent, child):
-            t_parent, theta_z_parent = parent.getPose()
-            t_child, theta_z_child = child.getPose()
-            t_diff = t_parent - t_child
-
-            theta_z_diff = theta_z_parent - theta_z_child
-            R_diff = Rotation.from_euler('Z', theta_z_diff, degrees=True)
-
-            transform = RigidTransform(t_diff, R_diff)
-            return transform
 
         links = {}
         for name, block in blocks.items():
