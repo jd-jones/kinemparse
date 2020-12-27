@@ -129,35 +129,51 @@ class Assembly(object):
                 child._transform = parent._transform * joint._transform
 
         self.symmetries = symmetries
+        self._adjacency_matrix = None
 
     def compute_link_poses(self):
-        edges = self.adjacency_matrix
-        visited = np.zeros(edges.shape[0], dtype=np.bool)
-        for link_name, link in self.links.items():
-            link_index = link_name  # FIXME
+        visited = {link_id: False for link_id in self.links.keys()}
 
-            stack = [link_index]
+        for root_id, root in self.links.items():
+            # Each time we reach this line, we start a new connected component
+            if root.pose is None:
+                root.pose = RigidTransform.eye()
+            stack = []
+            if not visited[root_id]:
+                visited[root_id] = True
+                stack.append(root_id)
+
             while stack:
-                index = stack.pop()
-                visited[index] = True
-                for neighbor_idx in edges[index, :].nonzero()[0]:
-                    neighbor_pose = self.pose  # + joint.pose  # FIXME
-                    if visited[neighbor_idx]:
-                        if neighbor_pose != self.links[neighbor_idx].pose:
-                            raise AssertionError()
+                link_id = stack.pop()
+                link = self.links[link_id]
+                for neighbor_id, joint in self.neighbors(link_id):
+                    neighbor = self.links[neighbor_id]
+                    neighbor_pose = joint.pose.apply(link.pose)
+                    if neighbor.pose is None:
+                        # TODO: Check that this really updates the object in self.links
+                        neighbor.pose = neighbor_pose
                     else:
-                        self.links[neighbor_idx].pose = neighbor_pose
-                    stack.append(neighbor_idx)
+                        if neighbor_pose != neighbor.pose:
+                            # TODO: Raise a special error so we can make
+                            # unambiguous exceptions later
+                            raise AssertionError()
+                    if not visited[neighbor_id]:
+                        visited[neighbor_id] = True
+                        stack.append(neighbor_id)
+
+    def neighbors(self, link_id):
+        raise NotImplementedError()
 
     @property
     def adjacency_matrix(self):
-        num_links = len(self.links)
-        adjacencies = np.zeros((num_links, num_links), dtype=bool)
-        for joint_name, joint in self.joints.items():
-            parent_index = joint.parent_name  # FIXME
-            child_index = joint.child_name    # FIXME
-            adjacencies[parent_index, child_index] = True
-        return adjacencies
+        if self._adjacency_matrix is None:
+            num_links = len(self.links)
+            self._adjacency_matrix = np.zeros((num_links, num_links), dtype=bool)
+            for joint_name, joint in self.joints.items():
+                parent_index = joint.parent_name  # FIXME
+                child_index = joint.child_name    # FIXME
+                self._adjacency_matrix[parent_index, child_index] = True
+        return self._adjacency_matrix
 
     def add_joint(self, parent, child, directed=True, in_place=False, transform=None):
         if not in_place:
@@ -371,46 +387,16 @@ def writeAssemblies(fn, assemblies):
 
 
 def draw_graph(assembly, name=''):
-    # Block height when drawn as graph node, in inches
-    # height = 0.25
-    # width = 0.25
-    # shape = 'box'
-
-    # Create a directed graph representing the block construction and add
-    # all blocks as nodes
     graph = gv.Digraph(name=name)
 
     for link_id, link in assembly.links.items():
         graph.node(str(link.name))
-        # width = height if shape == 'square' else 2 * height
-        # gv_shape = 'Msquare' if shape == 'square' else 'box'
-        # graph.node(
-        #     str(link_id),
-        #     height=str(height),
-        #     width=str(width),
-        #     shape=shape,
-        #     style='filled',
-        #     body='size=4,4'
-        # )
 
     for joint_id, joint in assembly.joints.items():
         if joint.joint_type == 'imaginary':
             continue
         graph.edge(str(joint.parent_name), str(joint.child_name))
 
-    # num_rows, num_cols = assembly.connections.shape
-    # directed = assembly.directed_connections
-    # undirected = assembly.undirected_connections
-    # for row in range(num_rows):
-    #    for col in range(num_cols):
-    #        if directed[row,col]:
-    #            graph.edge(str(row), str(col))
-    #        # Without the < check I would draw two undirected edges instead
-    #        # of one
-    #        if row < col and undirected[row,col]:
-    #            graph.edge(str(row), str(col), dir='none')
-
-    # graph.render(filename=fn, directory=file_path)
     return graph
 
 
@@ -431,8 +417,6 @@ def render(renderer, assembly, t, R):
     init_vertices = np.stack(tuple(get_vertices(link) for link in mesh_links), axis=0)
     faces = np.stack(tuple(link.mesh.faces for link in mesh_links), axis=0)
     textures = np.stack(tuple(link.mesh.textures for link in mesh_links), axis=0)
-
-    # import pdb; pdb.set_trace()
 
     init_vertices = torch.tensor(init_vertices, dtype=torch.float).cuda()
     faces = torch.tensor(faces, dtype=torch.int).cuda()
@@ -534,15 +518,13 @@ def _from_blockassembly(block_assembly):
             # array has dims: parent studs, child studs, 3
             stud_distances = parent_studs[:, None, :] - child_studs[None, :, :]
 
-            unit_ew = np.array([1, 0, 0])  # * UNIT_LEN_IN_MM
-            unit_ns = np.array([0, 1, 0])  # * UNIT_LEN_IN_MM
+            unit_ew = np.array([1, 0, 0])
+            unit_ns = np.array([0, 1, 0])
             is_connected_ud = (stud_distances == 0).all(axis=2)
             is_connected_ew = (np.abs(stud_distances) == unit_ew[None, None, :]).all(axis=2)
             is_connected_ns = (np.abs(stud_distances) == unit_ns[None, None, :]).all(axis=2)
             is_connected = is_connected_ud | is_connected_ew | is_connected_ns
             stud_edges = np.column_stack(np.nonzero(is_connected))
-
-            # import pdb; pdb.set_trace()
 
             joints = {
                 ((parent.index, parent_stud_id), (child.index, child_stud_id)): Joint(
