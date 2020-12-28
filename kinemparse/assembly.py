@@ -3,6 +3,7 @@ import functools
 import itertools
 import re
 import copy
+import collections
 
 import graphviz as gv
 import xml.etree.ElementTree as ET
@@ -109,7 +110,7 @@ class Assembly(object):
                 continue
             child = self.links[joint.child_name]
             parent = self.links[joint.parent_name]
-            if child._transform is None:
+            if False:  # child._transform is None:
                 if joint._transform is None:
                     warn_str = (
                         f"For ({joint.parent_name} -> {joint.child_name}), "
@@ -130,6 +131,7 @@ class Assembly(object):
 
         self.symmetries = symmetries
         self._adjacency_matrix = None
+        self._link_joints = None
 
     def compute_link_poses(self):
         visited = {link_id: False for link_id in self.links.keys()}
@@ -137,7 +139,7 @@ class Assembly(object):
         for root_id, root in self.links.items():
             # Each time we reach this line, we start a new connected component
             if root.pose is None:
-                root.pose = RigidTransform.eye()
+                root.pose = RigidTransform.identity()
             stack = []
             if not visited[root_id]:
                 visited[root_id] = True
@@ -146,12 +148,15 @@ class Assembly(object):
             while stack:
                 link_id = stack.pop()
                 link = self.links[link_id]
-                for neighbor_id, joint in self.neighbors(link_id):
+                for joint in self.link_joints[link_id]:
+                    if joint.transform is None:
+                        continue
+                    neighbor_id = joint.child_name
                     neighbor = self.links[neighbor_id]
-                    neighbor_pose = joint.pose.apply(link.pose)
+                    neighbor_pose = joint.transform * link.pose
                     if neighbor.pose is None:
                         # TODO: Check that this really updates the object in self.links
-                        neighbor.pose = neighbor_pose
+                        neighbor._transform = neighbor_pose
                     else:
                         if neighbor_pose != neighbor.pose:
                             # TODO: Raise a special error so we can make
@@ -161,8 +166,13 @@ class Assembly(object):
                         visited[neighbor_id] = True
                         stack.append(neighbor_id)
 
-    def neighbors(self, link_id):
-        raise NotImplementedError()
+    @property
+    def link_joints(self):
+        if self._link_joints is None:
+            self._link_joints = collections.defaultdict(list)
+            for joint_id, joint in self.joints.items():
+                self._link_joints[joint.parent_name].append(joint)
+        return self._link_joints
 
     @property
     def adjacency_matrix(self):
@@ -464,7 +474,7 @@ def _from_blockassembly(block_assembly):
 
     def get_pose(block):
         theta_z, t = block.getPose()
-        t = t.copy() * UNIT_LEN_IN_MM
+        t = t * UNIT_LEN_IN_MM
         R = Rotation.from_euler('Z', theta_z, degrees=True)
 
         pose = RigidTransform(translation=t, rotation=R)
@@ -473,12 +483,19 @@ def _from_blockassembly(block_assembly):
     def get_transform(parent, child):
         theta_z_parent, t_parent = parent.getPose()
         theta_z_child, t_child = child.getPose()
-        t_diff = (t_parent - t_child) * UNIT_LEN_IN_MM
+        t_parent = t_parent * UNIT_LEN_IN_MM
+        t_child = t_child * UNIT_LEN_IN_MM
 
-        theta_z_diff = theta_z_parent - theta_z_child
+        theta_z_diff = theta_z_child - theta_z_parent
         R_diff = Rotation.from_euler('Z', theta_z_diff, degrees=True)
+        t_diff = (t_child - R_diff.apply(t_parent))
 
         transform = RigidTransform(translation=t_diff, rotation=R_diff)
+
+        # FIXME: Remove check once everything works
+        t_child_pred = transform.apply(t_parent)
+        if not np.allclose(t_child, t_child_pred):
+            raise AssertionError(f"{t_child} != {t_child_pred}")
         return transform
 
     def get_all_stud_coords(block):
@@ -492,7 +509,7 @@ def _from_blockassembly(block_assembly):
             return Mesh(vertices, block.faces, block.textures)
 
         positions = get_all_stud_coords(block)
-        rotation = Rotation.from_euler('Z', 0, degrees=True)
+        rotation = Rotation.identity()
 
         links = [Link(block.index, pose=get_pose(block), mesh=makeMesh(block))] + [
             Link((block.index, i), pose=None)
@@ -532,7 +549,7 @@ def _from_blockassembly(block_assembly):
                     'fixed',
                     (parent.index, parent_stud_id),
                     (child.index, child_stud_id),
-                    transform=None
+                    transform=None  # FIXME: Determine transform from stud connections
                 )
                 for parent_stud_id, child_stud_id in stud_edges
             }

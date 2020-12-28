@@ -150,6 +150,16 @@ def main(
     attribute_labels = tuple(edge_labels[name] for name in modalities)
 
     new_vocab = tuple(Assembly.from_blockassembly(a) for a in vocab)
+    for a in new_vocab:
+        print("LINKS:")
+        for l in a.links.values():
+            print(f"  {l}")
+        print("JOINTS:")
+        for j in a.joints.values():
+            print(f"  {j}")
+        a.compute_link_poses()
+    import pdb; pdb.set_trace()
+
     device = torchutils.selectDevice(gpu_dev_id)
 
     intrinsic_matrix = torch.tensor(render.intrinsic_matrix, dtype=torch.float).cuda()
