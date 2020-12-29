@@ -249,8 +249,23 @@ class Assembly(object):
         return joints
 
     def __le__(self, other):
-        if self.symmetries is not None:
-            raise NotImplementedError()
+        def joints_equiv(lhs, rhs):
+            is_equiv = {}
+            is_equiv['name'] = lhs.name == rhs.name
+            is_equiv['joint_type'] = lhs.joint_type == rhs.joint_type
+            is_equiv['transform'] = lhs.transform == rhs.transform
+
+            # FIXME: all joints must have the SAME rotation for equivalence
+            lhs_parent_symm = self.symmetries.get(lhs.parent_name, lhs)
+            rhs_parent_symm = other.symmetries.get(rhs.parent_name, rhs)
+            is_equiv['parent_name'] = lhs_parent_symm == rhs_parent_symm
+
+            # FIXME: all joints must have the SAME rotation for equivalence
+            lhs_child_symm = self.symmetries.get(lhs.child_name, lhs)
+            rhs_child_symm = other.symmetries.get(rhs.child_name, rhs)
+            is_equiv['child_name'] = lhs_child_symm == rhs_child_symm
+
+            return all(is_equiv.values())
 
         if not set(self.link_names) <= set(other.link_names):
             return False
@@ -264,7 +279,8 @@ class Assembly(object):
             return False
 
         joints_predicate = all(
-            self.joints[name] == other.joints[name]
+            # FIXME: all joints must have the SAME rotation for equivalence
+            joints_equiv(self.joints[name], other.joints[name])
             for name in self.joint_names
             if not self.joints[name].joint_type == 'imaginary'
         )
@@ -508,6 +524,25 @@ def _from_blockassembly(block_assembly):
             vertices = block.local_vertices * UNIT_LEN_IN_MM
             return Mesh(vertices, block.faces, block.textures)
 
+        def makeSymmetries(positions, num_rotations=4):
+            symmetries = np.full((positions.shape[0], num_rotations), -1, dtype=int)
+            for i in range(num_rotations):
+                R = Rotation.from_euler('Z', i * (360 / num_rotations), degrees=True)
+                rotated = R.apply(positions)
+                distances = np.linalg.norm(
+                    rotated[:, None, :] - positions[None, :, :],
+                    axis=2
+                )
+                eq_upto_rotation = np.isclose(distances, np.zeros_like(distances))
+                rotated_idxs, orig_idxs = np.nonzero(eq_upto_rotation)
+                symmetries[orig_idxs, i] = rotated_idxs
+
+            symmetries = {
+                (block.index, i): tuple((block.index, j) for j in row)
+                for i, row in enumerate(symmetries)
+            }
+            return symmetries
+
         positions = get_all_stud_coords(block)
         rotation = Rotation.identity()
 
@@ -524,7 +559,17 @@ def _from_blockassembly(block_assembly):
             )
             for i, position in enumerate(positions)
         ]
-        block = Assembly(links=links, joints=joints, symmetries=None)
+
+        num_studs = positions.shape[0]
+        if num_studs == 8:
+            num_rotations = 4
+        elif num_studs == 16:
+            num_rotations = 2
+        else:
+            raise AssertionError(f"Expected 8 or 16 studs, but got {num_studs}")
+        symmetries = makeSymmetries(positions, num_rotations=num_rotations)
+
+        block = Assembly(links=links, joints=joints, symmetries=symmetries)
         return block
 
     def combine_block_subassemblies(blocks, block_assembly):
@@ -576,7 +621,11 @@ def _from_blockassembly(block_assembly):
             )
             joints.update(interblock_joints)
 
-        assembly = Assembly(links=links, joints=joints, symmetries=None)
+        symmetries = {}
+        for name, block in blocks.items():
+            symmetries.update(block.symmetries)
+
+        assembly = Assembly(links=links, joints=joints, symmetries=symmetries)
         return assembly
 
     block_subassemblies = {

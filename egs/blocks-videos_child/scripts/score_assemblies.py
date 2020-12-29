@@ -150,15 +150,14 @@ def main(
     attribute_labels = tuple(edge_labels[name] for name in modalities)
 
     new_vocab = tuple(Assembly.from_blockassembly(a) for a in vocab)
-    for a in new_vocab:
-        print("LINKS:")
-        for l in a.links.values():
-            print(f"  {l}")
-        print("JOINTS:")
-        for j in a.joints.values():
-            print(f"  {j}")
-        a.compute_link_poses()
+    for i, a in enumerate(new_vocab):
+        for j, b in enumerate(new_vocab):
+            are_equiv = a == b
+            if are_equiv and not i == j:
+                logger.info(f"{i} == {j}")
     import pdb; pdb.set_trace()
+    for a in new_vocab:
+        a.compute_link_poses()
 
     device = torchutils.selectDevice(gpu_dev_id)
 
