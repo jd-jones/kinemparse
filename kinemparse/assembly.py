@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 
+from mathtools import utils
 from mathtools.pose import RigidTransform
 from visiontools import render as lib_render
 
@@ -85,7 +86,9 @@ class Joint(object):
 class Assembly(object):
     WARN_TRANSFORM = False
 
-    def __init__(self, links=[], joints=[], symmetries=None):
+    def __init__(
+            self, links=[], joints=[], symmetries=None,
+            link_vocab={}, joint_vocab={}, joint_type_vocab={}):
         if isinstance(links, list) or isinstance(links, tuple):
             links = {link.name: link for link in links}
         elif not isinstance(links, dict):
@@ -100,6 +103,39 @@ class Assembly(object):
 
         self.links = links
         self.joints = joints
+        self.symmetries = symmetries
+        self.link_vocab = link_vocab
+        self.joint_vocab = joint_vocab
+        self.joint_type_vocab = joint_type_vocab
+
+        # Keep a reference of link names and their global vocab indices, sorted
+        # in increasing order
+        self.link_names = tuple(link.name for link_id, link in self.links.items())
+        self.link_indices = np.array([
+            utils.getIndex(name, self.link_vocab)
+            for name in self.link_names
+        ])
+        sort_indices = np.argsort(self.link_indices)
+        self.link_names = tuple(self.link_names[i] for i in sort_indices)
+        self.link_indices = self.link_indices[sort_indices]
+
+        # Keep a reference of joint names and their global vocab indices, sorted
+        # in increasing order
+        self.joint_names = tuple(joint.name for joint_id, joint in self.joints.items())
+        self.joint_indices = np.array([
+            utils.getIndex(name, self.joint_vocab)
+            for name in self.joint_names
+        ])
+        sort_indices = np.argsort(self.joint_indices)
+        self.joint_names = tuple(self.joint_names[i] for i in sort_indices)
+        self.joint_indices = self.joint_indices[sort_indices]
+        for joint_name, joint in self.joints.items():
+            utils.getIndex(joint.joint_type, self.joint_type_vocab)
+
+        self.index_symmetries = {
+            self.link_vocab[name]: tuple(self.link_vocab.get(m, -1) for m in matches)
+            for name, matches in self.symmetries.items()
+        }
 
         for joint_name, joint in self.joints.items():
             if joint.joint_type == 'floating':
@@ -129,7 +165,6 @@ class Assembly(object):
                     continue
                 child._transform = parent._transform * joint._transform
 
-        self.symmetries = symmetries
         self._adjacency_matrix = None
         self._link_joints = None
 
@@ -234,14 +269,6 @@ class Assembly(object):
 
         return self
 
-    @property
-    def link_names(self):
-        return tuple(self.links.keys())
-
-    @property
-    def joint_names(self):
-        return tuple(self.joints.keys())
-
     def getJoints(self, directed=True):
         joints = self.joints.values()
         if not directed:
@@ -249,43 +276,70 @@ class Assembly(object):
         return joints
 
     def __le__(self, other):
-        def joints_equiv(lhs, rhs):
-            is_equiv = {}
-            is_equiv['name'] = lhs.name == rhs.name
-            is_equiv['joint_type'] = lhs.joint_type == rhs.joint_type
-            is_equiv['transform'] = lhs.transform == rhs.transform
+        def _links_equivalent(self, other):
+            return set(self.link_indices.tolist()) <= set(other.link_indices.tolist())
 
-            # FIXME: all joints must have the SAME rotation for equivalence
-            lhs_parent_symm = self.symmetries.get(lhs.parent_name, lhs)
-            rhs_parent_symm = other.symmetries.get(rhs.parent_name, rhs)
-            is_equiv['parent_name'] = lhs_parent_symm == rhs_parent_symm
+        def _joints_equivalent(self, other):
+            def make_joint_attr_array(assembly):
+                def get_attrs(joint):
+                    joint_index = self.joint_vocab[joint.name]
+                    joint_type_index = self.joint_type_vocab[joint.joint_type]
+                    parent_index = self.link_vocab[joint.parent_name]
+                    child_index = self.link_vocab[joint.child_name]
+                    return [joint_index, joint_type_index, parent_index, child_index]
 
-            # FIXME: all joints must have the SAME rotation for equivalence
-            lhs_child_symm = self.symmetries.get(lhs.child_name, lhs)
-            rhs_child_symm = other.symmetries.get(rhs.child_name, rhs)
-            is_equiv['child_name'] = lhs_child_symm == rhs_child_symm
+                joint_attrs = np.array([
+                    get_attrs(assembly.joints[name])
+                    for name in self.joint_names
+                    if self.joints[name].joint_type != 'imaginary'
+                ])
+                return joint_attrs
 
-            return all(is_equiv.values())
+            def links_equivalent_upto_symmetry(lhs, rhs):
+                def eq_symm(lhs, rhs):
+                    lhs_symmetries = np.array(
+                        [list(self.index_symmetries[index]) for index in lhs]
+                    )
+                    all_symmetries_match = np.all(
+                        (lhs_symmetries == rhs[:, None]) * (lhs_symmetries != -1),
+                        axis=0
+                    )
+                    return all_symmetries_match.any()
 
-        if not set(self.link_names) <= set(other.link_names):
-            return False
+                def eq_nosymm(lhs, rhs):
+                    return lhs == rhs
 
-        links_predicate = all(
-            self.links[name] == other.links[name]
-            for name in self.link_names
-        )
+                has_symm = np.array([
+                    True if index in self.index_symmetries else False
+                    for index in lhs
+                ])
 
-        if not set(self.joint_names) <= set(other.joint_names):
-            return False
+                is_equivalent = np.zeros_like(lhs, dtype=bool)
+                is_equivalent[has_symm] = eq_symm(lhs[has_symm], rhs[has_symm])
+                is_equivalent[~has_symm] = eq_nosymm(lhs[~has_symm], rhs[~has_symm])
+                return is_equivalent
 
-        joints_predicate = all(
-            # FIXME: all joints must have the SAME rotation for equivalence
-            joints_equiv(self.joints[name], other.joints[name])
-            for name in self.joint_names
-            if not self.joints[name].joint_type == 'imaginary'
-        )
+            if not set(self.joint_indices.tolist()) <= set(other.joint_indices.tolist()):
+                return False
 
-        return links_predicate and joints_predicate
+            self_joint_attrs = make_joint_attr_array(self)
+            other_joint_attrs = make_joint_attr_array(other)
+
+            attrs_equivalent = np.zeros_like(self_joint_attrs, dtype=bool)
+            attrs_equivalent[:, :2] = self_joint_attrs[:, :2] == other_joint_attrs[:, :2]
+            attrs_equivalent[:, 2] = links_equivalent_upto_symmetry(
+                self_joint_attrs[:, 2], other_joint_attrs[:, 2]
+            )
+            attrs_equivalent[:, 3] = links_equivalent_upto_symmetry(
+                self_joint_attrs[:, 3], other_joint_attrs[:, 3]
+            )
+
+            return np.all(attrs_equivalent)
+
+        if not any(self.joints):
+            return True
+
+        return _links_equivalent(self, other) and _joints_equivalent(self, other)
 
     def __eq__(self, other):
         return (self <= other) and (other <= self)
@@ -485,7 +539,7 @@ def has_sym(joint, joints):
     return any(is_sym)
 
 
-def _from_blockassembly(block_assembly):
+def _from_blockassembly(block_assembly, link_vocab={}, joint_vocab={}, joint_type_vocab={}):
     UNIT_LEN_IN_MM = np.array([15.9, 15.9, 19.2])
 
     def get_pose(block):
@@ -507,11 +561,6 @@ def _from_blockassembly(block_assembly):
         t_diff = (t_child - R_diff.apply(t_parent))
 
         transform = RigidTransform(translation=t_diff, rotation=R_diff)
-
-        # FIXME: Remove check once everything works
-        t_child_pred = transform.apply(t_parent)
-        if not np.allclose(t_child, t_child_pred):
-            raise AssertionError(f"{t_child} != {t_child_pred}")
         return transform
 
     def get_all_stud_coords(block):
@@ -539,7 +588,7 @@ def _from_blockassembly(block_assembly):
 
             symmetries = {
                 (block.index, i): tuple((block.index, j) for j in row)
-                for i, row in enumerate(symmetries)
+                for i, row in enumerate(symmetries) if i >= 0
             }
             return symmetries
 
@@ -560,16 +609,12 @@ def _from_blockassembly(block_assembly):
             for i, position in enumerate(positions)
         ]
 
-        num_studs = positions.shape[0]
-        if num_studs == 8:
-            num_rotations = 4
-        elif num_studs == 16:
-            num_rotations = 2
-        else:
-            raise AssertionError(f"Expected 8 or 16 studs, but got {num_studs}")
-        symmetries = makeSymmetries(positions, num_rotations=num_rotations)
+        symmetries = makeSymmetries(positions)
 
-        block = Assembly(links=links, joints=joints, symmetries=symmetries)
+        block = Assembly(
+            links=links, joints=joints, symmetries=symmetries,
+            link_vocab=link_vocab, joint_vocab=joint_vocab, joint_type_vocab=joint_type_vocab
+        )
         return block
 
     def combine_block_subassemblies(blocks, block_assembly):
@@ -580,13 +625,17 @@ def _from_blockassembly(block_assembly):
             # array has dims: parent studs, child studs, 3
             stud_distances = parent_studs[:, None, :] - child_studs[None, :, :]
 
-            unit_ew = np.array([1, 0, 0])
-            unit_ns = np.array([0, 1, 0])
-            is_connected_ud = (stud_distances == 0).all(axis=2)
-            is_connected_ew = (np.abs(stud_distances) == unit_ew[None, None, :]).all(axis=2)
-            is_connected_ns = (np.abs(stud_distances) == unit_ns[None, None, :]).all(axis=2)
+            unit_ew = np.array([1, 0, 0])[None, None, :]
+            unit_ns = np.array([0, 1, 0])[None, None, :]
+            is_connected_ud = np.isclose(stud_distances, 0).all(axis=2)
+            is_connected_ew = np.isclose(np.abs(stud_distances), unit_ew).all(axis=2)
+            is_connected_ns = np.isclose(np.abs(stud_distances), unit_ns).all(axis=2)
             is_connected = is_connected_ud | is_connected_ew | is_connected_ns
             stud_edges = np.column_stack(np.nonzero(is_connected))
+
+            if not stud_edges.any():
+                err_str = f"No stud connections found for edge {parent.name} -> {child.name}"
+                raise AssertionError(err_str)
 
             joints = {
                 ((parent.index, parent_stud_id), (child.index, child_stud_id)): Joint(
@@ -625,7 +674,10 @@ def _from_blockassembly(block_assembly):
         for name, block in blocks.items():
             symmetries.update(block.symmetries)
 
-        assembly = Assembly(links=links, joints=joints, symmetries=symmetries)
+        assembly = Assembly(
+            links=links, joints=joints, symmetries=symmetries,
+            link_vocab=link_vocab, joint_vocab=joint_vocab, joint_type_vocab=joint_type_vocab
+        )
         return assembly
 
     block_subassemblies = {

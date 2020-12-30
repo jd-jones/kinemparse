@@ -149,13 +149,23 @@ def main(
     }
     attribute_labels = tuple(edge_labels[name] for name in modalities)
 
-    new_vocab = tuple(Assembly.from_blockassembly(a) for a in vocab)
-    for i, a in enumerate(new_vocab):
-        for j, b in enumerate(new_vocab):
-            are_equiv = a == b
+    link_vocab = {}
+    joint_vocab = {}
+    joint_type_vocab = {}
+    new_vocab = tuple(
+        Assembly.from_blockassembly(
+            a, link_vocab=link_vocab, joint_vocab=joint_vocab,
+            joint_type_vocab=joint_type_vocab
+        )
+        for a in vocab
+    )
+    for i, assembly_a in enumerate(new_vocab):
+        for j, assembly_b in enumerate(new_vocab):
+            are_equiv = assembly_a == assembly_b
             if are_equiv and not i == j:
                 logger.info(f"{i} == {j}")
-    import pdb; pdb.set_trace()
+            if not are_equiv and i == j:
+                logger.info(f"{i} != {j}")
     for a in new_vocab:
         a.compute_link_poses()
 
@@ -183,7 +193,7 @@ def main(
 
     R, t = canonicalPose()
 
-    for i, assembly in enumerate(vocab[1:25], start=1):
+    for i, assembly in enumerate(vocab[1:], start=1):
         rgb_images, depth_images, label_images = sim2real.renderTemplates(
             renderer, assembly, t, R
         )
@@ -193,7 +203,7 @@ def main(
             file_path=os.path.join(fig_dir, f"{i:03d}_old.png")
         )
 
-    for i, assembly in enumerate(new_vocab[1:25], start=1):
+    for i, assembly in enumerate(new_vocab[1:], start=1):
         G = lib_assembly.draw_graph(assembly, name=f'{i:03d}_graph')
         G.render(directory=fig_dir, format='png', cleanup=True)
 
