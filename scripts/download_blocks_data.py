@@ -83,6 +83,7 @@ def loadMetadata(metadata_file, metadata_criteria={}):
     metadata['VidID'] = metadata['VidID'].astype(int)
     metadata['TaskID'] = metadata['TaskID'].astype(int)
 
+    metadata = metadata.set_index('VidID', verify_integrity=True)
     return metadata
 
 
@@ -116,6 +117,7 @@ def main(
     selected_frame_indices = slice(None, None, subsample_period)
 
     metadata = loadMetadata(metadata_file, metadata_criteria=metadata_criteria)
+    metadata.to_csv(os.path.join(out_data_dir, 'metadata.csv'), index=True)
 
     corpus = duplocorpus.DuploCorpus(corpus_name)
     trial_ids = metadata['VidID']

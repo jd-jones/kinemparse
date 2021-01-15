@@ -1,36 +1,66 @@
 #!/bin/bash
 set -ue
 
+# -=( SET DEFAULTS )==---------------------------------------------------------
+# DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
-
-start_at="9"
-stop_after="11"
 
 data_dir="${output_dir}/raw-data"
 background_dir="${output_dir}/background-detections"
 detections_dir="${output_dir}/object-detections"
 seg_labels_dir="${output_dir}/image-segment-labels"
 sim_pretrain_dir="${output_dir}/pretrained-models-sim"
-edge_label_dir="${output_dir}/edge-label-preds"
-edge_label_smoothed_dir="${output_dir}/edge-label-preds-smoothed"
-assembly_scores_dir="${output_dir}/assembly-scores"
-decode_dir="${output_dir}/assembly-decode"
+edge_label_dir="${output_dir}/edge-label-preds_rgb"
+edge_label_smoothed_dir="${output_dir}/edge-label-preds-smoothed_rgb"
 
 edge_label_batches_dir="${edge_label_dir}/batches"
-edge_label_eval_dir="${edge_label_dir}/eval"
+# edge_label_eval_dir="${edge_label_dir}/eval"
+edge_label_eval_dir="${edge_label_dir}_eval_TEST"
 smoothed_eval_dir="${edge_label_smoothed_dir}/eval"
-decode_eval_dir="${decode_dir}/eval"
 
+start_at="0"
+stop_after="100"
+
+debug_str=""
+
+
+# -=( PARSE CLI ARGS )==-------------------------------------------------------
+for arg in "$@"; do
+	case $arg in
+		-s=*|--start_at=*)
+			start_at="${arg#*=}"
+			shift
+			;;
+		-e=*|--stop_after=*)
+			stop_after="${arg#*=}"
+			shift
+			;;
+		--stage=*)
+			start_at="${arg#*=}"
+			stop_after="${arg#*=}"
+			shift
+			;;
+        --debug)
+            debug_str="-m pdb"
+            ;;
+		*) # Unknown option: print help and exit
+            # TODO: print help
+            exit 0
+			;;
+	esac
+done
+
+
+# -=( MAIN SCRIPT )==----------------------------------------------------------
 cd ${scripts_dir}
-
 STAGE=0
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Detect background"
-    python detect_background.py \
+    python ${debug_str} detect_background.py \
         --out_dir "${background_dir}" \
         --data_dir "${data_dir}/data" \
         --background_data_dir "${data_dir}/data" \
@@ -45,7 +75,7 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Detect objects"
-    python detect_objects.py \
+    python ${debug_str} detect_objects.py \
         --out_dir "${detections_dir}" \
         --data_dir "${data_dir}/data" \
         --gpu_dev_id "'0'" \
@@ -59,7 +89,7 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Label foreground segments"
-    python make_seg_labels.py \
+    python ${debug_str} make_seg_labels.py \
         --out_dir "${seg_labels_dir}" \
         --data_dir "${data_dir}/data" \
         --bg_masks_dir "${background_dir}/data" \
@@ -74,7 +104,7 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Pre-train assembly detector"
-    python train_assembly_detector.py \
+    python ${debug_str} train_assembly_detector.py \
         --out_dir "${sim_pretrain_dir}" \
         --data_dir "${data_dir}/data" \
         --pretrain_dir "${sim_pretrain_dir}/data" \
@@ -95,7 +125,7 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Predict edge labels"
-    python predict_edge_labels.py \
+    python ${debug_str} predict_edge_labels.py \
         --out_dir "${edge_label_batches_dir}" \
         --data_dir "${data_dir}/data" \
         --segs_dir "${seg_labels_dir}/data" \
@@ -122,11 +152,12 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate edge label predictions"
-    python eval_system_output.py \
+    python ${debug_str} eval_system_output.py \
         --out_dir "${edge_label_eval_dir}" \
         --data_dir "${data_dir}/data" \
         --segs_dir "${seg_labels_dir}/data" \
         --scores_dir "${edge_label_dir}/data" \
+        --vocab_dir "${sim_pretrain_dir}/data" \
         --gpu_dev_id "'2'" \
         --num_disp_imgs "10"
     python analysis.py \
@@ -140,7 +171,7 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Smooth predictions"
-    python predict_seq_pytorch.py \
+    python ${debug_str} predict_seq_pytorch.py \
         --out_dir "${edge_label_smoothed_dir}" \
         --data_dir "${edge_label_dir}/data" \
         --feature_fn_format "score-seq.pkl" \
@@ -170,11 +201,12 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate smoothed predictions"
-    python eval_system_output.py \
+    python ${debug_str} eval_system_output.py \
         --out_dir "${smoothed_eval_dir}" \
         --data_dir "${data_dir}/data" \
         --segs_dir "${seg_labels_dir}/data" \
         --scores_dir "${edge_label_smoothed_dir}/data" \
+        --vocab_dir "${sim_pretrain_dir}/data" \
         --gpu_dev_id "'2'" \
         --num_disp_imgs "10"
     python analysis.py \

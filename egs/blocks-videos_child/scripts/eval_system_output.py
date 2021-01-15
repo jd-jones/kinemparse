@@ -11,6 +11,7 @@ import torch
 
 from mathtools import utils, torchutils, metrics
 from kinemparse import sim2real
+from kinemparse import assembly as lib_assembly
 from visiontools import imageprocessing
 
 from blocks.core import definitions as defn
@@ -93,13 +94,11 @@ def render(dataset, assembly):
         t = torch.stack((torch.zeros_like(angles),) * 3, dim=1).float().cuda()
         return R, t
 
-    if not assembly.blocks:
+    if not assembly.links:
         return np.zeros((dataset.crop_size // 2, dataset.crop_size // 2, 3))
 
     R, t = canonicalPose()
-    rgb_batch, depth_batch, label_batch = sim2real.renderTemplates(
-        dataset.renderer, assembly, t, R
-    )
+    rgb_batch, depth_batch, label_batch = lib_assembly.render(dataset.renderer, assembly, t, R)
     rgb_crop = sim2real._crop(rgb_batch[0], label_batch[0], dataset.crop_size // 2)
     rgb_crop /= rgb_crop.max()
     return rgb_crop.cpu().numpy()
@@ -186,6 +185,38 @@ def oov_rate(test_labels, train_labels):
     return prop_oov
 
 
+def edge_labels_to_assembly_labels(edge_label_seq, assembly_vocab, edge_vocab):
+    rows, cols = np.tril_indices(8, k=-1)
+    keys = {
+        i: frozenset((int(r), int(c)))
+        for i, (r, c) in enumerate(zip(rows, cols))
+    }
+
+    link_vocab = edge_vocab[keys[0]][0].link_vocab
+    joint_vocab = edge_vocab[keys[0]][0].joint_vocab
+    joint_type_vocab = edge_vocab[keys[0]][0].joint_type_vocab
+
+    def get_assembly_label(edge_labels):
+        edges = tuple(
+            edge_vocab[keys[edge_index]][edge_label - 1]
+            for edge_index, edge_label in enumerate(edge_labels)
+            if edge_label
+        )
+        assembly = lib_assembly.union(
+            *edges,
+            link_vocab=link_vocab,
+            joint_vocab=joint_vocab,
+            joint_type_vocab=joint_type_vocab
+        )
+        assembly_label = utils.getIndex(assembly, assembly_vocab)
+        return assembly_label
+
+    edge_segs, seg_lens = utils.computeSegments(edge_label_seq)
+    assembly_segs = tuple(get_assembly_label(edge_labels) for edge_labels in edge_segs)
+    assembly_label_seq = np.array(utils.fromSegments(assembly_segs, seg_lens))
+    return assembly_label_seq
+
+
 def main(
         out_dir=None, data_dir=None, segs_dir=None, scores_dir=None, vocab_dir=None,
         label_type='edges', gpu_dev_id=None, start_from=None, stop_at=None, num_disp_imgs=None,
@@ -234,6 +265,35 @@ def main(
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
 
+    def load_vocab(link_vocab, joint_vocab, joint_type_vocab):
+        assembly_vocab = loadVariable('vocab', from_dir=vocab_dir)
+        # FIXME: Convert keys from vertex pairs to edge indices
+        edge_vocab = loadVariable('parts-vocab', from_dir=vocab_dir)
+        edge_labels = loadVariable('part-labels', from_dir=vocab_dir)
+
+        assembly_vocab = tuple(
+            lib_assembly.Assembly.from_blockassembly(
+                a,
+                link_vocab=link_vocab,
+                joint_vocab=joint_vocab,
+                joint_type_vocab=joint_type_vocab
+            )
+            for a in assembly_vocab
+        )
+
+        edge_vocab = {
+            edge_key: tuple(
+                lib_assembly.Assembly.from_blockassembly(
+                    a, link_vocab=link_vocab, joint_vocab=joint_vocab,
+                    joint_type_vocab=joint_type_vocab
+                )
+                for a in assemblies
+            )
+            for edge_key, assemblies in edge_vocab.items()
+        }
+
+        return assembly_vocab, edge_vocab, edge_labels
+
     seq_ids = utils.getUniqueIds(scores_dir, prefix='trial=', to_array=True)
     label_seqs = tuple(
         loadVariable(f"trial={seq_id}_true-label-seq", from_dir=scores_dir)
@@ -241,12 +301,19 @@ def main(
     )
     num_seqs = len(label_seqs)
 
-    vocab = loadVariable('vocab', from_dir=vocab_dir)
-    parts_vocab = loadVariable('parts-vocab', from_dir=vocab_dir)
-    part_labels = loadVariable('part-labels', from_dir=vocab_dir)
+    link_vocab = {}
+    joint_vocab = {}
+    joint_type_vocab = {}
+    vocab, parts_vocab, part_labels = load_vocab(link_vocab, joint_vocab, joint_type_vocab)
+    pred_vocab = []  # FIXME
 
     device = torchutils.selectDevice(gpu_dev_id)
-    dataset = sim2real.LabeledConnectionDataset(parts_vocab, part_labels, vocab, device=device)
+    dataset = sim2real.LabeledConnectionDataset(
+        loadVariable('parts-vocab', from_dir=vocab_dir),
+        loadVariable('part-labels', from_dir=vocab_dir),
+        loadVariable('vocab', from_dir=vocab_dir),
+        device=device
+    )
 
     for seq_index, seq_id in enumerate(seq_ids):
         logger.info(f"  Processing sequence {seq_id}...")
@@ -289,6 +356,16 @@ def main(
             pred_seq = part_labels[pred_seq]
             true_seq = part_labels[true_seq]
         else:
+            assembly_pred_seq = edge_labels_to_assembly_labels(
+                pred_seq, pred_vocab, parts_vocab
+            )
+            num_types = np.unique(assembly_pred_seq).shape[0]
+            num_samples = assembly_pred_seq.shape[0]
+            num_total = len(pred_vocab)
+            logger.info(
+                f"    {num_types} assemblies predicted ({num_total} total); "
+                f"{num_samples} samples"
+            )
             metric_dict = {}
 
         metric_dict = eval_metrics(pred_seq, true_seq, append_to=metric_dict)
@@ -303,17 +380,26 @@ def main(
                 fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
             )
 
-            if rgb_seq.shape[0] > num_disp_imgs:
-                idxs = np.arange(rgb_seq.shape[0])
-                np.random.shuffle(idxs)
-                idxs = idxs[:num_disp_imgs]
-                idxs = np.sort(idxs)
-            else:
-                idxs = slice(None, None, None)
-            plot_io(
-                rgb_seq[idxs], seg_seq[idxs], pred_seq[idxs], true_seq[idxs], dataset,
-                file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}.png")
-            )
+            # FIXME
+            if False:
+                if rgb_seq.shape[0] > num_disp_imgs:
+                    idxs = np.arange(rgb_seq.shape[0])
+                    np.random.shuffle(idxs)
+                    idxs = idxs[:num_disp_imgs]
+                    idxs = np.sort(idxs)
+                else:
+                    idxs = slice(None, None, None)
+                plot_io(
+                    rgb_seq[idxs], seg_seq[idxs], pred_seq[idxs], true_seq[idxs], dataset,
+                    file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}.png")
+                )
+
+    for i, a in enumerate(pred_vocab):
+        pred_image = render(dataset, a)
+        imageprocessing.displayImage(
+            pred_image,
+            file_path=os.path.join(io_dir_images, f"pred_class={i:04d}.png")
+        )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@ import warnings
 import logging
 
 import yaml
-import joblib
 import numpy as np
 from matplotlib import pyplot as plt
 
@@ -128,8 +127,10 @@ def plot_train(objectives, fn=None):
 def main(
         out_dir=None, data_dir=None, scores_dir=None, model_name=None,
         results_file=None, sweep_param_name=None,
+        feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
         pre_init_pw=None, transitions=None,
         model_params={}, cv_params={}, train_params={}, viz_params={},
+        metric_names=['accuracy', 'edit_score', 'overlap_score'],
         plot_predictions=None):
 
     data_dir = os.path.expanduser(data_dir)
@@ -152,59 +153,37 @@ def main(
     if not os.path.exists(io_fig_dir):
         os.makedirs(io_fig_dir)
 
+    train_fig_dir = os.path.join(fig_dir, 'train-plots')
+    if not os.path.exists(train_fig_dir):
+        os.makedirs(train_fig_dir)
+
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def loadVariable(var_name):
-        return joblib.load(os.path.join(data_dir, f'{var_name}.pkl'))
-
-    def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
-
-    def loadAll(seq_ids, var_name, data_dir):
-        def loadOne(seq_id):
-            fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
-            return joblib.load(fn)
-        return tuple(map(loadOne, seq_ids))
+    def saveVariable(var, var_name, to_dir=out_data_dir):
+        return utils.saveVariable(var, var_name, to_dir)
 
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=')
-    label_seqs = loadAll(trial_ids, 'label-seq.pkl', data_dir)
-    num_states = max(labels.max() for labels in label_seqs) + 1
-
-    if scores_dir is None:
-        feature_seqs = loadAll(trial_ids, 'feature-seq.pkl', data_dir)
-    else:
-        scores_dir = os.path.expanduser(scores_dir)
-        feature_seqs = tuple(
-            joblib.load(
-                os.path.join(scores_dir, f'trial={trial_id}_score-seq.pkl')
-            ).swapaxes(0, 1)
-            for trial_id in trial_ids
-        )
-        num_states = feature_seqs[0].shape[0]
+    trial_ids = utils.getUniqueIds(
+        data_dir, prefix='trial=', suffix=feature_fn_format,
+        to_array=True
+    )
+    dataset = utils.CvDataset(
+        trial_ids, data_dir,
+        feature_fn_format=feature_fn_format, label_fn_format=label_fn_format,
+        feat_transform=lambda x: np.swapaxes(x, 0, 1)
+    )
+    utils.saveMetadata(dataset.metadata, out_data_dir)
+    utils.saveVariable(dataset.vocab, 'vocab', out_data_dir)
 
     # Define cross-validation folds
-    dataset_size = len(trial_ids)
-    cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
+    cv_folds = utils.makeDataSplits(len(trial_ids), **cv_params)
+    utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
-    metric_dict = {
-        'accuracy': [],
-        'edit_score': [],
-        'overlap_score': []
-    }
-
-    def getSplit(split_idxs):
-        split_data = tuple(
-            tuple(s[i] for i in split_idxs)
-            for s in (feature_seqs, label_seqs, trial_ids)
-        )
-        return split_data
-
-    for cv_index, cv_splits in enumerate(cv_folds):
-        train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
-
+    metric_dict = {name: [] for name in metric_names}
+    for cv_index, cv_fold in enumerate(cv_folds):
+        train_data, val_data, test_data = dataset.getFold(cv_fold)
         train_samples, train_labels, train_ids = train_data
         val_samples, val_labels, val_ids = val_data
         test_samples, test_labels, test_ids = test_data
@@ -216,12 +195,17 @@ def main(
 
         model = getattr(LCTM.models, model_name)(**model_params)
 
+        # -=( TRAIN PHASE )==--------------------------------------------------
         if pre_init_pw:
             if transitions is None:
                 transition_probs, start_probs, end_probs = su.smoothCounts(
                     *su.countSeqs(train_labels),
-                    num_states=num_states
+                    num_states=dataset.num_states
                 )
+                # Overwrite transitions by loading from file, if it exists
+                if os.path.exists(os.path.join(data_dir, 'transition-probs.pkl')):
+                    logger.info("Overriding transition probs from file")
+                    transition_probs = utils.loadVariable('transition-probs', from_dir=data_dir)
             else:
                 transition_probs = np.zeros((model.n_classes, model.n_classes), dtype=float)
                 for cur_state, next_states in transitions.items():
@@ -241,17 +225,12 @@ def main(
                 model, train_samples, train_labels,
                 pretrain=pretrain, transition_scores=transition_scores,
                 start_scores=start_scores, end_scores=end_scores,
-                num_states=num_states
+                num_states=dataset.num_states
             )
         else:
             model.fit(train_samples, train_labels, **train_params)
-            # FIXME: Is this even necessary?
             if model_params.get('inference', None) == 'segmental':
                 model.max_segs = LCTM.utils.max_seg_count(train_labels)
-
-        train_fig_dir = os.path.join(fig_dir, 'train-plots')
-        if not os.path.exists(train_fig_dir):
-            os.makedirs(train_fig_dir)
 
         plot_weights(
             model, fn=os.path.join(train_fig_dir, f"cvfold={cv_index}_model-weights-trained.png")
@@ -261,7 +240,7 @@ def main(
             fn=os.path.join(train_fig_dir, f"cvfold={cv_index}_train-loss.png")
         )
 
-        # Test model
+        # -=( TEST PHASE )==---------------------------------------------------
         pred_labels = model.predict(test_samples)
         test_io_history = tuple(
             zip([pred_labels], [test_samples], [test_samples], [test_labels], [test_ids])
@@ -273,9 +252,12 @@ def main(
         metric_str = '  '.join(f"{k}: {v[-1]:.1f}%" for k, v in metric_dict.items())
         logger.info('[TST]  ' + metric_str)
 
-        d = {k: v[-1] / 100 for k, v in metric_dict.items()}
-        utils.writeResults(results_file, d, sweep_param_name, model_params)
+        utils.writeResults(
+            results_file, {k: v[-1] / 100 for k, v in metric_dict.items()},
+            sweep_param_name, model_params
+        )
 
+        # -=( MAKE OUTPUT )==--------------------------------------------------
         if plot_predictions:
             label_names = ('gt', 'pred')
             preds, scores, inputs, gt_labels, ids = zip(*test_io_history)
@@ -284,19 +266,12 @@ def main(
                     fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
                     utils.plot_array(inputs, (gt_labels, preds), label_names, fn=fn, **viz_params)
 
-        def saveTrialData(batch):
+        saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
+        for batch in test_io_history:
             for pred_seq, score_seq, feat_seq, label_seq, trial_id in zip(*batch):
                 saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
                 saveVariable(score_seq.T, f'trial={trial_id}_score-seq')
                 saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
-        for batch in test_io_history:
-            saveTrialData(batch)
-
-        saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
-        saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
-        saveVariable(val_ids, f'cvfold={cv_index}_val-ids')
-        saveVariable(metric_dict, f'cvfold={cv_index}_{model_name}-metric-dict')
-        saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
 
 
 if __name__ == "__main__":

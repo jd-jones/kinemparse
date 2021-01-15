@@ -3,13 +3,9 @@ import collections
 import logging
 
 import yaml
-import joblib
 import torch
-import numpy as np
 
 from mathtools import utils, torchutils, metrics
-# from seqtools import fstutils_gtn as libfst
-from seqtools import utils as su
 
 
 logger = logging.getLogger(__name__)
@@ -120,11 +116,20 @@ class TcnClassifier(torch.nn.Module):
         return preds
 
 
+def makeDataset(feats, labels, ids, device=None, labels_dtype=torch.int, **dataset_params):
+    dataset = torchutils.SequenceDataset(
+        feats, labels, device=device, labels_dtype=labels_dtype, seq_ids=ids,
+        **dataset_params
+    )
+    return dataset
+
+
 def main(
         out_dir=None, data_dir=None, model_name=None, predict_mode='classify',
         gpu_dev_id=None, batch_size=None, learning_rate=None,
         feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
         dataset_params={}, model_params={}, cv_params={}, train_params={}, viz_params={},
+        metric_names=['Loss', 'Accuracy', 'Precision', 'Recall', 'F1'],
         plot_predictions=None, results_file=None, sweep_param_name=None):
 
     data_dir = os.path.expanduser(data_dir)
@@ -147,35 +152,27 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
-
-    def loadAll(seq_ids, var_name, data_dir):
-        def loadOne(seq_id):
-            fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
-            return joblib.load(fn)
-        return tuple(map(loadOne, seq_ids))
+    def saveVariable(var, var_name, to_dir=out_data_dir):
+        return utils.saveVariable(var, var_name, to_dir)
 
     # Load data
-    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
-    feature_seqs = loadAll(trial_ids, feature_fn_format, data_dir)
-    label_seqs = loadAll(trial_ids, label_fn_format, data_dir)
-
     device = torchutils.selectDevice(gpu_dev_id)
+    trial_ids = utils.getUniqueIds(
+        data_dir, prefix='trial=', suffix=feature_fn_format,
+        to_array=True
+    )
+    dataset = utils.CvDataset(
+        trial_ids, data_dir,
+        feature_fn_format=feature_fn_format, label_fn_format=label_fn_format
+    )
+    utils.saveMetadata(dataset.metadata, out_data_dir)
+    utils.saveVariable(dataset.vocab, 'vocab', out_data_dir)
 
     # Define cross-validation folds
-    dataset_size = len(trial_ids)
-    cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
-
-    def getSplit(split_idxs):
-        split_data = tuple(
-            tuple(s[i] for i in split_idxs)
-            for s in (feature_seqs, label_seqs, trial_ids)
-        )
-        return split_data
+    cv_folds = utils.makeDataSplits(len(trial_ids), **cv_params)
+    utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     if predict_mode == 'binary multiclass':
-        # criterion = torch.nn.BCEWithLogitsLoss()
         criterion = torchutils.BootstrappedCriterion(
             0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
         )
@@ -189,40 +186,19 @@ def main(
     else:
         raise AssertionError()
 
-    for cv_index, cv_splits in enumerate(cv_folds):
-        train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
-
-        train_feats, train_labels, train_ids = train_data
-        train_set = torchutils.SequenceDataset(
-            train_feats, train_labels,
-            device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
-            **dataset_params
-        )
-        train_loader = torch.utils.data.DataLoader(
-            train_set, batch_size=batch_size, shuffle=True
+    for cv_index, cv_fold in enumerate(cv_folds):
+        train_set, val_set, test_set = tuple(
+            makeDataset(*data, device=device, labels_dtype=labels_dtype, **dataset_params)
+            for data in dataset.getFold(cv_fold)
         )
 
-        test_feats, test_labels, test_ids = test_data
-        test_set = torchutils.SequenceDataset(
-            test_feats, test_labels,
-            device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
-            **dataset_params
-        )
-        test_loader = torch.utils.data.DataLoader(
-            test_set, batch_size=batch_size, shuffle=False
-        )
-
-        val_feats, val_labels, val_ids = val_data
-        val_set = torchutils.SequenceDataset(
-            val_feats, val_labels,
-            device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
-            **dataset_params
-        )
+        train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
         val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
 
         logger.info(
-            f'CV fold {cv_index + 1} / {len(cv_folds)}: {len(trial_ids)} total '
-            f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
+            f'CV fold {cv_index + 1} / {len(cv_folds)}: {len(dataset.trial_ids)} total '
+            f'({len(train_set)} train, {len(val_set)} val, {len(test_set)} test)'
         )
 
         input_dim = train_set.num_obsv_dims
@@ -247,61 +223,31 @@ def main(
                 input_dim, output_dim, num_multiclass=num_multiclass,
                 **model_params
             ).to(device=device)
-        elif model_name == 'dummy':
-            model = DummyClassifier(input_dim, output_dim, **model_params)
-        elif model_name == 'LatticeCRF':
-            libfst = None  # FIXME
-            vocabulary = np.unique(np.hstack(label_seqs))
-            transition_probs, initial_probs, final_probs = su.smoothCounts(
-                *su.countSeqs(train_labels),
-                num_states=max(vocabulary) + 1
-            )
-            model = libfst.LatticeCrf(
-                vocabulary,
-                transition_weights=torch.tensor(transition_probs, dtype=torch.float).log(),
-                initial_weights=torch.tensor(initial_probs, dtype=torch.float).log(),
-                final_weights=torch.tensor(final_probs, dtype=torch.float).log(),
-            )
-            criterion = model.nllLoss
         else:
             raise AssertionError()
 
-        if model_name != 'dummy':
-            train_epoch_log = collections.defaultdict(list)
-            val_epoch_log = collections.defaultdict(list)
-            metric_dict = {
-                'Avg Loss': metrics.AverageLoss(),
-                'Accuracy': metrics.Accuracy(),
-                'Precision': metrics.Precision(),
-                'Recall': metrics.Recall(),
-                'F1': metrics.Fmeasure()
-            }
+        optimizer_ft = torch.optim.Adam(
+            model.parameters(), lr=learning_rate,
+            betas=(0.9, 0.999), eps=1e-08,
+            weight_decay=0, amsgrad=False
+        )
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=1.00)
 
-            optimizer_ft = torch.optim.Adam(
-                model.parameters(), lr=learning_rate,
-                betas=(0.9, 0.999), eps=1e-08,
-                weight_decay=0, amsgrad=False
-            )
-            lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=1.00)
-
-            model, last_model_wts = torchutils.trainModel(
-                model, criterion, optimizer_ft, lr_scheduler,
-                train_loader, val_loader,
-                device=device,
-                metrics=metric_dict,
-                train_epoch_log=train_epoch_log,
-                val_epoch_log=val_epoch_log,
-                **train_params
-            )
+        train_epoch_log = collections.defaultdict(list)
+        val_epoch_log = collections.defaultdict(list)
+        metric_dict = {name: metrics.makeMetric(name) for name in metric_names}
+        model, last_model_wts = torchutils.trainModel(
+            model, criterion, optimizer_ft, lr_scheduler,
+            train_loader, val_loader,
+            device=device,
+            metrics=metric_dict,
+            train_epoch_log=train_epoch_log,
+            val_epoch_log=val_epoch_log,
+            **train_params
+        )
 
         # Test model
-        metric_dict = {
-            'Avg Loss': metrics.AverageLoss(),
-            'Accuracy': metrics.Accuracy(),
-            'Precision': metrics.Precision(),
-            'Recall': metrics.Recall(),
-            'F1': metrics.Fmeasure()
-        }
+        metric_dict = {name: metrics.makeMetric(name) for name in metric_names}
         test_io_history = torchutils.predictSamples(
             model.to(device=device), test_loader,
             criterion=criterion, device=device,
@@ -309,9 +255,7 @@ def main(
             seq_as_batch=train_params['seq_as_batch'],
             return_io_history=True
         )
-
-        metric_str = '  '.join(str(m) for m in metric_dict.values())
-        logger.info('[TST]  ' + metric_str)
+        logger.info('[TST]  ' + '  '.join(str(m) for m in metric_dict.values()))
 
         utils.writeResults(
             results_file, {k: v.value for k, v in metric_dict.items()},
@@ -334,36 +278,29 @@ def main(
                     fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
                     utils.plot_array(inputs, (gt_labels.T, preds.T), label_names, fn=fn)
 
-        def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, trial_id):
-            saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
-            saveVariable(score_seq, f'trial={trial_id}_score-seq')
-            saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
         for batch in test_io_history:
             batch = tuple(
                 x.cpu().numpy() if isinstance(x, torch.Tensor) else x
                 for x in batch
             )
-            for io in zip(*batch):
-                saveTrialData(*io)
+            for pred_seq, score_seq, feat_seq, label_seq, trial_id in zip(*batch):
+                saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
+                saveVariable(score_seq, f'trial={trial_id}_score-seq')
+                saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
 
-        saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
-        saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
-        saveVariable(val_ids, f'cvfold={cv_index}_val-ids')
-        saveVariable(train_epoch_log, f'cvfold={cv_index}_{model_name}-train-epoch-log')
-        saveVariable(val_epoch_log, f'cvfold={cv_index}_{model_name}-val-epoch-log')
-        saveVariable(metric_dict, f'cvfold={cv_index}_{model_name}-metric-dict')
         saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
 
         train_fig_dir = os.path.join(fig_dir, 'train-plots')
         if not os.path.exists(train_fig_dir):
             os.makedirs(train_fig_dir)
 
-        torchutils.plotEpochLog(
-            train_epoch_log,
-            subfig_size=(10, 2.5),
-            title='Training performance',
-            fn=os.path.join(train_fig_dir, f'cvfold={cv_index}_train-plot.png')
-        )
+        if train_epoch_log:
+            torchutils.plotEpochLog(
+                train_epoch_log,
+                subfig_size=(10, 2.5),
+                title='Training performance',
+                fn=os.path.join(train_fig_dir, f'cvfold={cv_index}_train-plot.png')
+            )
 
         if val_epoch_log:
             torchutils.plotEpochLog(

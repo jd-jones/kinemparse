@@ -5,16 +5,11 @@ import yaml
 import numpy as np
 import torch
 from torch.nn import functional as F
-import joblib
 from matplotlib import pyplot as plt
-from scipy.spatial.transform import Rotation
 
+from make_fusion_dataset import FusionDataset as FusionDataset_
 from mathtools import utils, metrics, torchutils
 from blocks.core import labels
-from kinemparse.assembly import Assembly
-from kinemparse import assembly as lib_assembly
-from kinemparse import sim2real
-from visiontools import render, imageprocessing
 
 
 logger = logging.getLogger(__name__)
@@ -88,6 +83,77 @@ def resample(rgb_attribute_seq, rgb_timestamp_seq, imu_attribute_seq, imu_timest
     return rgb_attribute_seq, imu_attribute_seq
 
 
+def revise_edge_labels(edge_labels, input_seqs):
+    for rgb_scores, imu_scores in input_seqs:
+        # Make new edge labels from RGB preds
+        # FIXME: edge_labels is a dict
+        best_edge_labels = rgb_scores.argmax(axis=-1)
+        labels_match = np.all(best_edge_labels[None, :, :] == edge_labels[:, None, :], axis=-1)
+        is_oov = ~labels_match.any(axis=-1)
+        new_labels = best_edge_labels[is_oov]
+        labels_match = np.all(new_labels[None, :, :] == new_labels[:, None, :], axis=-1)
+        is_dup = np.any(labels_match * np.eye(labels_match.shape[0], dtype=bool), axis=-1)
+        new_labels = new_labels[~is_dup]
+        edge_labels = np.vstack((edge_labels, new_labels))
+
+        # TODO: convert edge labels to in-component labels
+
+    return edge_labels
+
+
+def make_transition_scores_deprecated(rgb_edge_labels):
+    num_diffs = np.sum(rgb_edge_labels[None, :, :] != rgb_edge_labels[:, None, :], axis=-1)
+    bigram_counts = (num_diffs == 1).astype(float)
+
+    denominator = bigram_counts.sum(1)
+    transition_probs = np.divide(
+        bigram_counts, denominator[:, None],
+        out=np.zeros_like(bigram_counts),
+        where=denominator[:, None] != 0
+    )
+    return transition_probs
+
+
+def make_transition_scores(vocab):
+    def is_one_block_difference(diff):
+        for i in range(diff.connections.shape[0]):
+            c = diff.connections.copy()
+            c[i, :] = 0
+            c[:, i] = 0
+            if not c.any():
+                return True
+        return False
+
+    bigram_counts = np.zeros((len(vocab), len(vocab)), dtype=float)
+    for i, a in enumerate(vocab):
+        for j, b in enumerate(vocab):
+            try:
+                diff = a - b
+            except ValueError:
+                continue
+            if is_one_block_difference(diff):
+                bigram_counts[i, j] = 1
+
+    denominator = bigram_counts.sum(1)
+    transition_probs = np.divide(
+        bigram_counts, denominator[:, None],
+        out=np.zeros_like(bigram_counts),
+        where=denominator[:, None] != 0
+    )
+    return transition_probs
+
+
+class FusionDataset(FusionDataset_):
+    def loadTargets(self, seq_id):
+        trial_prefix = f"trial={seq_id}"
+        assembly_seq = utils.loadVariable(f'{trial_prefix}_assembly-seq', self.rgb_data_dir)
+        true_label_seq = torch.tensor(
+            make_labels(assembly_seq, self.vocab),
+            dtype=torch.long, device=self.device
+        )
+        return true_label_seq
+
+
 def main(
         out_dir=None, rgb_data_dir=None, rgb_attributes_dir=None, rgb_vocab_dir=None,
         imu_data_dir=None, imu_attributes_dir=None, modalities=['rgb', 'imu'],
@@ -112,22 +178,12 @@ def main(
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
 
-    out_rgb_data_dir = os.path.join(out_dir, 'data')
-    if not os.path.exists(out_rgb_data_dir):
-        os.makedirs(out_rgb_data_dir)
+    out_data_dir = os.path.join(out_dir, 'data')
+    if not os.path.exists(out_data_dir):
+        os.makedirs(out_data_dir)
 
-    def loadVariable(var_name, from_dir=rgb_data_dir):
-        var = joblib.load(os.path.join(from_dir, f"{var_name}.pkl"))
-        return var
-
-    def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_rgb_data_dir, f'{var_name}.pkl'))
-
-    def loadAll(seq_ids, var_name, rgb_data_dir, prefix='trial='):
-        def loadOne(seq_id):
-            fn = os.path.join(rgb_data_dir, f'{prefix}{seq_id}_{var_name}')
-            return joblib.load(fn)
-        return tuple(map(loadOne, seq_ids))
+    def saveVariable(var, var_name, to_dir=out_data_dir):
+        utils.saveVariable(var, var_name, to_dir)
 
     # Load data
     rgb_trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
@@ -138,82 +194,29 @@ def main(
         f"RGB ({len(rgb_trial_ids)} total) and IMU ({len(imu_trial_ids)} total)"
     )
 
-    vocab = loadVariable('vocab', from_dir=rgb_vocab_dir)
+    device = torchutils.selectDevice(gpu_dev_id)
+    dataset = FusionDataset(
+        trial_ids, rgb_attributes_dir, rgb_data_dir, imu_attributes_dir, imu_data_dir,
+        device=device, modalities=modalities
+    )
+    utils.saveMetadata(dataset.metadata, out_data_dir)
+    saveVariable(dataset.vocab, 'vocab')
+
     # parts_vocab = loadVariable('parts-vocab')
     edge_labels = {
-        'rgb': loadVariable('part-labels', from_dir=rgb_vocab_dir),
+        'rgb': utils.loadVariable('part-labels', rgb_vocab_dir),
         'imu': np.stack([
             labels.inSameComponent(a, lower_tri_only=True)
-            for a in vocab
+            for a in dataset.vocab
         ])
     }
+    # edge_labels = revise_edge_labels(edge_labels, input_seqs)
+
     attribute_labels = tuple(edge_labels[name] for name in modalities)
 
-    link_vocab = {}
-    joint_vocab = {}
-    joint_type_vocab = {}
-    new_vocab = tuple(
-        Assembly.from_blockassembly(
-            a, link_vocab=link_vocab, joint_vocab=joint_vocab,
-            joint_type_vocab=joint_type_vocab
-        )
-        for a in vocab
-    )
-    for i, assembly_a in enumerate(new_vocab):
-        for j, assembly_b in enumerate(new_vocab):
-            are_equiv = assembly_a == assembly_b
-            if are_equiv and not i == j:
-                logger.info(f"{i} == {j}")
-            if not are_equiv and i == j:
-                logger.info(f"{i} != {j}")
-    for a in new_vocab:
-        a.compute_link_poses()
-
-    device = torchutils.selectDevice(gpu_dev_id)
-
-    intrinsic_matrix = torch.tensor(render.intrinsic_matrix, dtype=torch.float).cuda()
-    camera_pose = torch.tensor(render.camera_pose, dtype=torch.float).cuda()
-    colors = torch.tensor(render.object_colors, dtype=torch.float).cuda()
-    image_size = min(render.IMAGE_WIDTH, render.IMAGE_HEIGHT)
-    renderer = render.TorchSceneRenderer(
-        intrinsic_matrix=intrinsic_matrix,
-        camera_pose=camera_pose,
-        colors=colors,
-        light_intensity_ambient=1,
-        image_size=image_size,
-        orig_size=image_size
-    )
-
-    def canonicalPose(num_samples=1):
-        angles = torch.zeros(num_samples, dtype=torch.float)
-        rotations = Rotation.from_euler('Z', angles)
-        R = torch.tensor(rotations.as_matrix()).float().cuda()
-        t = torch.stack((torch.zeros_like(angles),) * 3, dim=1).float().cuda()
-        return R, t
-
-    R, t = canonicalPose()
-
-    for i, assembly in enumerate(vocab[1:], start=1):
-        rgb_images, depth_images, label_images = sim2real.renderTemplates(
-            renderer, assembly, t, R
-        )
-        rgb_images[rgb_images > 1] = 1
-        imageprocessing.displayImages(
-            *(rgb_images.cpu().numpy()),
-            file_path=os.path.join(fig_dir, f"{i:03d}_old.png")
-        )
-
-    for i, assembly in enumerate(new_vocab[1:], start=1):
-        G = lib_assembly.draw_graph(assembly, name=f'{i:03d}_graph')
-        G.render(directory=fig_dir, format='png', cleanup=True)
-
-        rgb_images, depth_images, label_images = lib_assembly.render(renderer, assembly, t, R)
-        rgb_images[rgb_images > 1] = 1
-        imageprocessing.displayImages(
-            *(rgb_images.cpu().numpy()),
-            file_path=os.path.join(fig_dir, f"{i:03d}_new.png")
-        )
-    import pdb; pdb.set_trace()
+    logger.info('Making transition probs...')
+    transition_probs = make_transition_scores(dataset.vocab)
+    saveVariable(transition_probs, 'transition-probs')
 
     model = AttributeModel(*attribute_labels, device=device)
 
@@ -224,45 +227,18 @@ def main(
         plt.savefig(os.path.join(fig_dir, "edge-labels.png"))
         plt.close()
 
-    for trial_id in trial_ids:
+    for i, trial_id in enumerate(trial_ids):
         logger.info(f"Processing sequence {trial_id}...")
 
         trial_prefix = f"trial={trial_id}"
 
-        assembly_seq = loadVariable(f'{trial_prefix}_assembly-seq')
-        true_label_seq = torch.tensor(
-            make_labels(assembly_seq, vocab),
-            dtype=torch.long, device=device
-        )
-
-        rgb_attribute_seq = torch.tensor(
-            loadVariable(f"{trial_prefix}_score-seq", from_dir=rgb_attributes_dir),
-            dtype=torch.float, device=device
-        )
-        rgb_timestamp_seq = loadVariable(
-            f"{trial_prefix}_rgb-frame-timestamp-seq",
-            from_dir=rgb_data_dir
-        )
-        imu_attribute_seq = torch.tensor(
-            loadVariable(f"{trial_prefix}_score-seq", from_dir=imu_attributes_dir),
-            dtype=torch.float, device=device
-        ).permute(1, 2, 0)[:, :2]  # FIXME: save in the correct shape to avoid this reshape
-        imu_timestamp_seq = loadVariable(f"{trial_prefix}_timestamp-seq", from_dir=imu_data_dir)
-        rgb_attribute_seq, imu_attribute_seq = resample(
-            rgb_attribute_seq, rgb_timestamp_seq,
-            imu_attribute_seq, imu_timestamp_seq
-        )
-
-        attribute_feats = {
-            'rgb': make_attribute_features(rgb_attribute_seq),
-            'imu': make_attribute_features(imu_attribute_seq)
-        }
-        attribute_feats = torch.cat(tuple(attribute_feats[name] for name in modalities), dim=1)
+        true_label_seq = dataset.loadTargets(trial_id)
+        attribute_feats = dataset.loadInputs(trial_id)
 
         score_seq = model(attribute_feats)
         pred_label_seq = model.predict(score_seq)
 
-        rgb_attribute_seq = rgb_attribute_seq.cpu().numpy()
+        attribute_feats = attribute_feats.cpu().numpy()
         score_seq = score_seq.cpu().numpy()
         true_label_seq = true_label_seq.cpu().numpy()
         pred_label_seq = pred_label_seq.cpu().numpy()
@@ -273,7 +249,7 @@ def main(
         if plot_predictions:
             fn = os.path.join(fig_dir, f'{trial_prefix}.png')
             utils.plot_array(
-                rgb_attribute_seq.T,
+                attribute_feats.T,
                 (true_label_seq, pred_label_seq, score_seq),
                 ('gt', 'pred', 'scores'),
                 fn=fn

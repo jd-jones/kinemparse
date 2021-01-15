@@ -17,8 +17,11 @@ imu_data_dir="${output_dir}/connections-dataset"
 imu_edge_label_dir="${output_dir}/edge-label-preds_imu"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-assembly_scores_dir="${output_dir}/assembly-scores_TEST"
-decode_dir="${output_dir}/assembly-decode_TEST"
+fused_data_dir="${output_dir}/fusion-dataset_TEST"
+cv_folds_dir="${output_dir}/cv-folds"
+fused_scores_dir="${output_dir}/edge-label-preds_fused_TEST"
+assembly_scores_dir="${output_dir}/assembly-scores_oov_TEST"
+decode_dir="${output_dir}/assembly-decode_oov_TEST"
 
 decode_eval_dir="${decode_dir}/eval"
 
@@ -26,6 +29,7 @@ start_at="0"
 stop_after="100"
 
 debug_str=""
+
 
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
 for arg in "$@"; do
@@ -60,6 +64,70 @@ STAGE=0
 
 
 if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Make fusion dataset"
+    python ${debug_str} make_fusion_dataset.py \
+        --out_dir "${fused_data_dir}" \
+        --rgb_data_dir "${rgb_data_dir}/data" \
+        --rgb_attributes_dir "${rgb_edge_label_dir}/data" \
+        --imu_data_dir "${imu_data_dir}/data" \
+        --imu_attributes_dir "${imu_edge_label_dir}/data" \
+        --modalities "['imu', 'rgb']" \
+        --gpu_dev_id "'2'" \
+        --plot_io "True"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Make cross-validation folds"
+    python ${debug_str} make_cv_folds.py \
+        --out_dir "${cv_folds_dir}" \
+        --data_dir "${fused_data_dir}/data" \
+        --feature_fn_format "feature-seq.npy" \
+        --label_fn_format "label-seq.npy" \
+        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Fuse modalities"
+    python ${debug_str} predict_seq_pytorch.py \
+        --out_dir "${fused_scores_dir}" \
+        --data_dir "${fused_data_dir}/data" \
+        --feature_fn_format "feature-seq.npy" \
+        --label_fn_format "label-seq.npy" \
+        --gpu_dev_id "'2'" \
+        --predict_mode "'multiclass'" \
+        --model_name "'TCN'" \
+        --batch_size "1" \
+        --learning_rate "0.0002" \
+        --dataset_params "{'transpose_data': True, 'flatten_feats': True}" \
+        --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
+        --train_params "{'num_epochs': 1, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
+        --model_params "{ \
+            'tcn_channels': [8,  8, 16, 16, 32, 32], \
+            'kernel_size': 5, \
+            'dropout': 0.2 \
+        }" \
+        --plot_predictions "True"
+    python analysis.py \
+        --out_dir "${fused_scores_dir}/system-performance" \
+        --results_file "${fused_scores_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Score assemblies"
     python ${debug_str} score_assemblies.py \
         --out_dir "${assembly_scores_dir}" \
@@ -86,8 +154,9 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} predict_seq_lctm.py \
         --out_dir "${decode_dir}" \
         --data_dir "${assembly_scores_dir}/data" \
-        --scores_dir "${assembly_scores_dir}/data" \
-        --cv_params "{'val_ratio': 0}" \
+        --feature_fn_format "score-seq.npy" \
+        --label_fn_format "label-seq.npy" \
+        --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --model_name "PretrainedModel" \
         --pre_init_pw "True" \
         --model_params "{ \

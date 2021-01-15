@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 # --=( MAIN CLASSES )==--------------------------------------------------------
+class AssemblyError(ValueError):
+    pass
+
+
 class Mesh(object):
     def __init__(self, vertices, faces, textures=None, color=None):
         if color is not None:
@@ -87,7 +91,7 @@ class Assembly(object):
     WARN_TRANSFORM = False
 
     def __init__(
-            self, links=[], joints=[], symmetries=None,
+            self, links=[], joints=[], symmetries={},
             link_vocab={}, joint_vocab={}, joint_type_vocab={}):
         if isinstance(links, list) or isinstance(links, tuple):
             links = {link.name: link for link in links}
@@ -108,34 +112,7 @@ class Assembly(object):
         self.joint_vocab = joint_vocab
         self.joint_type_vocab = joint_type_vocab
 
-        # Keep a reference of link names and their global vocab indices, sorted
-        # in increasing order
-        self.link_names = tuple(link.name for link_id, link in self.links.items())
-        self.link_indices = np.array([
-            utils.getIndex(name, self.link_vocab)
-            for name in self.link_names
-        ])
-        sort_indices = np.argsort(self.link_indices)
-        self.link_names = tuple(self.link_names[i] for i in sort_indices)
-        self.link_indices = self.link_indices[sort_indices]
-
-        # Keep a reference of joint names and their global vocab indices, sorted
-        # in increasing order
-        self.joint_names = tuple(joint.name for joint_id, joint in self.joints.items())
-        self.joint_indices = np.array([
-            utils.getIndex(name, self.joint_vocab)
-            for name in self.joint_names
-        ])
-        sort_indices = np.argsort(self.joint_indices)
-        self.joint_names = tuple(self.joint_names[i] for i in sort_indices)
-        self.joint_indices = self.joint_indices[sort_indices]
-        for joint_name, joint in self.joints.items():
-            utils.getIndex(joint.joint_type, self.joint_type_vocab)
-
-        self.index_symmetries = {
-            self.link_vocab[name]: tuple(self.link_vocab.get(m, -1) for m in matches)
-            for name, matches in self.symmetries.items()
-        }
+        self.update_vocabs()
 
         for joint_name, joint in self.joints.items():
             if joint.joint_type == 'floating':
@@ -168,7 +145,49 @@ class Assembly(object):
         self._adjacency_matrix = None
         self._link_joints = None
 
-    def compute_link_poses(self):
+    @property
+    def link_names(self):
+        return tuple(link.name for link_id, link in self.links.items())
+
+    @property
+    def joint_names(self):
+        return tuple(joint.name for joint_id, joint in self.joints.items())
+
+    def update_vocabs(self):
+        # Keep a reference of link names and their global vocab indices, sorted
+        # in increasing order
+        # self.link_names = tuple(link.name for link_id, link in self.links.items())
+        # self.link_indices = np.array([
+        #     utils.getIndex(name, self.link_vocab)
+        #     for name in self.link_names
+        # ])
+        # sort_indices = np.argsort(self.link_indices)
+        # self.link_names = tuple(self.link_names[i] for i in sort_indices)
+        # self.link_indices = self.link_indices[sort_indices]
+
+        # Keep a reference of joint names and their global vocab indices, sorted
+        # in increasing order
+        # self.joint_names = tuple(joint.name for joint_id, joint in self.joints.items())
+        # self.joint_indices = np.array([
+        #     utils.getIndex(name, self.joint_vocab)
+        #     for name in self.joint_names
+        # ])
+        # sort_indices = np.argsort(self.joint_indices)
+        # self.joint_names = tuple(self.joint_names[i] for i in sort_indices)
+        # self.joint_indices = self.joint_indices[sort_indices]
+        for link_name, link in self.links.items():
+            utils.getIndex(link.name, self.link_vocab)
+        for joint_name, joint in self.joints.items():
+            utils.getIndex(joint.name, self.joint_vocab)
+            utils.getIndex(joint.joint_type, self.joint_type_vocab)
+
+        self.index_symmetries = {
+            self.link_vocab[name]: tuple(self.link_vocab.get(m, -1) for m in matches)
+            for name, matches in self.symmetries.items()
+            if name in self.link_vocab  # FIXME
+        }
+
+    def compute_link_poses(self, overwrite=False):
         visited = {link_id: False for link_id in self.links.keys()}
 
         for root_id, root in self.links.items():
@@ -189,14 +208,15 @@ class Assembly(object):
                     neighbor_id = joint.child_name
                     neighbor = self.links[neighbor_id]
                     neighbor_pose = joint.transform * link.pose
-                    if neighbor.pose is None:
-                        # TODO: Check that this really updates the object in self.links
+                    if overwrite or neighbor.pose is None:
                         neighbor._transform = neighbor_pose
                     else:
                         if neighbor_pose != neighbor.pose:
-                            # TODO: Raise a special error so we can make
-                            # unambiguous exceptions later
-                            raise AssertionError()
+                            err_str = (
+                                "Inconsistent poses: "
+                                f"calculated {neighbor_pose} != stored {neighbor.pose}"
+                            )
+                            raise AssemblyError(err_str)
                     if not visited[neighbor_id]:
                         visited[neighbor_id] = True
                         stack.append(neighbor_id)
@@ -220,7 +240,7 @@ class Assembly(object):
                 self._adjacency_matrix[parent_index, child_index] = True
         return self._adjacency_matrix
 
-    def add_joint(self, parent, child, directed=True, in_place=False, transform=None):
+    def add_joint_deprecated(self, parent, child, directed=True, in_place=False, transform=None):
         if not in_place:
             a_copy = copy.deepcopy(self)
             a_copy = a_copy.add_joint(parent, child, directed=directed, in_place=True)
@@ -240,6 +260,31 @@ class Assembly(object):
         joint_name = f"{parent}_{child}_joint"
         joint = Joint(joint_name, 'fixed', parent, child, transform=transform)
         self.joints[joint_name] = joint
+
+        return self
+
+    def add_joint(self, joint, parent, child, directed=True, in_place=False):
+        if not in_place:
+            a_copy = copy.deepcopy(self)
+            a_copy = a_copy.add_joint(joint, parent, child, directed=directed, in_place=True)
+            return a_copy
+
+        if not directed:
+            raise NotImplementedError()
+            a = self.add_joint(joint, parent, child, directed=True, in_place=in_place)
+            # TODO: invert the joint
+            a = a.add_joint(joint, child, parent, directed=True, in_place=in_place)
+            return a
+
+        if joint.parent_name not in self.links:
+            self.links[joint.parent_name] = parent
+
+        if joint.child_name not in self.links:
+            self.links[joint.child_name] = child
+
+        self.joints[joint.name] = joint
+
+        self.update_vocabs()
 
         return self
 
@@ -275,71 +320,78 @@ class Assembly(object):
             joints = remove_sym(joints)
         return joints
 
+    def _links_equivalent_upto_symmetry(self, lhs, rhs):
+        def eq_symm(lhs, rhs):
+            lhs_symmetries = np.array(
+                [list(self.index_symmetries[index]) for index in lhs]
+            )
+            all_symmetries_match = np.all(
+                (lhs_symmetries == rhs[:, None]) * (lhs_symmetries != -1),
+                axis=0
+            )
+            return all_symmetries_match.any()
+
+        def eq_nosymm(lhs, rhs):
+            return lhs == rhs
+
+        has_symm = np.array([
+            True if index in self.index_symmetries else False
+            for index in lhs
+        ])
+
+        is_equivalent = np.zeros_like(lhs, dtype=bool)
+        is_equivalent[has_symm] = eq_symm(lhs[has_symm], rhs[has_symm])
+        is_equivalent[~has_symm] = eq_nosymm(lhs[~has_symm], rhs[~has_symm])
+        return is_equivalent
+
+    def _joints_equivalent(self, lhs_joints, rhs_joints):
+        def make_joint_attr_array(joints):
+            def get_attrs(joint):
+                joint_index = self.joint_vocab[joint.name]
+                joint_type_index = self.joint_type_vocab[joint.joint_type]
+                parent_index = self.link_vocab[joint.parent_name]
+                child_index = self.link_vocab[joint.child_name]
+                return [joint_index, joint_type_index, parent_index, child_index]
+
+            joint_attrs = np.array([get_attrs(joint) for joint in joints])
+            return joint_attrs
+
+        self_joint_attrs = make_joint_attr_array(lhs_joints)
+        other_joint_attrs = make_joint_attr_array(rhs_joints)
+
+        attrs_equivalent = np.zeros_like(self_joint_attrs, dtype=bool)
+        attrs_equivalent[:, :2] = self_joint_attrs[:, :2] == other_joint_attrs[:, :2]
+        attrs_equivalent[:, 2] = self._links_equivalent_upto_symmetry(
+            self_joint_attrs[:, 2], other_joint_attrs[:, 2]
+        )
+        attrs_equivalent[:, 3] = self._links_equivalent_upto_symmetry(
+            self_joint_attrs[:, 3], other_joint_attrs[:, 3]
+        )
+
+        return np.all(attrs_equivalent)
+
     def __le__(self, other):
-        def _links_equivalent(self, other):
-            return set(self.link_indices.tolist()) <= set(other.link_indices.tolist())
-
-        def _joints_equivalent(self, other):
-            def make_joint_attr_array(assembly):
-                def get_attrs(joint):
-                    joint_index = self.joint_vocab[joint.name]
-                    joint_type_index = self.joint_type_vocab[joint.joint_type]
-                    parent_index = self.link_vocab[joint.parent_name]
-                    child_index = self.link_vocab[joint.child_name]
-                    return [joint_index, joint_type_index, parent_index, child_index]
-
-                joint_attrs = np.array([
-                    get_attrs(assembly.joints[name])
-                    for name in self.joint_names
-                    if self.joints[name].joint_type != 'imaginary'
-                ])
-                return joint_attrs
-
-            def links_equivalent_upto_symmetry(lhs, rhs):
-                def eq_symm(lhs, rhs):
-                    lhs_symmetries = np.array(
-                        [list(self.index_symmetries[index]) for index in lhs]
-                    )
-                    all_symmetries_match = np.all(
-                        (lhs_symmetries == rhs[:, None]) * (lhs_symmetries != -1),
-                        axis=0
-                    )
-                    return all_symmetries_match.any()
-
-                def eq_nosymm(lhs, rhs):
-                    return lhs == rhs
-
-                has_symm = np.array([
-                    True if index in self.index_symmetries else False
-                    for index in lhs
-                ])
-
-                is_equivalent = np.zeros_like(lhs, dtype=bool)
-                is_equivalent[has_symm] = eq_symm(lhs[has_symm], rhs[has_symm])
-                is_equivalent[~has_symm] = eq_nosymm(lhs[~has_symm], rhs[~has_symm])
-                return is_equivalent
-
-            if not set(self.joint_indices.tolist()) <= set(other.joint_indices.tolist()):
-                return False
-
-            self_joint_attrs = make_joint_attr_array(self)
-            other_joint_attrs = make_joint_attr_array(other)
-
-            attrs_equivalent = np.zeros_like(self_joint_attrs, dtype=bool)
-            attrs_equivalent[:, :2] = self_joint_attrs[:, :2] == other_joint_attrs[:, :2]
-            attrs_equivalent[:, 2] = links_equivalent_upto_symmetry(
-                self_joint_attrs[:, 2], other_joint_attrs[:, 2]
-            )
-            attrs_equivalent[:, 3] = links_equivalent_upto_symmetry(
-                self_joint_attrs[:, 3], other_joint_attrs[:, 3]
-            )
-
-            return np.all(attrs_equivalent)
+        def get_self_joints(assembly):
+            joints = [
+                assembly.joints[name] for name in self.joint_names
+                if self.joints[name].joint_type != 'imaginary'
+            ]
+            return joints
 
         if not any(self.joints):
             return True
 
-        return _links_equivalent(self, other) and _joints_equivalent(self, other)
+        if not set(self.link_names) <= set(other.link_names):
+            return False
+
+        if not set(self.joint_names) <= set(other.joint_names):
+            return False
+
+        self_joints = get_self_joints(self)
+        other_joints = get_self_joints(other)
+        joints_leq = self._joints_equivalent(self_joints, other_joints)
+
+        return joints_leq
 
     def __eq__(self, other):
         return (self <= other) and (other <= self)
@@ -356,11 +408,14 @@ class Assembly(object):
     def __add__(self, other):
         # FIXME: this won't detect or avoid collisions
         sum_ = copy.deepcopy(self)
+        sum_.symmetries.update(other.symmetries)
         for joint in other.joints.values():
             cur_joint = sum_.joints.get(joint.name, None)
             if cur_joint is None:
-                sum_.joints[joint.name] = joint
-            elif cur_joint != joint:
+                parent = other.links[joint.parent_name]
+                child = other.links[joint.child_name]
+                sum_.add_joint(joint, parent, child, directed=True, in_place=True)
+            elif not self._joints_equivalent([cur_joint], [joint]):
                 raise AssertionError(f"{joint.name} inconsistent between self and other")
 
         return sum_
@@ -520,6 +575,46 @@ def render(renderer, assembly, t, R):
     )
 
     return rgb_images_scene, depth_images_scene, label_images_scene
+
+
+def union(*assemblies, link_vocab=None, joint_vocab=None, joint_type_vocab=None):
+    if not assemblies:
+        if link_vocab is None:
+            link_vocab = {}
+
+        if joint_vocab is None:
+            joint_vocab = {}
+
+        if joint_type_vocab is None:
+            joint_type_vocab = {}
+    else:
+        if link_vocab is None:
+            link_vocab = assemblies[0].link_vocab
+            if not all(a.link_vocab is link_vocab for a in assemblies):
+                raise AssertionError('Assemblies have different link vocabularies')
+
+        if joint_vocab is None:
+            joint_vocab = assemblies[0].joint_vocab
+            if not all(a.joint_vocab is joint_vocab for a in assemblies):
+                raise AssertionError('Assemblies have different joint vocabularies')
+
+        if joint_type_vocab is None:
+            joint_type_vocab = assemblies[0].joint_type_vocab
+            if not all(a.joint_type_vocab is joint_type_vocab for a in assemblies):
+                raise AssertionError('Assemblies have different joint type vocabularies')
+
+    union_ = Assembly(
+        link_vocab=link_vocab,
+        joint_vocab=joint_vocab,
+        joint_type_vocab=joint_type_vocab
+    )
+
+    for a in assemblies:
+        union_ = union_ + a
+
+    union_.compute_link_poses(overwrite=True)
+
+    return union_
 
 
 # --=( HELPER FUNCTIONS )==----------------------------------------------------
