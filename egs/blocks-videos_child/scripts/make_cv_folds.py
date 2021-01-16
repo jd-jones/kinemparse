@@ -51,7 +51,7 @@ def main(
 
     # Make folds
     dataset_size = len(trial_ids)
-    cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
+    cv_folds = utils.makeDataSplits(dataset_size, metadata=dataset.metadata, **cv_params)
     save_cv_folds(cv_folds, os.path.join(out_data_dir, 'cv-folds.json'))
 
     # Check folds

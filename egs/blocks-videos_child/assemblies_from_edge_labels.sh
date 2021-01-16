@@ -18,7 +18,7 @@ imu_edge_label_dir="${output_dir}/edge-label-preds_imu"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 fused_data_dir="${output_dir}/fusion-dataset_TEST"
-cv_folds_dir="${output_dir}/cv-folds"
+cv_folds_dir="${output_dir}/cv-folds_TEST"
 fused_scores_dir="${output_dir}/edge-label-preds_fused_TEST"
 assembly_scores_dir="${output_dir}/assembly-scores_oov_TEST"
 decode_dir="${output_dir}/assembly-decode_oov_TEST"
@@ -88,7 +88,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir "${fused_data_dir}/data" \
         --feature_fn_format "feature-seq.npy" \
         --label_fn_format "label-seq.npy" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}"
+        --cv_params "{'val_ratio': 0, 'by_group': 'TaskID'}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
