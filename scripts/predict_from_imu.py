@@ -1,8 +1,6 @@
 import os
 import collections
-import itertools
 import functools
-import math
 import logging
 
 import yaml
@@ -107,64 +105,6 @@ class SegmentalTcnClassifier(TcnClassifier):
             return preds, scores
 
         return preds
-
-
-def splitSeqs(feature_seqs, label_seqs, trial_ids, active_only=False):
-    num_signals = label_seqs[0].shape[1]
-    if num_signals >= 100:
-        raise ValueError("{num_signals} signals will cause overflow in sequence ID (max is 99)")
-
-    def validate(seqs):
-        return all(seq.shape[1] == num_signals for seq in seqs)
-    all_valid = all(validate(x) for x in (feature_seqs, label_seqs))
-    if not all_valid:
-        raise AssertionError("Features and labels don't all have the same number of sequences")
-
-    trial_ids = tuple(
-        itertools.chain(
-            *(
-                tuple(t_id + 0.01 * (i + 1) for i in range(num_signals))
-                for t_id in trial_ids
-            )
-        )
-    )
-
-    def splitSeq(arrays):
-        return tuple(row for array in arrays for row in array)
-
-    feature_seqs = splitSeq(map(lambda x: x.swapaxes(0, 1), feature_seqs))
-    label_seqs = splitSeq(map(lambda x: x.T, label_seqs))
-
-    if active_only:
-        is_active = tuple(map(lambda x: x.any(), label_seqs))
-
-        def filterInactive(arrays):
-            return tuple(arr for arr, act in zip(arrays, is_active) if act)
-        return tuple(map(filterInactive, (feature_seqs, label_seqs, trial_ids)))
-
-    return feature_seqs, label_seqs, trial_ids
-
-
-def joinSeqs(batches):
-    stack = functools.partial(torch.stack, dim=0)
-
-    all_seqs = collections.defaultdict(dict)
-    for batch in batches:
-        for b in zip(*batch):
-            i = b[-1]
-            seqs = b[:-1]
-
-            # i = int(vid_id) + seq_id / 100
-            seq_id, trial_id = math.modf(i)
-            seq_id = int(round(seq_id * 100))
-            trial_id = int(round(trial_id))
-
-            all_seqs[trial_id][seq_id] = seqs
-
-    for trial_id, seq_dict in all_seqs.items():
-        seqs = (seq_dict[k] for k in sorted(seq_dict.keys()))
-        seqs = map(stack, zip(*seqs))
-        yield tuple(seqs) + (trial_id,)
 
 
 def main(

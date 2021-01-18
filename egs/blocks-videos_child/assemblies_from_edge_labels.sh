@@ -8,20 +8,24 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
-# READONLY DIRS
-seg_labels_dir="${output_dir}/image-segment-labels"
-rgb_data_dir="${output_dir}/raw-data"
-rgb_vocab_dir="${output_dir}/pretrained-models-sim"
-rgb_edge_label_dir="${output_dir}/edge-label-preds_rgb"
-imu_data_dir="${output_dir}/connections-dataset"
-imu_edge_label_dir="${output_dir}/edge-label-preds_imu"
+# INPUT TO SCRIPT
+rgb_phase_dir="${output_dir}/edge-labels-from-video"
+seg_labels_dir="${rgb_phase_dir}/image-segment-labels"
+rgb_data_dir="${rgb_phase_dir}/raw-data"
+rgb_vocab_dir="${rgb_phase_dir}/pretrained-models-sim"
+rgb_edge_label_dir="${rgb_phase_dir}/edge-label-preds"
 
-# DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-fused_data_dir="${output_dir}/fusion-dataset_TEST"
-cv_folds_dir="${output_dir}/cv-folds_TEST"
-fused_scores_dir="${output_dir}/edge-label-preds_fused_TEST"
-assembly_scores_dir="${output_dir}/assembly-scores_oov_TEST"
-decode_dir="${output_dir}/assembly-decode_oov_TEST"
+imu_phase_dir="${output_dir}/edge-labels-from-imu"
+imu_data_dir="${imu_phase_dir}/connections-dataset"
+imu_edge_label_dir="${imu_phase_dir}/edge-label-preds"
+
+# OUTPUT OF SCRIPT
+phase_dir="${output_dir}/assemblies-from-edge-labels"
+fused_data_dir="${phase_dir}/fusion-dataset_TEST"
+cv_folds_dir="${phase_dir}/cv-folds_TEST"
+fused_scores_dir="${phase_dir}/edge-label-preds_fused_TEST"
+assembly_scores_dir="${phase_dir}/assembly-scores_oov_TEST"
+decode_dir="${phase_dir}/assembly-decode_oov_TEST"
 
 decode_eval_dir="${decode_dir}/eval"
 

@@ -4,7 +4,6 @@ import logging
 
 import yaml
 import torch
-import joblib
 import numpy as np
 
 from mathtools import utils, torchutils, metrics
@@ -13,6 +12,76 @@ from kinemparse import sim2real
 
 
 logger = logging.getLogger(__name__)
+
+
+class VideoLoader(utils.FeaturelessCvDataset):
+    def __init__(self, trial_ids, data_dir, seg_dir, **kwargs):
+        super().__init__(trial_ids, data_dir, **kwargs)
+
+        self.seg_dir = seg_dir
+
+        self.trial_ids = np.array([
+            trial_id for trial_id, l_seq in zip(self.trial_ids, self.label_seqs)
+            if l_seq is not None
+        ])
+
+        self.label_seqs = tuple(
+            l_seq for l_seq in self.label_seqs
+            if l_seq is not None
+        )
+
+    def _load_labels(self, label_fn_format="assembly-seq"):
+        labels = tuple(
+            self.loadAssemblies(t_id, label_fn_format, self.vocab)
+            for t_id in self.trial_ids
+        )
+        return labels
+
+    def loadAssemblies(self, seq_id, var_name, vocab, prefix='trial='):
+        assembly_seq = utils.loadVariable(f"{prefix}{seq_id}_{var_name}", self.data_dir)
+        labels = np.zeros(assembly_seq[-1].end_idx, dtype=int)
+        for assembly in assembly_seq:
+            i = utils.getIndex(assembly, vocab)
+            labels[assembly.start_idx:assembly.end_idx] = i
+        return labels
+
+    def loadData(self, seq_id):
+        rgb_frames = utils.loadVariable(f"trial={seq_id}_rgb-frame-seq", self.data_dir)
+        seg_frames = utils.loadVariable(f"trial={seq_id}_seg-frame-seq", self.seg_dir).astype(int)
+        return rgb_frames, seg_frames
+
+
+def plot_topk(model, test_io_history, num_disp_imgs, file_path):
+    inputs = np.moveaxis(
+        torch.cat(tuple(batches[2][0] for batches in test_io_history)).numpy(),
+        1, -1
+    )
+    outputs = torch.cat(tuple(batches[1][0] for batches in test_io_history))
+
+    if inputs.shape[0] > num_disp_imgs:
+        idxs = np.arange(inputs.shape[0])
+        np.random.shuffle(idxs)
+        idxs = np.sort(idxs[:num_disp_imgs])
+    else:
+        idxs = slice(None, None, None)
+
+    inputs = inputs[idxs]
+    outputs = outputs[idxs]
+
+    def make_templates(preds):
+        pred_templates = np.moveaxis(model.templates[preds, 0].numpy(), 1, -1)
+        pred_templates[pred_templates > 1] = 1
+        return pred_templates
+
+    k = 5
+    __, topk_preds = torch.topk(outputs, k, dim=-1)
+    topk_preds = topk_preds.transpose(0, 1).contiguous().view(-1)
+    topk_templates = make_templates(topk_preds)
+
+    imageprocessing.displayImages(
+        *inputs, *topk_templates, num_rows=1 + k,
+        file_path=file_path
+    )
 
 
 def main(
@@ -48,116 +117,61 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def loadData(seq_id):
-        rgb_frames = joblib.load(os.path.join(data_dir, f"trial={seq_id}_rgb-frame-seq.pkl"))
-        seg_frames = joblib.load(
-            os.path.join(segs_dir, f"trial={seq_id}_seg-labels-seq.pkl")
-        ).astype(int)
-        return rgb_frames, seg_frames
-
-    def loadAssemblies(seq_id, vocab):
-        assembly_seq = joblib.load(os.path.join(data_dir, f"trial={seq_id}_assembly-seq.pkl"))
-        labels = np.zeros(assembly_seq[-1].end_idx, dtype=int)
-        for assembly in assembly_seq:
-            i = utils.getIndex(assembly, vocab)
-            labels[assembly.start_idx:assembly.end_idx] = i
-        return labels
-
-    def loadVariable(var_name):
-        return joblib.load(os.path.join(pretrained_model_dir, f'{var_name}.pkl'))
-
-    def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
+    def saveVariable(var, var_name, to_dir=out_data_dir):
+        utils.saveVariable(var, var_name, to_dir)
 
     # Load data
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)
-
-    vocab = loadVariable('vocab')
-    parts_vocab = loadVariable('parts-vocab')
-    edge_labels = loadVariable('part-labels')
-
-    # vocab = []
-    # parts_vocab, edge_labels = labels_lib.make_parts_vocab(vocab, lower_tri_only=True)
-    # edge_labels = np.stack(tuple(a.connections for a in self.vocab))
-    # edge_labels = connections.reshape(edge_labels.shape[0], -1)
-    # label_dtype = torch.float
-
-    label_seqs = tuple(loadAssemblies(t_id, vocab) for t_id in trial_ids)
-    label_dtype = torch.long
-
+    vocab = utils.loadVariable('vocab', pretrained_model_dir)
+    parts_vocab = utils.loadVariable('parts-vocab', pretrained_model_dir)
+    edge_labels = utils.loadVariable('part-labels', pretrained_model_dir)
     saveVariable(vocab, 'vocab')
     saveVariable(parts_vocab, 'parts-vocab')
     saveVariable(edge_labels, 'part-labels')
 
-    trial_ids = np.array([
-        trial_id for trial_id, l_seq in zip(trial_ids, label_seqs)
-        if l_seq is not None
-    ])
-    label_seqs = tuple(
-        l_seq for l_seq in label_seqs
-        if l_seq is not None
-    )
-
-    device = torchutils.selectDevice(gpu_dev_id)
-
     # Define cross-validation folds
-    dataset_size = len(trial_ids)
-    cv_folds = utils.makeDataSplits(dataset_size, **cv_params)
+    data_loader = VideoLoader(
+        trial_ids, data_dir, segs_dir, vocab=vocab,
+        label_fn_format='assembly-seq'
+    )
+    cv_folds = utils.makeDataSplits(len(data_loader.trial_ids), **cv_params)
 
-    def getSplit(split_idxs):
-        split_data = tuple(
-            tuple(s[i] for i in split_idxs)
-            for s in (label_seqs, trial_ids)
+    Dataset = sim2real.BlocksConnectionDataset
+    device = torchutils.selectDevice(gpu_dev_id)
+    label_dtype = torch.long
+    labels_dtype = torch.long  # FIXME
+    criterion = torch.nn.CrossEntropyLoss()
+
+    def make_dataset(labels, ids, batch_mode='sample', shuffle=True):
+        dataset = Dataset(
+            vocab, edge_labels, label_dtype, data_loader.loadData, labels,
+            device=device, labels_dtype=labels_dtype, seq_ids=ids,
+            batch_size=batch_size, batch_mode=batch_mode
         )
-        return split_data
+        loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=shuffle)
+        return dataset, loader
 
-    dataset = sim2real.BlocksConnectionDataset
-
-    for cv_index, cv_splits in enumerate(cv_folds):
+    for cv_index, cv_fold in enumerate(cv_folds):
         if start_from is not None and cv_index < start_from:
             continue
 
         if stop_at is not None and cv_index > stop_at:
             break
 
-        train_data, val_data, test_data = tuple(map(getSplit, cv_splits))
-
-        criterion = torch.nn.CrossEntropyLoss()
-        labels_dtype = torch.long
-
-        train_labels, train_ids = train_data
-        train_set = dataset(
-            vocab, edge_labels, label_dtype, loadData, train_labels,
-            device=device, labels_dtype=labels_dtype, seq_ids=train_ids,
-            batch_size=batch_size, batch_mode='sample'
-        )
-        train_loader = torch.utils.data.DataLoader(train_set, batch_size=1, shuffle=True)
-
-        test_labels, test_ids = test_data
-        test_set = dataset(
-            vocab, edge_labels, label_dtype, loadData, test_labels,
-            device=device, labels_dtype=labels_dtype, seq_ids=test_ids,
-            batch_size=batch_size, batch_mode='flatten'
-        )
-        test_loader = torch.utils.data.DataLoader(test_set, batch_size=1, shuffle=False)
-
-        val_labels, val_ids = val_data
-        val_set = dataset(
-            vocab, edge_labels, label_dtype, loadData, val_labels,
-            device=device, labels_dtype=labels_dtype, seq_ids=val_ids,
-            batch_size=batch_size, batch_mode='sample'
-        )
-        val_loader = torch.utils.data.DataLoader(val_set, batch_size=1, shuffle=True)
+        train_data, val_data, test_data = data_loader.getFold(cv_fold)
+        train_set, train_loader = make_dataset(*train_data, batch_mode='sample', shuffle=True)
+        test_set, test_loader = make_dataset(*test_data, batch_mode='flatten', shuffle=False)
+        val_set, val_loader = make_dataset(*val_data, batch_mode='sample', shuffle=True)
 
         logger.info(
-            f'CV fold {cv_index + 1} / {len(cv_folds)}: {len(trial_ids)} total '
-            f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
+            f'CV fold {cv_index + 1} / {len(cv_folds)}: {len(data_loader.trial_ids)} total '
+            f'({len(train_set)} train, {len(val_set)} val, {len(test_set)} test)'
         )
 
         if model_name == 'template':
             model = sim2real.AssemblyClassifier(vocab, **model_params)
         elif model_name == 'pretrained':
-            pretrained_model = loadVariable("cvfold=0_model-best")
+            pretrained_model = utils.loadVariable("cvfold=0_model-best", pretrained_model_dir)
             model = sim2real.SceneClassifier(pretrained_model)
             metric_names = ('Loss', 'Accuracy', 'Precision', 'Recall', 'F1')
             # criterion = torch.nn.BCEWithLogitsLoss()
@@ -208,34 +222,13 @@ def main(
             sweep_param_name, model_params
         )
 
-        def saveTrialData(pred_seq, score_seq, feat_seq, label_seq, batch_id):
-            saveVariable(
-                pred_seq.cpu().numpy(),
-                f'cvfold={cv_index}_batch={batch_id}_pred-label-seq'
-            )
-            saveVariable(
-                score_seq.cpu().numpy(),
-                f'cvfold={cv_index}_batch={batch_id}_score-seq'
-            )
-            saveVariable(
-                label_seq.cpu().numpy(),
-                f'cvfold={cv_index}_batch={batch_id}_true-label-seq'
-            )
-        for io in test_io_history:
-            saveTrialData(*io)
-
+        for pred_seq, score_seq, feat_seq, label_seq, batch_id in test_io_history:
+            prefix = f'cvfold={cv_index}_batch={batch_id}'
+            saveVariable(pred_seq.cpu().numpy(), f'{prefix}_pred-label-seq')
+            saveVariable(score_seq.cpu().numpy(), f'{prefix}_score-seq')
+            saveVariable(label_seq.cpu().numpy(), f'{prefix}_true-label-seq')
         saveVariable(test_set.unflatten, f'cvfold={cv_index}_test-set-unflatten')
-
-        saveVariable(train_ids, f'cvfold={cv_index}_train-ids')
-        saveVariable(test_ids, f'cvfold={cv_index}_test-ids')
-        saveVariable(val_ids, f'cvfold={cv_index}_val-ids')
-        saveVariable(train_epoch_log, f'cvfold={cv_index}_{model_name}-train-epoch-log')
-        saveVariable(val_epoch_log, f'cvfold={cv_index}_{model_name}-val-epoch-log')
-        saveVariable(metric_dict, f'cvfold={cv_index}_{model_name}-metric-dict')
         saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
-
-        model.load_state_dict(last_model_wts)
-        saveVariable(model, f'cvfold={cv_index}_{model_name}-last')
 
         if train_epoch_log:
             torchutils.plotEpochLog(
@@ -266,37 +259,9 @@ def main(
             io_dir = os.path.join(fig_dir, 'model-io')
             if not os.path.exists(io_dir):
                 os.makedirs(io_dir)
-            file_path = os.path.join(io_dir, f"cvfold={cv_index}.png")
-
-            inputs = np.moveaxis(
-                torch.cat(tuple(batches[2][0] for batches in test_io_history)).numpy(),
-                1, -1
-            )
-            outputs = torch.cat(tuple(batches[1][0] for batches in test_io_history))
-
-            if inputs.shape[0] > num_disp_imgs:
-                idxs = np.arange(inputs.shape[0])
-                np.random.shuffle(idxs)
-                idxs = np.sort(idxs[:num_disp_imgs])
-            else:
-                idxs = slice(None, None, None)
-
-            inputs = inputs[idxs]
-            outputs = outputs[idxs]
-
-            def make_templates(preds):
-                pred_templates = np.moveaxis(model.templates[preds, 0].numpy(), 1, -1)
-                pred_templates[pred_templates > 1] = 1
-                return pred_templates
-
-            k = 5
-            __, topk_preds = torch.topk(outputs, k, dim=-1)
-            topk_preds = topk_preds.transpose(0, 1).contiguous().view(-1)
-            topk_templates = make_templates(topk_preds)
-
-            imageprocessing.displayImages(
-                *inputs, *topk_templates, num_rows=1 + k,
-                file_path=file_path
+            plot_topk(
+                model, test_io_history, num_disp_imgs,
+                os.path.join(io_dir, f"cvfold={cv_index}.png")
             )
 
         if viz_templates:

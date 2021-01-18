@@ -8,17 +8,21 @@ scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
 output_dir="~/data/output/blocks/child-videos"
 
+# INPUT TO SCRIPT
 data_dir="${output_dir}/raw-data"
-background_dir="${output_dir}/background-detections"
-detections_dir="${output_dir}/object-detections"
-seg_labels_dir="${output_dir}/image-segment-labels"
-sim_pretrain_dir="${output_dir}/pretrained-models-sim"
-edge_label_dir="${output_dir}/edge-label-preds_rgb"
-edge_label_smoothed_dir="${output_dir}/edge-label-preds-smoothed_rgb"
+
+# OUTPUT OF SCRIPT
+phase_dir="${output_dir}/edge-labels-from-video"
+background_dir="${phase_dir}/background-detections"
+detections_dir="${phase_dir}/object-detections"
+seg_labels_dir="${phase_dir}/image-segment-labels"
+sim_pretrain_dir="${phase_dir}/pretrained-models-sim"
+cv_folds_dir="${phase_dir}/cv-folds_LOMO"
+edge_label_dir="${phase_dir}/edge-label-preds_LOMO"
+edge_label_smoothed_dir="${phase_dir}/edge-label-preds-smoothed"
 
 edge_label_batches_dir="${edge_label_dir}/batches"
-# edge_label_eval_dir="${edge_label_dir}/eval"
-edge_label_eval_dir="${edge_label_dir}_eval_TEST"
+edge_label_eval_dir="${edge_label_dir}/eval"
 smoothed_eval_dir="${edge_label_smoothed_dir}/eval"
 
 start_at="0"
@@ -107,7 +111,6 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} train_assembly_detector.py \
         --out_dir "${sim_pretrain_dir}" \
         --data_dir "${data_dir}/data" \
-        --pretrain_dir "${sim_pretrain_dir}/data" \
         --gpu_dev_id "'0'" \
         --batch_size "10" \
         --learning_rate "0.0002" \
@@ -124,6 +127,21 @@ fi
 ((++STAGE))
 
 if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Make cross-validation folds"
+    python ${debug_str} make_cv_folds.py \
+        --out_dir "${cv_folds_dir}" \
+        --data_dir "${data_dir}/data" \
+        --feature_fn_format "rgb-frame-fn-seq.pkl" \
+        --label_fn_format "action-seq.pkl" \
+        --cv_params "{'val_ratio': 0.25, 'by_group': 'TaskID'}"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Predict edge labels"
     python ${debug_str} predict_edge_labels.py \
         --out_dir "${edge_label_batches_dir}" \
@@ -134,7 +152,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --model_name "pretrained" \
         --batch_size "20" \
         --learning_rate "0.0002" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
+        --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --train_params "{'num_epochs': 50, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
         --viz_params "{}"
     python analysis.py \

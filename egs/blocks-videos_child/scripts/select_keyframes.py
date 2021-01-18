@@ -1,1 +1,0 @@
-../../../scripts/select_keyframes.py

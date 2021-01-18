@@ -44,9 +44,9 @@ def main(
     )
     dataset = utils.CvDataset(
         trial_ids, data_dir,
-        feature_fn_format=feature_fn_format, label_fn_format=label_fn_format
+        feature_fn_format=feature_fn_format, label_fn_format=label_fn_format,
+        vocab=[]
     )
-
     utils.saveMetadata(dataset.metadata, out_data_dir)
 
     # Make folds

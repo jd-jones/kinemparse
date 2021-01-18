@@ -203,7 +203,7 @@ def main(
                     num_states=dataset.num_states
                 )
                 # Overwrite transitions by loading from file, if it exists
-                if os.path.exists(os.path.join(data_dir, 'transition-probs.pkl')):
+                if os.path.exists(os.path.join(data_dir, 'transition-probs.npy')):
                     logger.info("Overriding transition probs from file")
                     transition_probs = utils.loadVariable('transition-probs', from_dir=data_dir)
             else:

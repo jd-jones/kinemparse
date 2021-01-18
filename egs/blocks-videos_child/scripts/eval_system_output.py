@@ -2,7 +2,6 @@ import os
 import logging
 
 import yaml
-import joblib
 import numpy as np
 from scipy.spatial.transform import Rotation
 from matplotlib import pyplot as plt
@@ -217,6 +216,43 @@ def edge_labels_to_assembly_labels(edge_label_seq, assembly_vocab, edge_vocab):
     return assembly_label_seq
 
 
+def loadAssemblies(seq_id, vocab, data_dir):
+    assembly_seq = utils.load(f"trial={seq_id}_assembly-seq", data_dir)
+    # assembly_seq = joblib.load(os.path.join(data_dir, f"trial={seq_id}_assembly-seq.pkl"))
+    labels = np.array([utils.getIndex(assembly, vocab) for assembly in assembly_seq])
+    return labels
+
+
+def load_vocab(link_vocab, joint_vocab, joint_type_vocab, vocab_dir):
+    assembly_vocab = utils.loadVariable('vocab', vocab_dir)
+    # FIXME: Convert keys from vertex pairs to edge indices
+    edge_vocab = utils.loadVariable('parts-vocab', vocab_dir)
+    edge_labels = utils.loadVariable('part-labels', vocab_dir)
+
+    assembly_vocab = tuple(
+        lib_assembly.Assembly.from_blockassembly(
+            a,
+            link_vocab=link_vocab,
+            joint_vocab=joint_vocab,
+            joint_type_vocab=joint_type_vocab
+        )
+        for a in assembly_vocab
+    )
+
+    edge_vocab = {
+        edge_key: tuple(
+            lib_assembly.Assembly.from_blockassembly(
+                a, link_vocab=link_vocab, joint_vocab=joint_vocab,
+                joint_type_vocab=joint_type_vocab
+            )
+            for a in assemblies
+        )
+        for edge_key, assemblies in edge_vocab.items()
+    }
+
+    return assembly_vocab, edge_vocab, edge_labels
+
+
 def main(
         out_dir=None, data_dir=None, segs_dir=None, scores_dir=None, vocab_dir=None,
         label_type='edges', gpu_dev_id=None, start_from=None, stop_at=None, num_disp_imgs=None,
@@ -253,50 +289,12 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def loadAssemblies(seq_id, vocab):
-        assembly_seq = joblib.load(os.path.join(data_dir, f"trial={seq_id}_assembly-seq.pkl"))
-        labels = np.array([utils.getIndex(assembly, vocab) for assembly in assembly_seq])
-        return labels
-
-    def loadVariable(var_name, from_dir=scores_dir):
-        var = joblib.load(os.path.join(from_dir, f"{var_name}.pkl"))
-        return var
-
-    def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
-
-    def load_vocab(link_vocab, joint_vocab, joint_type_vocab):
-        assembly_vocab = loadVariable('vocab', from_dir=vocab_dir)
-        # FIXME: Convert keys from vertex pairs to edge indices
-        edge_vocab = loadVariable('parts-vocab', from_dir=vocab_dir)
-        edge_labels = loadVariable('part-labels', from_dir=vocab_dir)
-
-        assembly_vocab = tuple(
-            lib_assembly.Assembly.from_blockassembly(
-                a,
-                link_vocab=link_vocab,
-                joint_vocab=joint_vocab,
-                joint_type_vocab=joint_type_vocab
-            )
-            for a in assembly_vocab
-        )
-
-        edge_vocab = {
-            edge_key: tuple(
-                lib_assembly.Assembly.from_blockassembly(
-                    a, link_vocab=link_vocab, joint_vocab=joint_vocab,
-                    joint_type_vocab=joint_type_vocab
-                )
-                for a in assemblies
-            )
-            for edge_key, assemblies in edge_vocab.items()
-        }
-
-        return assembly_vocab, edge_vocab, edge_labels
-
-    seq_ids = utils.getUniqueIds(scores_dir, prefix='trial=', to_array=True)
+    seq_ids = utils.getUniqueIds(
+        scores_dir, prefix='trial=', suffix='score-seq.*',
+        to_array=True
+    )
     label_seqs = tuple(
-        loadVariable(f"trial={seq_id}_true-label-seq", from_dir=scores_dir)
+        utils.loadVariable(f"trial={seq_id}_true-label-seq", scores_dir)
         for seq_id in seq_ids
     )
     num_seqs = len(label_seqs)
@@ -304,14 +302,16 @@ def main(
     link_vocab = {}
     joint_vocab = {}
     joint_type_vocab = {}
-    vocab, parts_vocab, part_labels = load_vocab(link_vocab, joint_vocab, joint_type_vocab)
+    vocab, parts_vocab, part_labels = load_vocab(
+        link_vocab, joint_vocab, joint_type_vocab, vocab_dir
+    )
     pred_vocab = []  # FIXME
 
     device = torchutils.selectDevice(gpu_dev_id)
     dataset = sim2real.LabeledConnectionDataset(
-        loadVariable('parts-vocab', from_dir=vocab_dir),
-        loadVariable('part-labels', from_dir=vocab_dir),
-        loadVariable('vocab', from_dir=vocab_dir),
+        utils.loadVariable('parts-vocab', vocab_dir),
+        utils.loadVariable('part-labels', vocab_dir),
+        utils.loadVariable('vocab', vocab_dir),
         device=device
     )
 
@@ -319,10 +319,12 @@ def main(
         logger.info(f"  Processing sequence {seq_id}...")
 
         trial_prefix = f"trial={seq_id}"
-        rgb_seq = loadVariable(f"{trial_prefix}_rgb-frame-seq", from_dir=data_dir)
-        seg_seq = loadVariable(f"{trial_prefix}_seg-labels-seq", from_dir=segs_dir)
-        score_seq = loadVariable(f"{trial_prefix}_score-seq", from_dir=scores_dir)
-        pred_seq = loadVariable(f"{trial_prefix}_pred-label-seq", from_dir=scores_dir)
+        # I include the '.' to differentiate between 'rgb-frame-seq' and
+        # 'rgb-frame-seq-before-first-touch'
+        rgb_seq = utils.loadVariable(f"{trial_prefix}_rgb-frame-seq.", data_dir)
+        seg_seq = utils.loadVariable(f"{trial_prefix}_seg-labels-seq", segs_dir)
+        score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
+        pred_seq = utils.loadVariable(f"{trial_prefix}_pred-label-seq", scores_dir)
         if score_seq.shape[0] != rgb_seq.shape[0]:
             err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
             raise AssertionError(err_str)

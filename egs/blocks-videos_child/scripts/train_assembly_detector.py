@@ -53,7 +53,7 @@ def loadMasks(masks_dir=None, trial_ids=None, num_per_video=10):
 
 
 def main(
-        out_dir=None, data_dir=None, pretrain_dir=None,
+        out_dir=None, data_dir=None,
         model_name=None, gpu_dev_id=None, batch_size=None, learning_rate=None,
         model_params={}, cv_params={}, train_params={}, viz_params={}, load_masks_params={},
         kornia_tfs={},
@@ -61,8 +61,6 @@ def main(
 
     data_dir = os.path.expanduser(data_dir)
     out_dir = os.path.expanduser(out_dir)
-    if pretrain_dir is not None:
-        pretrain_dir = os.path.expanduser(pretrain_dir)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
@@ -92,9 +90,6 @@ def main(
 
     def saveVariable(var, var_name):
         joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
-
-    def loadVariable(var_name):
-        return joblib.load(os.path.join(pretrain_dir, f'{var_name}.pkl'))
 
     # Load data
     trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', to_array=True)

@@ -116,17 +116,68 @@ class TcnClassifier(torch.nn.Module):
         return preds
 
 
-def makeDataset(feats, labels, ids, device=None, labels_dtype=torch.int, **dataset_params):
-    dataset = torchutils.SequenceDataset(
-        feats, labels, device=device, labels_dtype=labels_dtype, seq_ids=ids,
-        **dataset_params
+def splitSeqs(feature_seqs, label_seqs, trial_ids, active_only=False):
+    num_signals = label_seqs[0].shape[1]
+    if num_signals >= 100:
+        raise ValueError("{num_signals} signals will cause overflow in sequence ID (max is 99)")
+
+    def validate(seqs):
+        return all(seq.shape[1] == num_signals for seq in seqs)
+    all_valid = all(validate(x) for x in (feature_seqs, label_seqs))
+    if not all_valid:
+        raise AssertionError("Features and labels don't all have the same number of sequences")
+
+    trial_ids = tuple(
+        itertools.chain(
+            *(
+                tuple(t_id + 0.01 * (i + 1) for i in range(num_signals))
+                for t_id in trial_ids
+            )
+        )
     )
-    return dataset
+
+    def splitSeq(arrays):
+        return tuple(row for array in arrays for row in array)
+
+    feature_seqs = splitSeq(map(lambda x: x.swapaxes(0, 1), feature_seqs))
+    label_seqs = splitSeq(map(lambda x: x.T, label_seqs))
+
+    if active_only:
+        is_active = tuple(map(lambda x: x.any(), label_seqs))
+
+        def filterInactive(arrays):
+            return tuple(arr for arr, act in zip(arrays, is_active) if act)
+        return tuple(map(filterInactive, (feature_seqs, label_seqs, trial_ids)))
+
+    return feature_seqs, label_seqs, trial_ids
+
+
+def joinSeqs(batches):
+    stack = functools.partial(torch.stack, dim=0)
+
+    all_seqs = collections.defaultdict(dict)
+    for batch in batches:
+        for b in zip(*batch):
+            i = b[-1]
+            seqs = b[:-1]
+
+            # i = int(vid_id) + seq_id / 100
+            seq_id, trial_id = math.modf(i)
+            seq_id = int(round(seq_id * 100))
+            trial_id = int(round(trial_id))
+
+            all_seqs[trial_id][seq_id] = seqs
+
+    for trial_id, seq_dict in all_seqs.items():
+        seqs = (seq_dict[k] for k in sorted(seq_dict.keys()))
+        seqs = map(stack, zip(*seqs))
+        yield tuple(seqs) + (trial_id,)
 
 
 def main(
         out_dir=None, data_dir=None, model_name=None, predict_mode='classify',
         gpu_dev_id=None, batch_size=None, learning_rate=None,
+        independent_signals=None, active_only=None,
         feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
         dataset_params={}, model_params={}, cv_params={}, train_params={}, viz_params={},
         metric_names=['Loss', 'Accuracy', 'Precision', 'Recall', 'F1'],
@@ -186,15 +237,23 @@ def main(
     else:
         raise AssertionError()
 
-    for cv_index, cv_fold in enumerate(cv_folds):
-        train_set, val_set, test_set = tuple(
-            makeDataset(*data, device=device, labels_dtype=labels_dtype, **dataset_params)
-            for data in dataset.getFold(cv_fold)
+    def make_dataset(feats, labels, ids, shuffle=True, **dataset_params):
+        dataset = torchutils.SequenceDataset(
+            feats, labels, device=device, labels_dtype=labels_dtype, seq_ids=ids,
+            **dataset_params
         )
+        loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
+        return dataset, loader
 
-        train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
-        test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False)
-        val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=True)
+    for cv_index, cv_fold in enumerate(cv_folds):
+        train_data, val_data, test_data = dataset.getFold(cv_fold)
+        if independent_signals:
+            train_data = splitSeqs(*train_data, active_only=active_only)
+            val_data = splitSeqs(*val_data, active_only=active_only)
+            test_data = splitSeqs(*test_data, active_only=False)
+        train_set, train_loader = make_dataset(*train_data, shuffle=True)
+        test_set, test_loader = make_dataset(*test_data, shuffle=False)
+        val_set, val_loader = make_dataset(*val_data, shuffle=True)
 
         logger.info(
             f'CV fold {cv_index + 1} / {len(cv_folds)}: {len(dataset.trial_ids)} total '
@@ -255,8 +314,10 @@ def main(
             seq_as_batch=train_params['seq_as_batch'],
             return_io_history=True
         )
-        logger.info('[TST]  ' + '  '.join(str(m) for m in metric_dict.values()))
+        if independent_signals:
+            test_io_history = tuple(joinSeqs(test_io_history))
 
+        logger.info('[TST]  ' + '  '.join(str(m) for m in metric_dict.values()))
         utils.writeResults(
             results_file, {k: v.value for k, v in metric_dict.items()},
             sweep_param_name, model_params
