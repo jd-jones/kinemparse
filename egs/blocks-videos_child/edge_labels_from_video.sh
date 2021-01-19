@@ -18,7 +18,7 @@ detections_dir="${phase_dir}/object-detections"
 seg_labels_dir="${phase_dir}/image-segment-labels"
 sim_pretrain_dir="${phase_dir}/pretrained-models-sim"
 cv_folds_dir="${phase_dir}/cv-folds_LOMO"
-edge_label_dir="${phase_dir}/edge-label-preds_LOMO"
+edge_label_dir="${phase_dir}/edge-label-preds_LOMO_no-finetune"
 edge_label_smoothed_dir="${phase_dir}/edge-label-preds-smoothed"
 
 edge_label_batches_dir="${edge_label_dir}/batches"
@@ -133,7 +133,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir "${data_dir}/data" \
         --feature_fn_format "rgb-frame-fn-seq.pkl" \
         --label_fn_format "action-seq.pkl" \
-        --cv_params "{'val_ratio': 0.25, 'by_group': 'TaskID'}"
+        --cv_params "{'val_ratio': 'group', 'by_group': 'TaskID'}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -153,7 +153,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --batch_size "20" \
         --learning_rate "0.0002" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
-        --train_params "{'num_epochs': 50, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
+        --train_params "{'num_epochs': 0, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
         --viz_params "{}"
     python analysis.py \
         --out_dir "${edge_label_batches_dir}/system-performance" \

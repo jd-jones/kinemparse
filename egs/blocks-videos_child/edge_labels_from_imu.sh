@@ -99,7 +99,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir "${fused_data_dir}/data" \
         --feature_fn_format "feature-seq.npy" \
         --label_fn_format "label-seq.npy" \
-        --cv_params "{'val_ratio': 0, 'by_group': 'TaskID'}"
+        --cv_params "{'val_ratio': 'group', 'by_group': 'TaskID'}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

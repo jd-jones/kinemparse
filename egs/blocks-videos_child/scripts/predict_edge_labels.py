@@ -46,8 +46,8 @@ class VideoLoader(utils.FeaturelessCvDataset):
         return labels
 
     def loadData(self, seq_id):
-        rgb_frames = utils.loadVariable(f"trial={seq_id}_rgb-frame-seq", self.data_dir)
-        seg_frames = utils.loadVariable(f"trial={seq_id}_seg-frame-seq", self.seg_dir).astype(int)
+        rgb_frames = utils.loadVariable(f"trial={seq_id}_rgb-frame-seq.", self.data_dir)
+        seg_frames = utils.loadVariable(f"trial={seq_id}_seg-labels-seq", self.seg_dir).astype(int)
         return rgb_frames, seg_frames
 
 
