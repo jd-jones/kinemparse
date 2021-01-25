@@ -9,6 +9,8 @@ output_dir="~/data/output/ikea_anu/"
 
 # READONLY DIRS
 input_dir="~/data/ikea_anu"
+data_dir="${input_dir}/data"
+annotation_dir="${input_dir}/annotations"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 viz_dir="${output_dir}/viz_dataset"
@@ -54,7 +56,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Visualize dataset"
     python ${debug_str} viz_dataset.py \
         --out_dir "${viz_dir}" \
-        --data_dir "${input_dir}"
+        --data_dir "${data_dir}" \
+        --annotation_dir "${annotation_dir}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
