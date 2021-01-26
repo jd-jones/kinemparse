@@ -42,11 +42,13 @@ def convert_labels(labels):
             elif arg1.startswith('bottom panel'):
                 yield start, end, action, arg1, 'side panel 1'
                 yield start, end, action, arg1, 'side panel 2'
+                yield start, end, action, arg1, 'front panel 1'
             elif arg1.startswith('pin'):
                 yield start, end, action, arg1, '??? FIXME'
             elif arg1.startswith('front panel') or arg1.startswith('back panel'):
                 yield start, end, action, arg1, 'side panel 1'
                 yield start, end, action, arg1, 'side panel 2'
+                yield start, end, action, arg1, 'bottom panel 1'
 
     new_new_labels = pd.DataFrame(
         tuple(gen_filled_labels(new_labels)),
@@ -151,8 +153,9 @@ def parse_assembly_actions(actions, kinem_vocab):
 
     def gen_kinem_labels(actions):
         state = lib_asm.Assembly()
-        for start, end in gen_segments(actions):
-            segment = actions.loc[start:end + 1]
+        action_segs = tuple(gen_segments(actions))
+        for start, end in action_segs:
+            segment = actions.loc[start:end]
             for row in segment.itertuples(index=False):
                 # label = row.label
                 # i_start = row.start
@@ -168,6 +171,12 @@ def parse_assembly_actions(actions, kinem_vocab):
                     # directed=False,
                     in_place=False
                 )
+                joint = lib_asm.Joint((arg2, arg1), 'rigid', arg2, arg1)
+                state = state.add_joint(
+                    joint, child, parent,
+                    # directed=False,
+                    in_place=False
+                )
             start_idx = actions.loc[start]['start']
             end_idx = actions.loc[end]['end']
             state_idx = utils.getIndex(state, kinem_vocab)
@@ -175,6 +184,63 @@ def parse_assembly_actions(actions, kinem_vocab):
 
     kinem_labels = tuple(gen_kinem_labels(actions))
     return pd.DataFrame(kinem_labels, columns=['start', 'end', 'state'])
+
+
+def make_goal_state(furn_name):
+    if furn_name == 'Kallax_Shelf_Drawer':
+        connections = (
+            ('side panel 1', 'front panel 1'),
+            ('side panel 2', 'front panel 1'),
+            ('bottom panel 1', 'front panel 1'),
+            ('bottom panel 1', 'side panel 1'),
+            ('bottom panel 1', 'side panel 2'),
+            ('back panel 1', 'side panel 1'),
+            ('back panel 1', 'side panel 2'),
+            ('back panel 1', 'bottom panel 1'),
+        )
+    elif furn_name == 'Lack_Coffee_Table':
+        connections = (
+            ('leg 1', 'table top 1'),
+            ('leg 2', 'table top 1'),
+            ('leg 3', 'table top 1'),
+            ('leg 4', 'table top 1'),
+            ('shelf 1', 'leg 1'),
+            ('shelf 1', 'leg 2'),
+            ('shelf 1', 'leg 3'),
+            ('shelf 1', 'leg 4')
+        )
+    elif furn_name == 'Lack_TV_Bench':
+        connections = (
+            ('leg 1', 'table top 1'),
+            ('leg 2', 'table top 1'),
+            ('leg 3', 'table top 1'),
+            ('leg 4', 'table top 1'),
+            ('shelf 1', 'leg 1'),
+            ('shelf 1', 'leg 2'),
+            ('shelf 1', 'leg 3'),
+            ('shelf 1', 'leg 4')
+        )
+    elif furn_name == 'Lack_Side_Table':
+        connections = (
+            ('leg 1', 'table top 1'),
+            ('leg 2', 'table top 1'),
+            ('leg 3', 'table top 1'),
+            ('leg 4', 'table top 1'),
+        )
+    else:
+        err_str = f"Unrecognized furniture name: {furn_name}"
+        raise ValueError(err_str)
+
+    goal_state = lib_asm.Assembly()
+    for arg1, arg2 in connections:
+        link1 = lib_asm.Link(arg1)
+        link2 = lib_asm.Link(arg2)
+        joint_12 = lib_asm.Joint((arg1, arg2), 'rigid', arg1, arg2)
+        joint_21 = lib_asm.Joint((arg2, arg1), 'rigid', arg2, arg1)
+        goal_state = goal_state.add_joint(joint_12, link1, link2, in_place=False)
+        goal_state = goal_state.add_joint(joint_21, link2, link1, in_place=False)
+
+    return goal_state
 
 
 def _convert_labels(labels):
@@ -242,12 +308,13 @@ def main(out_dir=None, data_dir=None, annotation_dir=None):
         for seq_name, ann_seq in gt_segments['database'].items()
     }
 
-    kinem_vocab = []
+    kinem_vocab = [lib_asm.Assembly()]
 
     all_label_index_seqs = collections.defaultdict(list)
     for seq_name, ann_seq in ann_seqs.items():
         logger.info(f"Processing sequence {seq_name}...")
         furn_name, other_name = seq_name.split('/')
+        goal_state = make_goal_state(furn_name)
 
         label_seq = tuple(ann['label'] for ann in ann_seq)
         segment_seq = tuple(ann['segment'] for ann in ann_seq)
@@ -275,6 +342,15 @@ def main(out_dir=None, data_dir=None, annotation_dir=None):
         all_label_index_seqs[furn_name].append(label_index_seq)
 
         kinem_df = parse_assembly_actions(new_df, kinem_vocab)
+        kinem_states = tuple(kinem_vocab[i] for i in kinem_df['state'])
+        if not kinem_states[-1] == goal_state:
+            warn_str = f"  Final structure != goal structure:\n{kinem_states[-1]}"
+            logger.warning(warn_str)
+
+        lib_asm.writeAssemblies(
+            os.path.join(out_path, f"{other_name}_kinem-state.txt"),
+            kinem_states
+        )
 
         df.to_csv(os.path.join(out_path, f"{other_name}_human.csv"), index=False)
         new_df.to_csv(os.path.join(out_path, f"{other_name}_kinem-action.csv"), index=False)
@@ -283,6 +359,10 @@ def main(out_dir=None, data_dir=None, annotation_dir=None):
         if not any(label_seq):
             logger.warning(f"No labels: {seq_name}")
 
+    lib_asm.writeAssemblies(
+        os.path.join(out_labels_dir, "kinem-vocab.txt"),
+        kinem_vocab
+    )
     symbol_table = fstutils.makeSymbolTable(new_action_vocab)
     for furn_name, label_index_seqs in all_label_index_seqs.items():
         label_fsts = tuple(
