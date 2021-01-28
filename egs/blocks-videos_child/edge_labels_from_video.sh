@@ -153,7 +153,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --batch_size "20" \
         --learning_rate "0.0002" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
-        --train_params "{'num_epochs': 0, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
+        --train_params "{'num_epochs': 10, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
         --viz_params "{}"
     python analysis.py \
         --out_dir "${edge_label_batches_dir}/system-performance" \
@@ -161,7 +161,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python postprocess_assembly_scores.py \
         --out_dir "${edge_label_dir}" \
         --data_dir "${data_dir}/data" \
-        --scores_dir "${edge_label_batches_dir}/data"
+        --scores_dir "${edge_label_batches_dir}/data" \
+        --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -181,36 +182,6 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python analysis.py \
         --out_dir "${edge_label_eval_dir}/system-performance" \
         --results_file "${edge_label_eval_dir}/results.csv"
-fi
-if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
-fi
-((++STAGE))
-
-if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Smooth predictions"
-    python ${debug_str} predict_seq_pytorch.py \
-        --out_dir "${edge_label_smoothed_dir}" \
-        --data_dir "${edge_label_dir}/data" \
-        --feature_fn_format "score-seq.pkl" \
-        --label_fn_format "true-label-seq.pkl" \
-        --gpu_dev_id "'2'" \
-        --predict_mode "'multiclass'" \
-        --model_name "'TCN'" \
-        --batch_size "1" \
-        --learning_rate "0.0002" \
-        --dataset_params "{'transpose_data': True, 'flatten_feats': True}" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
-        --train_params "{'num_epochs': 500, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
-        --model_params "{ \
-            'tcn_channels': [8,  8, 16, 16, 32, 32], \
-            'kernel_size': 5, \
-            'dropout': 0.2 \
-        }" \
-        --plot_predictions "True"
-    python analysis.py \
-        --out_dir "${edge_label_smoothed_dir}/system-performance" \
-        --results_file "${edge_label_smoothed_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

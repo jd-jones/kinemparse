@@ -3,7 +3,6 @@ import logging
 import collections
 
 import yaml
-import joblib
 import numpy as np
 
 from mathtools import utils
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def main(
         out_dir=None, data_dir=None, scores_dir=None, start_from=None, stop_at=None,
-        results_file=None, sweep_param_name=None):
+        results_file=None, sweep_param_name=None, cv_params={}):
 
     data_dir = os.path.expanduser(data_dir)
     scores_dir = os.path.expanduser(scores_dir)
@@ -42,11 +41,11 @@ def main(
         os.makedirs(out_data_dir)
 
     def loadVariable(var_name, from_dir=scores_dir):
-        var = joblib.load(os.path.join(from_dir, f"{var_name}.pkl"))
+        var = utils.loadVariable(var_name, from_dir)
         return var
 
-    def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
+    def saveVariable(var, var_name, to_dir=out_data_dir):
+        utils.saveVariable(var, var_name, out_data_dir)
 
     def makeSeqBatches(unflatten, seq_ids):
         d = collections.defaultdict(list)
@@ -69,15 +68,15 @@ def main(
     saveVariable(parts_vocab, 'parts-vocab')
     saveVariable(edge_labels, 'part-labels')
 
-    cv_fold_indices = utils.getUniqueIds(scores_dir, prefix='cvfold=', to_array=True)
-    num_cv_folds = len(cv_fold_indices)
+    trial_ids = utils.getUniqueIds(data_dir, prefix='trial=', suffix='', to_array=True)
+    cv_folds = utils.makeDataSplits(len(trial_ids), **cv_params)
 
-    for cv_index in cv_fold_indices:
-        logger.info(f"CV FOLD {cv_index + 1} / {num_cv_folds}")
-        seq_ids = loadVariable(f"cvfold={cv_index}_test-ids")
+    for cv_index, (__, __, test_indices) in enumerate(cv_folds):
+        logger.info(f"CV FOLD {cv_index + 1} / {len(cv_folds)}")
+        test_ids = trial_ids[test_indices]
         unflatten = loadVariable(f"cvfold={cv_index}_test-set-unflatten")
-        flatten = makeSeqBatches(unflatten, seq_ids)
-        for seq_id in seq_ids:
+        flatten = makeSeqBatches(unflatten, test_ids)
+        for seq_id in test_ids:
             logger.info(f"  Processing sequence {seq_id}...")
             batch_idxs = flatten[seq_id]
             score_seq, pred_seq, true_seq = map(
@@ -86,7 +85,7 @@ def main(
             )
 
             trial_prefix = f"trial={seq_id}"
-            rgb_seq = loadVariable(f"{trial_prefix}_rgb-frame-seq", from_dir=data_dir)
+            rgb_seq = loadVariable(f"{trial_prefix}_rgb-frame-seq.", from_dir=data_dir)
             if score_seq.shape[0] != rgb_seq.shape[0]:
                 err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
                 raise AssertionError(err_str)

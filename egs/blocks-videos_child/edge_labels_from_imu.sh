@@ -13,10 +13,10 @@ raw_data_dir="${output_dir}/raw-data_imu"
 
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/edge-labels-from-imu"
-data_dir="${output_dir}/connections-dataset"
-cv_folds_dir="${output_dir}/cv-folds_LOMO"
-attr_scores_dir="${output_dir}/edge-label-preds_LOMO"
-state_scores_dir="${output_dir}/predict-assemblies_attr"
+data_dir="${phase_dir}/connections-dataset"
+cv_folds_dir="${phase_dir}/cv-folds_LOMO"
+attr_scores_dir="${phase_dir}/edge-label-preds_LOMO"
+state_scores_dir="${phase_dir}/predict-assemblies_attr"
 
 start_at="0"
 stop_after="100"
@@ -96,7 +96,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Make cross-validation folds"
     python ${debug_str} make_cv_folds.py \
         --out_dir "${cv_folds_dir}" \
-        --data_dir "${fused_data_dir}/data" \
+        --data_dir "${data_dir}/data" \
         --feature_fn_format "feature-seq.npy" \
         --label_fn_format "label-seq.npy" \
         --cv_params "{'val_ratio': 'group', 'by_group': 'TaskID'}"
@@ -111,6 +111,8 @@ if [ "$start_at" -le $STAGE ]; then
     python ${debug_str} predict_seq_pytorch.py \
         --out_dir "${attr_scores_dir}" \
         --data_dir "${data_dir}/data" \
+        --feature_fn_format "feature-seq.npy" \
+        --label_fn_format "label-seq.npy" \
         --independent_signals "True" \
         --active_only "True" \
         --gpu_dev_id "'2'" \
@@ -118,6 +120,7 @@ if [ "$start_at" -le $STAGE ]; then
         --batch_size "1" \
         --learning_rate "0.001" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
+        --dataset_params "{'transpose_data': True}" \
         --train_params "{'num_epochs': 15, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
         --model_params "{ \
             'binary_multiclass': False, \
@@ -125,9 +128,7 @@ if [ "$start_at" -le $STAGE ]; then
             'kernel_size': 25, \
             'dropout': 0.2 \
         }" \
-        --plot_predictions "True" \
-        # --label_mapping "{3: 2, 4: 1}" \
-        # --eval_label_mapping "{2: 0}"
+        --plot_predictions "True"
     python analysis.py \
         --out_dir "${attr_scores_dir}/system-performance" \
         --results_file "${attr_scores_dir}/results.csv"

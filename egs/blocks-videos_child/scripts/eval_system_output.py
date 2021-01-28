@@ -1,5 +1,6 @@
 import os
 import logging
+import collections
 
 import yaml
 import numpy as np
@@ -7,6 +8,8 @@ from scipy.spatial.transform import Rotation
 from matplotlib import pyplot as plt
 import networkx as nx
 import torch
+
+import LCTM.metrics
 
 from mathtools import utils, torchutils, metrics
 from kinemparse import sim2real
@@ -145,20 +148,18 @@ def plot_io(rgb_seq, seg_seq, pred_seq, true_seq, dataset, file_path=None):
         plt.close()
 
 
-def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
+def eval_edge_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
     tp = metrics.truePositives(pred_seq, true_seq)
     tn = metrics.trueNegatives(pred_seq, true_seq)
     fp = metrics.falsePositives(pred_seq, true_seq)
     fn = metrics.falseNegatives(pred_seq, true_seq)
 
-    state_acc = (pred_seq == true_seq).all(axis=1).astype(float).mean()
-    edge_acc = (tp + tn) / (tp + tn + fp + fn)
-    edge_prc = tp / (tp + fp)
-    edge_rec = tp / (tp + fn)
-    edge_f1 = 2 * (edge_prc * edge_rec) / (edge_prc + edge_rec)
+    edge_acc = utils.safeDivide(tp + tn, tp + tn + fp + fn)
+    edge_prc = utils.safeDivide(tp, tp + fp)
+    edge_rec = utils.safeDivide(tp, tp + fn)
+    edge_f1 = utils.safeDivide(2 * edge_prc * edge_rec, edge_prc + edge_rec)
 
     metric_dict = {
-        'State Accuracy' + name_suffix: state_acc,
         'Edge Accuracy' + name_suffix: edge_acc,
         'Edge Precision' + name_suffix: edge_prc,
         'Edge Recall' + name_suffix: edge_rec,
@@ -169,22 +170,33 @@ def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
     return append_to
 
 
-def oov_rate(test_labels, train_labels):
-    all_test_labels = np.hstack(test_labels)
-    test_vocab = np.unique(all_test_labels)
+def eval_state_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
+    state_acc = (pred_seq == true_seq).astype(float).mean()
 
-    all_train_labels = np.hstack(train_labels)
-    train_vocab = np.unique(all_train_labels)
+    metric_dict = {
+        'State Accuracy' + name_suffix: state_acc,
+        'State Edit Score' + name_suffix: LCTM.metrics.edit_score(pred_seq, true_seq) / 100,
+        'State Overlap Score' + name_suffix: LCTM.metrics.overlap_score(pred_seq, true_seq) / 100
+    }
 
-    test_vocab_size = len(test_vocab)
-    num_in_vocab = sum(np.sum(train_vocab == i) for i in test_vocab)
-    num_oov = test_vocab_size - num_in_vocab
-    prop_oov = num_oov / test_vocab_size
-
-    return prop_oov
+    append_to.update(metric_dict)
+    return append_to
 
 
-def edge_labels_to_assembly_labels(edge_label_seq, assembly_vocab, edge_vocab):
+def oov_rate_state(state_seq, state_vocab):
+    state_is_oov = ~np.array([s in state_vocab for s in state_seq], dtype=bool)
+    prop_state_oov = state_is_oov.sum() / state_is_oov.size
+    return prop_state_oov
+
+
+def oov_rate_edges(edge_seq, edge_vocab):
+    matches_edges = edge_seq[None, :, :] == edge_vocab[:, None, :]
+    edge_is_oov = ~(matches_edges.any(axis=0))
+    prop_edge_oov = edge_is_oov.sum() / edge_is_oov.size
+    return prop_edge_oov
+
+
+def edges_to_assemblies(edge_label_seq, assembly_vocab, edge_vocab, assembly_vocab_edges):
     rows, cols = np.tril_indices(8, k=-1)
     keys = {
         i: frozenset((int(r), int(c)))
@@ -196,6 +208,13 @@ def edge_labels_to_assembly_labels(edge_label_seq, assembly_vocab, edge_vocab):
     joint_type_vocab = edge_vocab[keys[0]][0].joint_type_vocab
 
     def get_assembly_label(edge_labels):
+        all_edges_match = (edge_labels == assembly_vocab_edges).all(axis=1)
+        if all_edges_match.any():
+            assembly_labels = all_edges_match.nonzero()[0]
+            if edge_labels.any() and assembly_labels.size != 1:
+                AssertionError(f"{assembly_labels.size} assemblies match these edges!")
+            return assembly_labels[0]
+
         edges = tuple(
             edge_vocab[keys[edge_index]][edge_label - 1]
             for edge_index, edge_label in enumerate(edge_labels)
@@ -213,6 +232,7 @@ def edge_labels_to_assembly_labels(edge_label_seq, assembly_vocab, edge_vocab):
     edge_segs, seg_lens = utils.computeSegments(edge_label_seq)
     assembly_segs = tuple(get_assembly_label(edge_labels) for edge_labels in edge_segs)
     assembly_label_seq = np.array(utils.fromSegments(assembly_segs, seg_lens))
+
     return assembly_label_seq
 
 
@@ -253,10 +273,35 @@ def load_vocab(link_vocab, joint_vocab, joint_type_vocab, vocab_dir):
     return assembly_vocab, edge_vocab, edge_labels
 
 
+def make_scatterplot(fn, x, y, x_label, y_label, classes=None):
+    x = np.array(x)
+    y = np.array(y)
+
+    if classes is not None:
+        data = tuple((x[classes == i], y[classes == i]) for i in np.unique(classes))
+    else:
+        data = ((x, y),)
+
+    plt.figure()
+
+    for i, (x, y) in enumerate(data):
+        coef = np.polyfit(x, y, 1)
+        poly1d_fn = np.poly1d(coef)
+        x_range = np.linspace(min(x), max(x))
+        y_range = poly1d_fn(x_range)
+        plt.scatter(x, y)
+        plt.plot(x_range, y_range, label=f"{i}: m={coef[0]:.2f}, b={coef[1]:.2f}")
+
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.legend()
+    plt.savefig(fn)
+
+
 def main(
         out_dir=None, data_dir=None, segs_dir=None, scores_dir=None, vocab_dir=None,
         label_type='edges', gpu_dev_id=None, start_from=None, stop_at=None, num_disp_imgs=None,
-        results_file=None, sweep_param_name=None, model_params={}):
+        results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
 
     data_dir = os.path.expanduser(data_dir)
     segs_dir = os.path.expanduser(segs_dir)
@@ -293,11 +338,8 @@ def main(
         scores_dir, prefix='trial=', suffix='score-seq.*',
         to_array=True
     )
-    label_seqs = tuple(
-        utils.loadVariable(f"trial={seq_id}_true-label-seq", scores_dir)
-        for seq_id in seq_ids
-    )
-    num_seqs = len(label_seqs)
+
+    logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
 
     link_vocab = {}
     joint_vocab = {}
@@ -307,6 +349,37 @@ def main(
     )
     pred_vocab = []  # FIXME
 
+    if label_type == 'assembly':
+        logger.info("Converting assemblies -> edges")
+        state_pred_seqs = tuple(
+            utils.loadVariable(f"trial={seq_id}_pred-label-seq", scores_dir)
+            for seq_id in seq_ids
+        )
+        state_true_seqs = tuple(
+            utils.loadVariable(f"trial={seq_id}_true-label-seq", scores_dir)
+            for seq_id in seq_ids
+        )
+        edge_pred_seqs = tuple(part_labels[seq] for seq in state_pred_seqs)
+        edge_true_seqs = tuple(part_labels[seq] for seq in state_true_seqs)
+    elif label_type == 'edge':
+        logger.info("Converting edges -> assemblies (will take a few minutes)")
+        edge_pred_seqs = tuple(
+            utils.loadVariable(f"trial={seq_id}_pred-label-seq", scores_dir)
+            for seq_id in seq_ids
+        )
+        edge_true_seqs = tuple(
+            utils.loadVariable(f"trial={seq_id}_true-label-seq", scores_dir)
+            for seq_id in seq_ids
+        )
+        state_pred_seqs = tuple(
+            edges_to_assemblies(seq, pred_vocab, parts_vocab, part_labels)
+            for seq in edge_pred_seqs
+        )
+        state_true_seqs = tuple(
+            edges_to_assemblies(seq, vocab, parts_vocab, part_labels)
+            for seq in edge_true_seqs
+        )
+
     device = torchutils.selectDevice(gpu_dev_id)
     dataset = sim2real.LabeledConnectionDataset(
         utils.loadVariable('parts-vocab', vocab_dir),
@@ -315,86 +388,125 @@ def main(
         device=device
     )
 
-    for seq_index, seq_id in enumerate(seq_ids):
-        logger.info(f"  Processing sequence {seq_id}...")
+    all_metrics = collections.defaultdict(list)
 
-        trial_prefix = f"trial={seq_id}"
-        # I include the '.' to differentiate between 'rgb-frame-seq' and
-        # 'rgb-frame-seq-before-first-touch'
-        rgb_seq = utils.loadVariable(f"{trial_prefix}_rgb-frame-seq.", data_dir)
-        seg_seq = utils.loadVariable(f"{trial_prefix}_seg-labels-seq", segs_dir)
-        score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
-        pred_seq = utils.loadVariable(f"{trial_prefix}_pred-label-seq", scores_dir)
-        if score_seq.shape[0] != rgb_seq.shape[0]:
-            err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
-            raise AssertionError(err_str)
+    # Define cross-validation folds
+    cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
+    utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
-        true_seq = label_seqs[seq_index]
+    for cv_index, cv_fold in enumerate(cv_folds):
+        train_indices, val_indices, test_indices = cv_fold
+        state_train_vocab = np.unique(np.hstack(
+            tuple(state_true_seqs[i] for i in (train_indices))
+        ))
+        edge_train_vocab = part_labels[state_train_vocab]
+        logger.info(
+            f"CV FOLD {cv_index + 1} / {len(cv_folds)}: "
+            f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
+        )
+        for i in test_indices:
+            seq_id = seq_ids[i]
+            logger.info(f"  Processing sequence {seq_id}...")
 
-        if label_type == 'assembly':
-            pred_images = tuple(
-                render(dataset, vocab[seg_label])
-                for seg_label in utils.computeSegments(pred_seq)[0]
-            )
-            imageprocessing.displayImages(
-                *pred_images,
-                file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}_pred-assemblies.png")
-            )
-            true_images = tuple(
-                render(dataset, vocab[seg_label])
-                for seg_label in utils.computeSegments(true_seq)[0]
-            )
-            imageprocessing.displayImages(
-                *true_images,
-                file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}_true-assemblies.png")
-            )
+            trial_prefix = f"trial={seq_id}"
+            # I include the '.' to differentiate between 'rgb-frame-seq' and
+            # 'rgb-frame-seq-before-first-touch'
+            rgb_seq = utils.loadVariable(f"{trial_prefix}_rgb-frame-seq.", data_dir)
+            seg_seq = utils.loadVariable(f"{trial_prefix}_seg-labels-seq", segs_dir)
+            score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
+            if score_seq.shape[0] != rgb_seq.shape[0]:
+                err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
+                raise AssertionError(err_str)
 
-            prop_oov = oov_rate(
-                [true_seq],
-                tuple(label_seqs[i] for i in range(num_seqs) if i != seq_index)
-            )
-            metric_dict = {'OOV rate': prop_oov}
+            edge_pred_seq = edge_pred_seqs[i]
+            edge_true_seq = edge_true_seqs[i]
+            state_pred_seq = state_pred_seqs[i]
+            state_true_seq = state_true_seqs[i]
 
-            pred_seq = part_labels[pred_seq]
-            true_seq = part_labels[true_seq]
-        else:
-            assembly_pred_seq = edge_labels_to_assembly_labels(
-                pred_seq, pred_vocab, parts_vocab
-            )
-            num_types = np.unique(assembly_pred_seq).shape[0]
-            num_samples = assembly_pred_seq.shape[0]
+            num_types = np.unique(state_pred_seq).shape[0]
+            num_samples = state_pred_seq.shape[0]
             num_total = len(pred_vocab)
             logger.info(
                 f"    {num_types} assemblies predicted ({num_total} total); "
                 f"{num_samples} samples"
             )
-            metric_dict = {}
 
-        metric_dict = eval_metrics(pred_seq, true_seq, append_to=metric_dict)
-        for name, value in metric_dict.items():
-            logger.info(f"    {name}: {value * 100:.2f}%")
+            metric_dict = {
+                'State OOV rate': oov_rate_state(state_true_seq, state_train_vocab),
+                'Edge OOV rate': oov_rate_edges(edge_true_seq, edge_train_vocab)
+            }
+            metric_dict = eval_edge_metrics(edge_pred_seq, edge_true_seq, append_to=metric_dict)
+            metric_dict = eval_state_metrics(state_pred_seq, state_true_seq, append_to=metric_dict)
+            for name, value in metric_dict.items():
+                logger.info(f"    {name}: {value * 100:.2f}%")
+                all_metrics[name].append(value)
 
-        utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
+            utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
-        if num_disp_imgs is not None:
-            utils.plot_array(
-                score_seq.T, (true_seq.T, pred_seq.T), ('true', 'pred'),
-                fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
-            )
-
-            # FIXME
-            if False:
-                if rgb_seq.shape[0] > num_disp_imgs:
-                    idxs = np.arange(rgb_seq.shape[0])
-                    np.random.shuffle(idxs)
-                    idxs = idxs[:num_disp_imgs]
-                    idxs = np.sort(idxs)
-                else:
-                    idxs = slice(None, None, None)
-                plot_io(
-                    rgb_seq[idxs], seg_seq[idxs], pred_seq[idxs], true_seq[idxs], dataset,
-                    file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}.png")
+            if num_disp_imgs is not None:
+                pred_images = tuple(
+                    render(dataset, vocab[seg_label])
+                    for seg_label in utils.computeSegments(state_pred_seq)[0]
                 )
+                imageprocessing.displayImages(
+                    *pred_images,
+                    file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}_pred-assemblies.png"),
+                    num_rows=None, num_cols=5
+                )
+                true_images = tuple(
+                    render(dataset, vocab[seg_label])
+                    for seg_label in utils.computeSegments(state_true_seq)[0]
+                )
+                imageprocessing.displayImages(
+                    *true_images,
+                    file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}_true-assemblies.png"),
+                    num_rows=None, num_cols=5
+                )
+
+                utils.plot_array(
+                    score_seq.T, (edge_true_seq.T, edge_pred_seq.T), ('true', 'pred'),
+                    fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
+                )
+
+                if False:  # FIXME
+                    if rgb_seq.shape[0] > num_disp_imgs:
+                        idxs = np.arange(rgb_seq.shape[0])
+                        np.random.shuffle(idxs)
+                        idxs = idxs[:num_disp_imgs]
+                        idxs = np.sort(idxs)
+                    else:
+                        idxs = slice(None, None, None)
+                    plot_io(
+                        rgb_seq[idxs], seg_seq[idxs], edge_pred_seq[idxs], edge_true_seq[idxs],
+                        dataset,
+                        file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}.png")
+                    )
+
+    make_scatterplot(
+        os.path.join(fig_dir, "state-oov_vs_state-accuracy.png"),
+        all_metrics['State OOV rate'],
+        all_metrics['State Accuracy'],
+        'State OOV rate', 'State Accuracy',
+        classes=(np.array(all_metrics['Edge OOV rate']) < 0.05).astype(int)
+    )
+    make_scatterplot(
+        os.path.join(fig_dir, "edge-oov_vs_state-accuracy.png"),
+        all_metrics['Edge OOV rate'],
+        all_metrics['State Accuracy'],
+        'Edge OOV rate', 'State Accuracy'
+    )
+    make_scatterplot(
+        os.path.join(fig_dir, "edge-oov_vs_edge-F1.png"),
+        all_metrics['Edge OOV rate'],
+        all_metrics['Edge F1'],
+        'Edge OOV rate', 'Edge F1'
+    )
+    make_scatterplot(
+        os.path.join(fig_dir, "edge-oov_vs_state-oov.png"),
+        all_metrics['Edge OOV rate'],
+        all_metrics['State OOV rate'],
+        'Edge OOV rate', 'State OOV rate'
+    )
 
     for i, a in enumerate(pred_vocab):
         pred_image = render(dataset, a)

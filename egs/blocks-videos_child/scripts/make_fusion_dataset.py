@@ -55,7 +55,7 @@ class FusionDataset(object):
         imu_attribute_seq = torch.tensor(
             utils.loadVariable(f"{trial_prefix}_score-seq", self.imu_attributes_dir),
             dtype=torch.float, device=self.device
-        ).permute(1, 2, 0)[:, :2]  # FIXME: save in the correct shape to avoid this reshape
+        )
         imu_timestamp_seq = utils.loadVariable(f"{trial_prefix}_timestamp-seq", self.imu_data_dir)
         rgb_attribute_seq, imu_attribute_seq = resample(
             rgb_attribute_seq, rgb_timestamp_seq,

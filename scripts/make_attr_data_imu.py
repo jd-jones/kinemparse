@@ -3,7 +3,6 @@ import logging
 
 import yaml
 import numpy as np
-import joblib
 
 from mathtools import utils
 from blocks.core import labels
@@ -84,14 +83,15 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    def loadAll(seq_ids, var_name):
-        def loadOne(seq_id):
-            fn = os.path.join(data_dir, f'trial={seq_id}_{var_name}')
-            return joblib.load(fn)
-        return tuple(map(loadOne, seq_ids))
+    def loadAll(seq_ids, var_name, from_dir=data_dir, prefix='trial='):
+        all_data = tuple(
+            utils.loadVariable(f"{prefix}{seq_id}_{var_name}", from_dir)
+            for seq_id in seq_ids
+        )
+        return all_data
 
-    def saveVariable(var, var_name):
-        joblib.dump(var, os.path.join(out_data_dir, f'{var_name}.pkl'))
+    def saveVariable(var, var_name, to_dir=out_data_dir):
+        utils.saveVariable(var, var_name, to_dir)
 
     if fig_type is None:
         fig_type = 'multi'
@@ -102,8 +102,6 @@ def main(
     else:
         use_vid_ids_from = os.path.expanduser(use_vid_ids_from)
         trial_ids = utils.getUniqueIds(use_vid_ids_from, prefix='trial-', to_array=True)
-    if not trial_ids.any():
-        logger.warning("No filenames matched the trial ID string!")
 
     accel_seqs = loadAll(trial_ids, 'accel-samples.pkl')
     gyro_seqs = loadAll(trial_ids, 'gyro-samples.pkl')
@@ -123,11 +121,16 @@ def main(
 
     def chooseValid(seq):
         return tuple(x for x, is_valid in zip(seq, imu_is_valid) if is_valid)
-    trial_ids = chooseValid(trial_ids)
+    trial_ids = np.array(list(chooseValid(trial_ids)))
     accel_seqs = chooseValid(accel_seqs)
     gyro_seqs = chooseValid(gyro_seqs)
     action_seqs = chooseValid(action_seqs)
     rgb_timestamp_seqs = chooseValid(rgb_timestamp_seqs)
+
+    vocab = []
+    metadata = utils.loadMetadata(data_dir, rows=trial_ids)
+    utils.saveMetadata(metadata, out_data_dir)
+    utils.saveVariable(vocab, 'vocab', out_data_dir)
 
     def norm(x):
         norm = np.linalg.norm(imu.getImuSamples(x), axis=1)[:, None]
@@ -199,7 +202,7 @@ def main(
     elif output_data == 'pairwise components':
         imu_label_seqs = utils.batchProcess(
             labels.pairwiseComponentLabels, assembly_seqs,
-            static_kwargs={'lower_tri_only': True}
+            static_kwargs={'lower_tri_only': True, 'include_action_labels': False}
         )
         accel_feat_seqs = tuple(map(imu.pairwiseFeats, accel_mag_seqs))
         gyro_feat_seqs = tuple(map(imu.pairwiseFeats, gyro_mag_seqs))

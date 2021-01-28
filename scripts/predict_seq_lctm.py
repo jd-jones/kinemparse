@@ -7,8 +7,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 # Stop numba from throwing a bunch of warnings when it compiles LCTM
-from numba import NumbaWarning; warnings.filterwarnings('ignore', category=NumbaWarning)
-
+from numba import NumbaWarning
+warnings.filterwarnings('ignore', category=NumbaWarning)
 import LCTM.models
 import LCTM.metrics
 import LCTM.utils

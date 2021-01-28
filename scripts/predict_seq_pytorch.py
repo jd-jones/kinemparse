@@ -1,6 +1,8 @@
 import os
 import collections
 import logging
+import itertools
+import math
 
 import yaml
 import torch
@@ -116,6 +118,74 @@ class TcnClassifier(torch.nn.Module):
         return preds
 
 
+class LstmClassifier(torch.nn.Module):
+    def __init__(
+            self, input_dim, out_set_size, num_multiclass=None,
+            binary_multiclass=False, hidden_dim=512, **lstm_kwargs):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.out_set_size = out_set_size
+        self.binary_multiclass = binary_multiclass
+        self.num_multiclass = num_multiclass
+
+        num_directions = 2
+        self.LSTM = torch.nn.LSTM(input_dim, hidden_dim, **lstm_kwargs)
+
+        if self.num_multiclass is None:
+            self.linear = torch.nn.Linear(num_directions * hidden_dim, self.out_set_size)
+        else:
+            self.linear = torch.nn.Linear(
+                num_directions * hidden_dim,
+                self.out_set_size * self.num_multiclass
+            )
+
+        logger.info(
+            f'Initialized LSTM classifier. '
+            f'Input dim: {self.input_dim}, Output dim: {self.out_set_size}'
+        )
+
+    def forward(self, input_seq, return_feats=False):
+        batch_size = input_seq.shape[0]
+        hidden_size = 512
+        num_layers = 1
+        num_directions = 2
+        h0 = torch.randn(
+            num_layers * num_directions, batch_size, hidden_size,
+            device=input_seq.device
+        )
+        c0 = torch.randn(
+            num_layers * num_directions, batch_size, hidden_size,
+            device=input_seq.device
+        )
+        lstm_out, (hn, cn) = self.LSTM(input_seq, (h0, c0))
+        # import pdb; pdb.set_trace()
+        linear_out = self.linear(lstm_out)
+
+        if self.num_multiclass is not None:
+            linear_out = linear_out.view(
+                *linear_out.shape[0:2], self.out_set_size, self.num_multiclass
+            )
+
+        if return_feats:
+            return linear_out, lstm_out
+        return linear_out
+
+    def predict(self, outputs, return_scores=False):
+        """ outputs has shape (num_batch, num_samples, num_classes, ...) """
+
+        if self.binary_multiclass:
+            return (outputs > 0.5).float()
+
+        __, preds = torch.max(outputs, dim=2)
+
+        if return_scores:
+            scores = torch.nn.softmax(outputs, dim=1)
+            return preds, scores
+
+        return preds
+
+
 def splitSeqs(feature_seqs, label_seqs, trial_ids, active_only=False):
     num_signals = label_seqs[0].shape[1]
     if num_signals >= 100:
@@ -153,7 +223,9 @@ def splitSeqs(feature_seqs, label_seqs, trial_ids, active_only=False):
 
 
 def joinSeqs(batches):
-    stack = functools.partial(torch.stack, dim=0)
+    def stack(seq):
+        stacked = torch.stack(seq, dim=-1)
+        return stacked[None, ...]
 
     all_seqs = collections.defaultdict(dict)
     for batch in batches:
@@ -161,7 +233,6 @@ def joinSeqs(batches):
             i = b[-1]
             seqs = b[:-1]
 
-            # i = int(vid_id) + seq_id / 100
             seq_id, trial_id = math.modf(i)
             seq_id = int(round(seq_id * 100))
             trial_id = int(round(trial_id))
@@ -171,7 +242,7 @@ def joinSeqs(batches):
     for trial_id, seq_dict in all_seqs.items():
         seqs = (seq_dict[k] for k in sorted(seq_dict.keys()))
         seqs = map(stack, zip(*seqs))
-        yield tuple(seqs) + (trial_id,)
+        yield tuple(seqs) + ((trial_id,),)
 
 
 def main(
@@ -237,12 +308,12 @@ def main(
     else:
         raise AssertionError()
 
-    def make_dataset(feats, labels, ids, shuffle=True, **dataset_params):
+    def make_dataset(feats, labels, ids, shuffle=True):
         dataset = torchutils.SequenceDataset(
             feats, labels, device=device, labels_dtype=labels_dtype, seq_ids=ids,
             **dataset_params
         )
-        loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
         return dataset, loader
 
     for cv_index, cv_fold in enumerate(cv_folds):
@@ -279,6 +350,20 @@ def main(
             else:
                 num_multiclass = None
             model = TcnClassifier(
+                input_dim, output_dim, num_multiclass=num_multiclass,
+                **model_params
+            ).to(device=device)
+        elif model_name == 'LSTM':
+            if predict_mode == 'multiclass':
+                num_multiclass = train_set[0][1].shape[-1]
+                output_dim = max([
+                    train_set.num_label_types,
+                    test_set.num_label_types,
+                    val_set.num_label_types
+                ])
+            else:
+                num_multiclass = None
+            model = LstmClassifier(
                 input_dim, output_dim, num_multiclass=num_multiclass,
                 **model_params
             ).to(device=device)
