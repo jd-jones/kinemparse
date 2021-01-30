@@ -16,14 +16,12 @@ phase_dir="${output_dir}/edge-labels-from-video"
 background_dir="${phase_dir}/background-detections"
 detections_dir="${phase_dir}/object-detections"
 seg_labels_dir="${phase_dir}/image-segment-labels"
-sim_pretrain_dir="${phase_dir}/pretrained-models-sim"
+sim_pretrain_dir="${phase_dir}/pretrained-models-sim_test-single-edge"
 cv_folds_dir="${phase_dir}/cv-folds_LOMO"
-edge_label_dir="${phase_dir}/edge-label-preds_LOMO_no-finetune"
-edge_label_smoothed_dir="${phase_dir}/edge-label-preds-smoothed"
+edge_label_dir="${phase_dir}/edge-label-preds_cv=LOMO_test-single-edge"
 
 edge_label_batches_dir="${edge_label_dir}/batches"
 edge_label_eval_dir="${edge_label_dir}/eval"
-smoothed_eval_dir="${edge_label_smoothed_dir}/eval"
 
 start_at="0"
 stop_after="100"
@@ -116,8 +114,13 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --learning_rate "0.0002" \
         --model_name "Labeled Connections" \
         --load_masks_params "{'masks_dir': '${detections_dir}/data', 'num_per_video': 10}" \
-        --train_params "{'num_epochs': 500, 'test_metric': 'F1', 'seq_as_batch': False}" \
-        --model_params "{}" \
+        --train_params "{'num_epochs': 25, 'test_metric': 'F1', 'seq_as_batch': False}" \
+        --model_params "{ \
+            'finetune_extractor': True, \
+            'feature_extractor_name': 'resnet18', \
+            'feature_extractor_layer': -1 \
+        }" \
+        --only_edge "14" \
         --num_disp_imgs "10" \
         --viz_params "{}"
 fi
@@ -153,7 +156,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --batch_size "20" \
         --learning_rate "0.0002" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
-        --train_params "{'num_epochs': 10, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
+        --train_params "{'num_epochs': 3, 'test_metric': 'F1', 'seq_as_batch': 'sample mode'}" \
+        --model_params "{'finetune_extractor': True}"
         --viz_params "{}"
     python analysis.py \
         --out_dir "${edge_label_batches_dir}/system-performance" \
@@ -182,25 +186,6 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python analysis.py \
         --out_dir "${edge_label_eval_dir}/system-performance" \
         --results_file "${edge_label_eval_dir}/results.csv"
-fi
-if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
-fi
-((++STAGE))
-
-if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Evaluate smoothed predictions"
-    python ${debug_str} eval_system_output.py \
-        --out_dir "${smoothed_eval_dir}" \
-        --data_dir "${data_dir}/data" \
-        --segs_dir "${seg_labels_dir}/data" \
-        --scores_dir "${edge_label_smoothed_dir}/data" \
-        --vocab_dir "${sim_pretrain_dir}/data" \
-        --gpu_dev_id "'2'" \
-        --num_disp_imgs "10"
-    python analysis.py \
-        --out_dir "${seq_eval_dir}/system-performance" \
-        --results_file "${seq_eval_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

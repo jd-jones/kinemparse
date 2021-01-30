@@ -213,6 +213,17 @@ class BlocksConnectionDataset(BlocksVideoDataset):
 
         self._debug_fig_dir = debug_fig_dir
 
+        all_labels = torch.cat(self._labels)
+        all_edges = self.edge_labels[all_labels]
+        num_classes = all_edges.max() + 1
+        self.class_freqs = torch.stack(tuple(
+            torch.tensor(
+                utils.makeHistogram(num_classes, column.cpu().numpy(), normalize=True),
+                device=self.edge_labels.device, dtype=torch.float
+            )
+            for column in all_edges.transpose(0, 1)
+        ), dim=1)
+
     def __getitem__(self, i):
         data_seqs, label_seq, seq_id = self._load(i)
         data_seq, label_seq = self._transform(data_seqs, label_seq)
@@ -530,6 +541,15 @@ class LabeledConnectionDataset(ConnectionDataset):
         self.vocab = tuple(a for a, b in zip(vocab, has_one_component) if b)
         self.part_labels = self.part_labels[has_one_component]
 
+        num_classes = self.part_labels.max() + 1
+        self.class_freqs = torch.stack(tuple(
+            torch.tensor(
+                utils.makeHistogram(num_classes, column.cpu().numpy(), normalize=True),
+                device=self.part_labels.device, dtype=torch.float
+            )
+            for column in self.part_labels.transpose(0, 1)
+        ), dim=1)
+
         self._kornia_tfs = self._init_kornia_tfs(kornia_tfs=kornia_tfs)
 
     def _getTarget(self, i):
@@ -538,10 +558,14 @@ class LabeledConnectionDataset(ConnectionDataset):
 
 # -=( MODELS )==---------------------------------------------------------------
 class SceneClassifier(torch.nn.Module):
-    def __init__(self, pretrained_model, pred_thresh=0.5):
+    def __init__(self, pretrained_model, pred_thresh=0.5, finetune_extractor=True):
         super().__init__()
         self._model = pretrained_model
         self.pred_thresh = pred_thresh
+
+        if not finetune_extractor:
+            for param in self._model.feature_extractor.parameters():
+                param.requires_grad = False
 
     def forward(self, inputs):
         in_shape = inputs.shape
@@ -639,7 +663,10 @@ class ConnectionClassifier(torch.nn.Module):
 
 
 class LabeledConnectionClassifier(torch.nn.Module):
-    def __init__(self, out_dim, num_vertices, edges, feature_dim=None, feature_extractor=None):
+    def __init__(
+            self, out_dim, num_vertices, edges,
+            feature_dim=None, feature_extractor=None, finetune_extractor=True,
+            feature_extractor_name='resnet50', feature_extractor_layer=-1):
         super().__init__()
 
         self.out_dim = out_dim
@@ -647,10 +674,16 @@ class LabeledConnectionClassifier(torch.nn.Module):
         self.edges = edges
 
         if feature_extractor is None:
-            pretrained_model = torchvision.models.resnet18(pretrained=True, progress=True)
-            layers = list(pretrained_model.children())[:-1]
+            # pretrained_model = torchvision.models.resnet18(pretrained=True, progress=True)
+            Extractor = getattr(torchvision.models, feature_extractor_name)
+            pretrained_model = Extractor(pretrained=True, progress=True)
+            layers = list(pretrained_model.children())[:feature_extractor_layer]
             feature_extractor = torch.nn.Sequential(*layers)
             feature_dim = 512
+
+        if not finetune_extractor:
+            for param in feature_extractor.parameters():
+                param.requires_grad = False
 
         self.feature_extractor = feature_extractor
         self.fc = torch.nn.Linear(feature_dim, out_dim * self.edges.shape[0])
@@ -658,7 +691,7 @@ class LabeledConnectionClassifier(torch.nn.Module):
     def forward(self, inputs):
         features = self.feature_extractor(inputs)
         outputs = self.fc(features.squeeze(dim=-1).squeeze(dim=-1))
-        outputs = outputs.view(outputs.shape[0], self.out_dim, len(self.edges))
+        outputs = outputs.view(outputs.shape[0], self.out_dim, self.edges.shape[0])
         return outputs
 
     def predict(self, outputs):

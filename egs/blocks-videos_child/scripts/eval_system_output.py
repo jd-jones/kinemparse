@@ -396,14 +396,16 @@ def main(
 
     for cv_index, cv_fold in enumerate(cv_folds):
         train_indices, val_indices, test_indices = cv_fold
-        state_train_vocab = np.unique(np.hstack(
-            tuple(state_true_seqs[i] for i in (train_indices))
-        ))
-        edge_train_vocab = part_labels[state_train_vocab]
         logger.info(
             f"CV FOLD {cv_index + 1} / {len(cv_folds)}: "
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
+
+        train_states = np.hstack(tuple(state_true_seqs[i] for i in (train_indices)))
+        state_train_vocab = np.unique(train_states)
+        state_probs = utils.makeHistogram(len(vocab), train_states, normalize=True)
+        edge_train_vocab = part_labels[state_train_vocab]
+
         for i in test_indices:
             seq_id = seq_ids[i]
             logger.info(f"  Processing sequence {seq_id}...")
@@ -433,7 +435,9 @@ def main(
 
             metric_dict = {
                 'State OOV rate': oov_rate_state(state_true_seq, state_train_vocab),
-                'Edge OOV rate': oov_rate_edges(edge_true_seq, edge_train_vocab)
+                'Edge OOV rate': oov_rate_edges(edge_true_seq, edge_train_vocab),
+                'State avg prob, true': state_probs[state_true_seq].mean(),
+                'State avg prob, pred': state_probs[state_pred_seq].mean()
             }
             metric_dict = eval_edge_metrics(edge_pred_seq, edge_true_seq, append_to=metric_dict)
             metric_dict = eval_state_metrics(state_pred_seq, state_true_seq, append_to=metric_dict)
@@ -488,6 +492,12 @@ def main(
         all_metrics['State Accuracy'],
         'State OOV rate', 'State Accuracy',
         classes=(np.array(all_metrics['Edge OOV rate']) < 0.05).astype(int)
+    )
+    make_scatterplot(
+        os.path.join(fig_dir, "state-prob_vs_state-accuracy.png"),
+        all_metrics['State avg prob, true'],
+        all_metrics['State Accuracy'],
+        'State avg prob, true', 'State Accuracy',
     )
     make_scatterplot(
         os.path.join(fig_dir, "edge-oov_vs_state-accuracy.png"),

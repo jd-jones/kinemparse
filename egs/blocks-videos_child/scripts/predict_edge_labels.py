@@ -168,20 +168,20 @@ def main(
             f'({len(train_set)} train, {len(val_set)} val, {len(test_set)} test)'
         )
 
+        logger.info(f"Class freqs (train): {np.squeeze(train_set.class_freqs)}")
+        logger.info(f"Class freqs   (val): {np.squeeze(val_set.class_freqs)}")
+        logger.info(f"Class freqs  (test): {np.squeeze(test_set.class_freqs)}")
+
         if model_name == 'template':
             model = sim2real.AssemblyClassifier(vocab, **model_params)
         elif model_name == 'pretrained':
             pretrained_model = utils.loadVariable("cvfold=0_model-best", pretrained_model_dir)
-            model = sim2real.SceneClassifier(pretrained_model)
+            model = sim2real.SceneClassifier(pretrained_model, **model_params)
             metric_names = ('Loss', 'Accuracy', 'Precision', 'Recall', 'F1')
-            # criterion = torch.nn.BCEWithLogitsLoss()
+            criterion = torch.nn.CrossEntropyLoss()
             # criterion = torchutils.BootstrappedCriterion(
-            #     0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
+            #     0.25, base_criterion=torch.nn.functional.cross_entropy,
             # )
-            # criterion = torch.nn.CrossEntropyLoss()
-            criterion = torchutils.BootstrappedCriterion(
-                0.25, base_criterion=torch.nn.functional.cross_entropy,
-            )
         else:
             raise AssertionError()
 

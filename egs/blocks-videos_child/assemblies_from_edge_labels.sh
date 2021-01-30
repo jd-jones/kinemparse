@@ -194,8 +194,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --vocab_dir "${rgb_vocab_dir}/data" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --gpu_dev_id "'2'" \
-        --label_type "assembly"
-        # --num_disp_imgs "10"
+        --label_type "assembly" \
+        --num_disp_imgs "10"
     python analysis.py \
         --out_dir "${decode_eval_dir}/system-performance" \
         --results_file "${decode_eval_dir}/results.csv"
