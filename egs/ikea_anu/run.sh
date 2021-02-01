@@ -5,7 +5,7 @@ set -ue
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
-output_dir="~/data/output/ikea_anu/"
+output_dir="~/data/output/ikea_anu"
 
 # READONLY DIRS
 input_dir="~/data/ikea_anu"
@@ -14,6 +14,7 @@ annotation_dir="${input_dir}/annotations"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 viz_dir="${output_dir}/viz_dataset"
+action_data_dir="${output_dir}/action_dataset"
 
 start_at="0"
 stop_after="100"
@@ -56,6 +57,19 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Visualize dataset"
     python ${debug_str} viz_dataset.py \
         --out_dir "${viz_dir}" \
+        --data_dir "${data_dir}" \
+        --annotation_dir "${annotation_dir}"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Make action dataset"
+    python ${debug_str} make_action_data.py \
+        --out_dir "${action_data_dir}" \
         --data_dir "${data_dir}" \
         --annotation_dir "${annotation_dir}"
 fi
