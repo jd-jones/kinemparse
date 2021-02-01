@@ -20,12 +20,12 @@ imu_data_dir="${imu_phase_dir}/connections-dataset"
 imu_edge_label_dir="${imu_phase_dir}/edge-label-preds_LOMO"
 
 # OUTPUT OF SCRIPT
-phase_dir="${output_dir}/assemblies-from-edge-labels_LOMO"
+phase_dir="${output_dir}/assemblies-from-edge-labels"
 fused_data_dir="${phase_dir}/fusion-dataset"
 cv_folds_dir="${phase_dir}/cv-folds"
-fused_scores_dir="${phase_dir}/edge-label-preds_fused_LSTM"
-assembly_scores_dir="${phase_dir}/assembly-scores_fused"
-decode_dir="${phase_dir}/assembly-decode"
+fused_scores_dir="${phase_dir}/edge-label-preds"
+assembly_scores_dir="${phase_dir}/assembly-scores"
+decode_dir="${phase_dir}/assembly-decode_fused"
 
 fusion_eval_dir="${fused_scores_dir}/eval"
 decode_eval_dir="${decode_dir}/eval"

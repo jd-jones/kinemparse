@@ -196,6 +196,25 @@ def oov_rate_edges(edge_seq, edge_vocab):
     return prop_edge_oov
 
 
+def edge_joint_freqs(edge_seq):
+    num_samples, num_edges = edge_seq.shape
+    bigram_counts = np.zeros((num_edges, num_edges), dtype=int)
+    unigram_counts = np.zeros(num_edges, dtype=int)
+    for edges in edge_seq:
+        nonzero_edges = np.nonzero(edges)[0]
+        for i in range(len(nonzero_edges)):
+            e_i = nonzero_edges[i]
+            unigram_counts[e_i] += 1
+            for j in range(i):
+                e_j = nonzero_edges[j]
+                bigram_counts[e_i, e_j] += 1
+                bigram_counts[e_j, e_i] += 1
+
+    bigram_freqs = bigram_counts / num_samples
+    unigram_freqs = unigram_counts / num_samples
+    return bigram_freqs, unigram_freqs
+
+
 def edges_to_assemblies(edge_label_seq, assembly_vocab, edge_vocab, assembly_vocab_edges):
     rows, cols = np.tril_indices(8, k=-1)
     keys = {
@@ -402,9 +421,32 @@ def main(
         )
 
         train_states = np.hstack(tuple(state_true_seqs[i] for i in (train_indices)))
+        train_edges = part_labels[train_states]
         state_train_vocab = np.unique(train_states)
-        state_probs = utils.makeHistogram(len(vocab), train_states, normalize=True)
         edge_train_vocab = part_labels[state_train_vocab]
+        train_freq_bigram, train_freq_unigram = edge_joint_freqs(train_edges)
+        state_probs = utils.makeHistogram(len(vocab), train_states, normalize=True)
+
+        test_states = np.hstack(tuple(state_true_seqs[i] for i in (test_indices)))
+        test_edges = part_labels[test_states]
+        # state_test_vocab = np.unique(test_states)
+        # edge_test_vocab = part_labels[state_test_vocab]
+        test_freq_bigram, test_freq_unigram = edge_joint_freqs(test_edges)
+
+        f, axes = plt.subplots(1, 2)
+        axes[0].matshow(train_freq_bigram)
+        axes[0].set_title('Train')
+        axes[1].matshow(test_freq_bigram)
+        axes[1].set_title('Test')
+        plt.tight_layout()
+        plt.savefig(os.path.join(fig_dir, f"edge-freqs-bigram_cvfold={cv_index}.png"))
+
+        f, axis = plt.subplots(1)
+        axis.stem(train_freq_unigram, label='Train', linefmt='C0-', markerfmt='C0o')
+        axis.stem(test_freq_unigram, label='Test', linefmt='C1--', markerfmt='C1o')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(fig_dir, f"edge-freqs-unigram_cvfold={cv_index}.png"))
 
         for i in test_indices:
             seq_id = seq_ids[i]
@@ -433,11 +475,14 @@ def main(
                 f"{num_samples} samples"
             )
 
+            edge_freq_bigram, edge_freq_unigram = edge_joint_freqs(edge_true_seq)
+            dist_shift = np.linalg.norm(train_freq_unigram - edge_freq_unigram)
             metric_dict = {
                 'State OOV rate': oov_rate_state(state_true_seq, state_train_vocab),
                 'Edge OOV rate': oov_rate_edges(edge_true_seq, edge_train_vocab),
                 'State avg prob, true': state_probs[state_true_seq].mean(),
-                'State avg prob, pred': state_probs[state_pred_seq].mean()
+                'State avg prob, pred': state_probs[state_pred_seq].mean(),
+                'Edge distribution shift': dist_shift
             }
             metric_dict = eval_edge_metrics(edge_pred_seq, edge_true_seq, append_to=metric_dict)
             metric_dict = eval_state_metrics(state_pred_seq, state_true_seq, append_to=metric_dict)
@@ -516,6 +561,18 @@ def main(
         all_metrics['Edge OOV rate'],
         all_metrics['State OOV rate'],
         'Edge OOV rate', 'State OOV rate'
+    )
+    make_scatterplot(
+        os.path.join(fig_dir, "edge-dist-shift_vs_state-accuracy.png"),
+        all_metrics['Edge distribution shift'],
+        all_metrics['State Accuracy'],
+        'Edge distribution shift', 'State Accuracy'
+    )
+    make_scatterplot(
+        os.path.join(fig_dir, "edge-dist-shift_vs_edge-F1.png"),
+        all_metrics['Edge distribution shift'],
+        all_metrics['Edge F1'],
+        'Edge distribution shift', 'Edge F1'
     )
 
     for i, a in enumerate(pred_vocab):
