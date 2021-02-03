@@ -40,7 +40,7 @@ def load_vocabs(vocab_fn):
 
     def get_event_tuple(event_name, part_vocab, action_vocab):
         if event_name == '':
-            return 'NA', 'NA', ''
+            return ('NA', 'NA') + tuple(False for name in part_vocab if name != '')
 
         for name in action_vocab:
             if event_name.startswith(name):
@@ -49,32 +49,28 @@ def load_vocabs(vocab_fn):
         else:
             raise AssertionError(f"No action in vocab matching {event_name}")
 
-        for name in part_vocab:
-            if event_name == 'align leg screw with table thread':
-                part_name = 'leg'
-                break
-            if event_name == 'align side panel holes with front panel dowels':
-                part_name = 'side panel'
-                break
-            if event_name == 'attach shelf to table':
-                part_name = 'shelf'
-                break
-            if event_name == 'position the drawer right side up':
-                part_name = 'drawer'
-                break
-            if event_name == 'slide bottom of drawer':
-                part_name = 'bottom panel'
-                break
-            if event_name in ('NA', 'other'):
-                part_name = ''
-                break
-            if name != '' and event_name.endswith(name):
-                part_name = name
-                break
+        if event_name == 'align leg screw with table thread':
+            part_name = 'leg'
+        elif event_name == 'align side panel holes with front panel dowels':
+            part_name = 'side panel'
+        elif event_name == 'attach shelf to table':
+            part_name = 'shelf'
+        elif event_name == 'position the drawer right side up':
+            part_name = 'drawer'
+        elif event_name == 'slide bottom of drawer':
+            part_name = 'bottom panel'
+        elif event_name in ('NA', 'other'):
+            part_name = ''
         else:
-            raise AssertionError(f"No part in vocab matching {event_name}")
+            for name in part_vocab:
+                if name != '' and event_name.endswith(name):
+                    part_name = name
+                    break
+            else:
+                raise AssertionError(f"No part in vocab matching {event_name}")
+        part_is_active = tuple(part_name == name for name in part_vocab if name != '')
 
-        return event_name, action_name, part_name
+        return (event_name, action_name) + part_is_active
 
     with open(vocab_fn, 'rt') as file_:
         event_vocab = file_.read().split('\n')
@@ -90,9 +86,9 @@ def load_vocabs(vocab_fn):
 
     event_df = pd.DataFrame(
         tuple(get_event_tuple(name, part_vocab, action_vocab) for name in event_vocab),
-        columns=['name', 'action', 'part']
+        columns=['event', 'action'] + [f"{name}_active" for name in part_vocab if name != '']
     )
-    event_df = event_df.set_index('name')
+    event_df = event_df.set_index('event')
 
     return event_df, part_vocab, action_vocab
 
@@ -123,6 +119,36 @@ def load_action_labels(label_fn, event_vocab):
     return seq_names, action_labels
 
 
+def plot_event_labels(
+        fn, event_index_seq, action_index_seq, part_activity_seq, seg_bounds,
+        event_vocab, action_vocab, part_vocab):
+    def make_labels(seg_bounds, seg_labels, default_val):
+        label_shape = (seg_bounds.max() + 1,) + seg_labels.shape[1:]
+        labels = np.full(label_shape, default_val, dtype=seg_labels.dtype)
+        for (start, end), l in zip(seg_bounds, seg_labels):
+            labels[start:end + 1] = l
+        return labels
+
+    f, axes = plt.subplots(3, sharex=True, figsize=(12, 12))
+
+    axes[0].plot(make_labels(seg_bounds, event_index_seq, event_vocab.index('NA')))
+    axes[0].set_yticks(range(len(event_vocab)))
+    axes[0].set_yticklabels(event_vocab)
+    axes[1].plot(make_labels(seg_bounds, action_index_seq, action_vocab.index('NA')))
+    axes[1].set_yticks(range(len(action_vocab)))
+    axes[1].set_yticklabels(action_vocab)
+    axes[2].imshow(
+        make_labels(seg_bounds, part_activity_seq, False).T,
+        interpolation='none', aspect='auto'
+    )
+    axes[2].set_yticks(range(len(part_vocab)))
+    axes[2].set_yticklabels(part_vocab)
+
+    plt.tight_layout()
+    plt.savefig(fn)
+    plt.close()
+
+
 def main(out_dir=None, data_dir=None, annotation_dir=None):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
@@ -140,29 +166,48 @@ def main(out_dir=None, data_dir=None, annotation_dir=None):
     if not os.path.exists(out_labels_dir):
         os.makedirs(out_labels_dir)
 
-    event_vocab, part_vocab, action_vocab = load_vocabs(
+    event_vocab_df, part_vocab, action_vocab = load_vocabs(
         os.path.join(data_dir, 'ANU_ikea_dataset', 'indexing_files', 'atomic_action_list.txt')
     )
-    event_vocab.to_csv(os.path.join(out_labels_dir, 'event-vocab.csv'))
+    event_vocab_df.to_csv(os.path.join(out_labels_dir, 'event-vocab.csv'))
 
     label_fn = os.path.join(annotation_dir, 'gt_segments.json')
-    seq_ids, action_labels = load_action_labels(label_fn, event_vocab)
+    seq_ids, event_labels = load_action_labels(label_fn, event_vocab_df)
 
     logger.info(f"Loaded {len(seq_ids)} sequences from {label_fn}")
 
+    event_vocab = event_vocab_df.index.tolist()
+    event_to_index = {name: i for i, name in enumerate(event_vocab)}
     action_to_index = {name: i for i, name in enumerate(action_vocab)}
     part_to_index = {name: i for i, name in enumerate(part_vocab)}
 
     counts = np.zeros((len(action_vocab), len(part_vocab)), dtype=int)
     for i, seq_id in enumerate(seq_ids):
-        label_seq = action_labels[i]
-        label_seq.to_csv(os.path.join(out_labels_dir, f"{seq_id}.csv"), index=False)
+        event_seq = event_labels[i]
+        event_seq = event_seq.loc[event_seq['event'] != 'NA']
+        if not event_seq.any(axis=None):
+            logger.warning(f"No event labels for sequence {seq_id}")
+            continue
 
-        part_seq = np.array([part_to_index[name] for name in label_seq['part']])
-        action_seq = np.array([action_to_index[name] for name in label_seq['action']])
+        event_seq.to_csv(os.path.join(out_labels_dir, f"{seq_id}.csv"), index=False)
 
-        for part_index, action_index in zip(part_seq, action_seq):
-            counts[action_index, part_index] += 1
+        event_indices = np.array([event_to_index[name] for name in event_seq['event']])
+        action_indices = np.array([action_to_index[name] for name in event_seq['action']])
+
+        part_names = [name for name in part_vocab if name != '']
+        col_names = [f"{name}_active" for name in part_names]
+        part_is_active = event_seq[col_names].values
+
+        plot_event_labels(
+            os.path.join(fig_dir, f"{seq_id}.png"),
+            event_indices, action_indices, part_is_active, event_seq[['start', 'end']].values,
+            event_vocab, action_vocab, part_names
+        )
+
+        for part_activity_row, action_index in zip(part_is_active, action_indices):
+            for i, is_active in enumerate(part_activity_row):
+                part_index = part_to_index[part_names[i]]
+                counts[action_index, part_index] += int(is_active)
 
     plt.matshow(counts)
     plt.xticks(ticks=range(len(part_vocab)), labels=part_vocab, rotation='vertical')
