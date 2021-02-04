@@ -11,6 +11,7 @@ output_dir="~/data/output/ikea_anu"
 input_dir="~/data/ikea_anu"
 data_dir="${input_dir}/data"
 annotation_dir="${input_dir}/annotations"
+frames_dir="${input_dir}/video_frames"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 viz_dir="${output_dir}/viz_dataset"
@@ -71,7 +72,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} make_action_data.py \
         --out_dir "${action_data_dir}" \
         --data_dir "${data_dir}" \
-        --annotation_dir "${annotation_dir}"
+        --annotation_dir "${annotation_dir}" \
+        --frames_dir "${frames_dir}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

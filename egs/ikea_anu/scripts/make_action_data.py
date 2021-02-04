@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import glob
 
 import yaml
 import pandas as pd
@@ -120,27 +121,17 @@ def load_action_labels(label_fn, event_vocab):
 
 
 def plot_event_labels(
-        fn, event_index_seq, action_index_seq, part_activity_seq, seg_bounds,
+        fn, event_index_seq, action_index_seq, part_activity_seq,
         event_vocab, action_vocab, part_vocab):
-    def make_labels(seg_bounds, seg_labels, default_val):
-        label_shape = (seg_bounds.max() + 1,) + seg_labels.shape[1:]
-        labels = np.full(label_shape, default_val, dtype=seg_labels.dtype)
-        for (start, end), l in zip(seg_bounds, seg_labels):
-            labels[start:end + 1] = l
-        return labels
-
     f, axes = plt.subplots(3, sharex=True, figsize=(12, 12))
 
-    axes[0].plot(make_labels(seg_bounds, event_index_seq, event_vocab.index('NA')))
+    axes[0].plot(event_index_seq)
     axes[0].set_yticks(range(len(event_vocab)))
     axes[0].set_yticklabels(event_vocab)
-    axes[1].plot(make_labels(seg_bounds, action_index_seq, action_vocab.index('NA')))
+    axes[1].plot(action_index_seq)
     axes[1].set_yticks(range(len(action_vocab)))
     axes[1].set_yticklabels(action_vocab)
-    axes[2].imshow(
-        make_labels(seg_bounds, part_activity_seq, False).T,
-        interpolation='none', aspect='auto'
-    )
+    axes[2].imshow(part_activity_seq.T, interpolation='none', aspect='auto')
     axes[2].set_yticks(range(len(part_vocab)))
     axes[2].set_yticklabels(part_vocab)
 
@@ -149,10 +140,23 @@ def plot_event_labels(
     plt.close()
 
 
-def main(out_dir=None, data_dir=None, annotation_dir=None):
+def make_labels(seg_bounds, seg_labels, default_val, num_samples=None):
+    if num_samples is None:
+        num_samples = seg_bounds.max() + 1
+
+    label_shape = (num_samples,) + seg_labels.shape[1:]
+    labels = np.full(label_shape, default_val, dtype=seg_labels.dtype)
+    for (start, end), l in zip(seg_bounds, seg_labels):
+        labels[start:end + 1] = l
+
+    return labels
+
+
+def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
     annotation_dir = os.path.expanduser(annotation_dir)
+    frames_dir = os.path.expanduser(frames_dir)
 
     annotation_dir = os.path.join(annotation_dir, 'action_annotations')
 
@@ -183,13 +187,16 @@ def main(out_dir=None, data_dir=None, annotation_dir=None):
 
     counts = np.zeros((len(action_vocab), len(part_vocab)), dtype=int)
     for i, seq_id in enumerate(seq_ids):
+        if not seq_id.startswith('Kallax'):
+            continue
+
         event_seq = event_labels[i]
         event_seq = event_seq.loc[event_seq['event'] != 'NA']
         if not event_seq.any(axis=None):
             logger.warning(f"No event labels for sequence {seq_id}")
             continue
 
-        event_seq.to_csv(os.path.join(out_labels_dir, f"{seq_id}.csv"), index=False)
+        filenames = glob.glob(os.path.join(frames_dir, seq_id, '*.jpg'))
 
         event_indices = np.array([event_to_index[name] for name in event_seq['event']])
         action_indices = np.array([action_to_index[name] for name in event_seq['action']])
@@ -198,9 +205,35 @@ def main(out_dir=None, data_dir=None, annotation_dir=None):
         col_names = [f"{name}_active" for name in part_names]
         part_is_active = event_seq[col_names].values
 
+        seg_bounds = event_seq[['start', 'end']].values
+        event_index_seq = make_labels(
+            seg_bounds, event_indices, event_vocab.index('NA'),
+            num_samples=len(filenames)
+        )
+        action_index_seq = make_labels(
+            seg_bounds, action_indices, action_vocab.index('NA'),
+            num_samples=len(filenames)
+        )
+        part_activity_seq = make_labels(
+            seg_bounds, part_is_active, False,
+            num_samples=len(filenames)
+        )
+        data_and_labels = pd.DataFrame({
+            'fn': filenames,
+            'event': event_index_seq,
+            'action': action_index_seq
+        })
+        data_and_labels = pd.concat(
+            (data_and_labels, pd.DataFrame(part_activity_seq, columns=col_names)),
+            axis=1
+        )
+
+        data_and_labels.to_csv(os.path.join(out_labels_dir, f"data_{seq_id}.csv"), index=False)
+        event_seq.to_csv(os.path.join(out_labels_dir, f"segs_{seq_id}.csv"), index=False)
+
         plot_event_labels(
             os.path.join(fig_dir, f"{seq_id}.png"),
-            event_indices, action_indices, part_is_active, event_seq[['start', 'end']].values,
+            event_index_seq, action_index_seq, part_activity_seq,
             event_vocab, action_vocab, part_names
         )
 
