@@ -98,9 +98,29 @@ def load_action_labels(label_fn, event_vocab):
     with open(label_fn, 'r') as _file:
         gt_segments = json.load(_file)
 
+    def get_metadata(seq_name):
+        furn_name, string = seq_name.split('/')
+        person, color, place = string.split('_')[:3]
+        dir_name = seq_name.replace('/', '_')
+        return (furn_name, person, color, place, dir_name)
+
+    ignore_seqs = (
+        'Lack_Side_Table_Special_Test',
+    )
+
+    metadata = pd.DataFrame(
+        tuple(
+            get_metadata(seq_name)
+            for seq_name, ann_seq in gt_segments['database'].items()
+            if seq_name not in ignore_seqs
+        ),
+        columns=['furn_name', 'person', 'color', 'place', 'dir_name']
+    )
+
     ann_seqs = {
         seq_name.replace('/', '_'): [ann for ann in ann_seq['annotation']]
         for seq_name, ann_seq in gt_segments['database'].items()
+        if seq_name not in ignore_seqs
     }
 
     def make_action_labels(ann_seq):
@@ -117,7 +137,7 @@ def load_action_labels(label_fn, event_vocab):
     seq_names = tuple(ann_seqs.keys())
     action_labels = tuple(make_action_labels(ann_seqs[seq_name]) for seq_name in seq_names)
 
-    return seq_names, action_labels
+    return metadata.index.to_numpy(), action_labels, metadata
 
 
 def plot_event_labels(
@@ -152,6 +172,41 @@ def make_labels(seg_bounds, seg_labels, default_val, num_samples=None):
     return labels
 
 
+def make_event_data(
+        event_seq, filenames, event_to_index, action_to_index, part_vocab,
+        event_default, action_default, part_default):
+    event_indices = np.array([event_to_index[name] for name in event_seq['event']])
+    action_indices = np.array([action_to_index[name] for name in event_seq['action']])
+
+    part_names = [name for name in part_vocab if name != '']
+    col_names = [f"{name}_active" for name in part_names]
+    part_is_active = event_seq[col_names].values
+
+    seg_bounds = event_seq[['start', 'end']].values
+    event_index_seq = make_labels(
+        seg_bounds, event_indices, event_default,
+        num_samples=len(filenames)
+    )
+    action_index_seq = make_labels(
+        seg_bounds, action_indices, action_default,
+        num_samples=len(filenames)
+    )
+    part_activity_seq = make_labels(
+        seg_bounds, part_is_active, part_default,
+        num_samples=len(filenames)
+    )
+    data_and_labels = pd.DataFrame({
+        'fn': filenames,
+        'event': event_index_seq,
+        'action': action_index_seq
+    })
+    data_and_labels = pd.concat(
+        (data_and_labels, pd.DataFrame(part_activity_seq, columns=col_names)),
+        axis=1
+    )
+    return data_and_labels
+
+
 def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
@@ -170,70 +225,76 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
     if not os.path.exists(out_labels_dir):
         os.makedirs(out_labels_dir)
 
+    event_data_dir = os.path.join(out_dir, 'event-dataset')
+    if not os.path.exists(event_data_dir):
+        os.makedirs(event_data_dir)
+
+    action_data_dir = os.path.join(out_dir, 'action-dataset')
+    if not os.path.exists(action_data_dir):
+        os.makedirs(action_data_dir)
+
+    part_data_dir = os.path.join(out_dir, 'part-dataset')
+    if not os.path.exists(part_data_dir):
+        os.makedirs(part_data_dir)
+
     event_vocab_df, part_vocab, action_vocab = load_vocabs(
         os.path.join(data_dir, 'ANU_ikea_dataset', 'indexing_files', 'atomic_action_list.txt')
     )
     event_vocab_df.to_csv(os.path.join(out_labels_dir, 'event-vocab.csv'))
+    event_vocab = event_vocab_df.index.tolist()
+    utils.saveVariable(event_vocab, 'vocab', event_data_dir)
+    utils.saveVariable(action_vocab, 'vocab', action_data_dir)
+    utils.saveVariable(part_vocab, 'vocab', part_data_dir)
 
     label_fn = os.path.join(annotation_dir, 'gt_segments.json')
-    seq_ids, event_labels = load_action_labels(label_fn, event_vocab_df)
+    seq_ids, event_labels, metadata = load_action_labels(label_fn, event_vocab_df)
+    utils.saveMetadata(metadata, out_labels_dir)
+    utils.saveMetadata(metadata, event_data_dir)
+    utils.saveMetadata(metadata, action_data_dir)
+    utils.saveMetadata(metadata, part_data_dir)
 
     logger.info(f"Loaded {len(seq_ids)} sequences from {label_fn}")
 
-    event_vocab = event_vocab_df.index.tolist()
+    part_names = [name for name in part_vocab if name != '']
     event_to_index = {name: i for i, name in enumerate(event_vocab)}
     action_to_index = {name: i for i, name in enumerate(action_vocab)}
     part_to_index = {name: i for i, name in enumerate(part_vocab)}
 
     counts = np.zeros((len(action_vocab), len(part_vocab)), dtype=int)
     for i, seq_id in enumerate(seq_ids):
-        if not seq_id.startswith('Kallax'):
-            continue
+        seq_id_str = f"seq={seq_id}"
+        seq_dir_name = metadata['dir_name'].loc[seq_id]
 
-        event_seq = event_labels[i]
-        event_seq = event_seq.loc[event_seq['event'] != 'NA']
-        if not event_seq.any(axis=None):
+        event_segs = event_labels[i]
+        event_segs = event_segs.loc[event_segs['event'] != 'NA']
+        if not event_segs.any(axis=None):
             logger.warning(f"No event labels for sequence {seq_id}")
             continue
 
-        filenames = glob.glob(os.path.join(frames_dir, seq_id, '*.jpg'))
-
-        event_indices = np.array([event_to_index[name] for name in event_seq['event']])
-        action_indices = np.array([action_to_index[name] for name in event_seq['action']])
-
-        part_names = [name for name in part_vocab if name != '']
-        col_names = [f"{name}_active" for name in part_names]
-        part_is_active = event_seq[col_names].values
-
-        seg_bounds = event_seq[['start', 'end']].values
-        event_index_seq = make_labels(
-            seg_bounds, event_indices, event_vocab.index('NA'),
-            num_samples=len(filenames)
-        )
-        action_index_seq = make_labels(
-            seg_bounds, action_indices, action_vocab.index('NA'),
-            num_samples=len(filenames)
-        )
-        part_activity_seq = make_labels(
-            seg_bounds, part_is_active, False,
-            num_samples=len(filenames)
-        )
-        data_and_labels = pd.DataFrame({
-            'fn': filenames,
-            'event': event_index_seq,
-            'action': action_index_seq
-        })
-        data_and_labels = pd.concat(
-            (data_and_labels, pd.DataFrame(part_activity_seq, columns=col_names)),
-            axis=1
+        event_data = make_event_data(
+            event_segs, glob.glob(os.path.join(frames_dir, seq_dir_name, '*.jpg')),
+            event_to_index, action_to_index, part_to_index,
+            event_vocab.index('NA'), action_vocab.index('NA'), False
         )
 
-        data_and_labels.to_csv(os.path.join(out_labels_dir, f"data_{seq_id}.csv"), index=False)
-        event_seq.to_csv(os.path.join(out_labels_dir, f"segs_{seq_id}.csv"), index=False)
+        event_data.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_data.csv"), index=False)
+        event_segs.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_segs.csv"), index=False)
+
+        filenames = event_data['fn'].to_list()
+        event_indices = event_data['event'].to_numpy()
+        action_indices = event_data['action'].to_numpy()
+        part_is_active = event_data[[f"{name}_active" for name in part_names]].to_numpy()
+
+        utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', event_data_dir)
+        utils.saveVariable(event_indices, f'{seq_id_str}_labels', event_data_dir)
+        utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', action_data_dir)
+        utils.saveVariable(action_indices, f'{seq_id_str}_labels', action_data_dir)
+        utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', part_data_dir)
+        utils.saveVariable(part_is_active, f'{seq_id_str}_labels', part_data_dir)
 
         plot_event_labels(
-            os.path.join(fig_dir, f"{seq_id}.png"),
-            event_index_seq, action_index_seq, part_activity_seq,
+            os.path.join(fig_dir, f"{seq_id_str}.png"),
+            event_indices, action_indices, part_is_active,
             event_vocab, action_vocab, part_names
         )
 
@@ -241,6 +302,8 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
             for i, is_active in enumerate(part_activity_row):
                 part_index = part_to_index[part_names[i]]
                 counts[action_index, part_index] += int(is_active)
+
+    utils.saveVariable(counts, 'action-part-counts', out_labels_dir)
 
     plt.matshow(counts)
     plt.xticks(ticks=range(len(part_vocab)), labels=part_vocab, rotation='vertical')

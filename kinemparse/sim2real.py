@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # -=( DATASETS )==-------------------------------------------------------------
 class PickledVideoDataset(torch.utils.data.Dataset):
-    """ A dataset wrapping images stored on disk.
+    """ A dataset wrapping videos stored on disk.
 
     Attributes
     ----------
