@@ -33,6 +33,6 @@ for furn_dir in "${data_dir}"/*/; do
         frames_dir="${out_dir}/${furn_name}_${seq_name}"
         video_fn="${seq_dir}dev3/images/scan_video.avi"
         mkdir -p "${frames_dir}"
-        ffmpeg -i "${video_fn}" "${frames_dir}/%05d.jpg"
+        ffmpeg -i "${video_fn}" -vf "scale=iw/4:ih/4" "${frames_dir}/%05d.jpg"
     done
 done
