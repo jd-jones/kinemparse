@@ -77,7 +77,7 @@ def main(
                 split = pd.concat(
                     tuple(
                         slowfast_labels.loc[slowfast_labels['video_id'] == vid_id]
-                        for vid_id in dataset.metadata.loc[split_indices]['dir_name'].to_list()
+                        for vid_id in dataset.metadata.iloc[split_indices]['dir_name'].to_list()
                     ),
                     axis=0
                 )
