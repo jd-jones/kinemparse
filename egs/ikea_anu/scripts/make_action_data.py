@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import glob
+import collections
 
 import yaml
 import pandas as pd
@@ -207,6 +208,38 @@ def make_event_data(
     return data_and_labels
 
 
+def make_slowfast_labels(segment_bounds, labels, fns, integerizer):
+    slowfast_labels = pd.DataFrame(
+        {
+            'video_id': fns[segment_bounds['start']].apply(
+                lambda x: os.path.dirname(x).split('/')[-1]
+            ).to_list(),
+            'action_id': [integerizer[name] for name in labels.to_list()],
+            'action_name': labels.to_list(),
+            'start_frame': fns[segment_bounds['start']].apply(
+                lambda x: os.path.basename(x)
+            ).to_list(),
+            'end_frame': fns[segment_bounds['end']].apply(
+                lambda x: os.path.basename(x)
+            ).to_list()
+        }
+    )
+    return slowfast_labels
+
+
+def getActivePart(part_activity_segs, part_labels):
+    is_active = part_activity_segs.to_numpy()
+    if (is_active.sum(axis=1) > 1).any():
+        raise AssertionError('Some columns have more than one active object!')
+
+    active_parts = [''] * len(part_activity_segs)
+    for row, col in zip(*is_active.nonzero()):
+        active_parts[row] = part_labels[col]
+    active_parts = pd.DataFrame({'part': active_parts})['part']
+
+    return active_parts
+
+
 def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
@@ -214,6 +247,8 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
     frames_dir = os.path.expanduser(frames_dir)
 
     annotation_dir = os.path.join(annotation_dir, 'action_annotations')
+
+    label_types = ('event', 'action', 'part')
 
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
@@ -225,41 +260,41 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
     if not os.path.exists(out_labels_dir):
         os.makedirs(out_labels_dir)
 
-    event_data_dir = os.path.join(out_dir, 'event-dataset')
-    if not os.path.exists(event_data_dir):
-        os.makedirs(event_data_dir)
-
-    action_data_dir = os.path.join(out_dir, 'action-dataset')
-    if not os.path.exists(action_data_dir):
-        os.makedirs(action_data_dir)
-
-    part_data_dir = os.path.join(out_dir, 'part-dataset')
-    if not os.path.exists(part_data_dir):
-        os.makedirs(part_data_dir)
+    data_dirs = {name: os.path.join(out_dir, f"{name}-dataset") for name in label_types}
+    for name, dir_ in data_dirs.items():
+        if not os.path.exists(dir_):
+            os.makedirs(dir_)
 
     event_vocab_df, part_vocab, action_vocab = load_vocabs(
         os.path.join(data_dir, 'ANU_ikea_dataset', 'indexing_files', 'atomic_action_list.txt')
     )
     event_vocab_df.to_csv(os.path.join(out_labels_dir, 'event-vocab.csv'))
     event_vocab = event_vocab_df.index.tolist()
-    utils.saveVariable(event_vocab, 'vocab', event_data_dir)
-    utils.saveVariable(action_vocab, 'vocab', action_data_dir)
-    utils.saveVariable(part_vocab, 'vocab', part_data_dir)
+    vocabs = {
+        'event': event_vocab,
+        'action': action_vocab,
+        'part': part_vocab
+    }
+    for name, vocab in vocabs.items():
+        utils.saveVariable(vocab, 'vocab', data_dirs[name])
 
     label_fn = os.path.join(annotation_dir, 'gt_segments.json')
     seq_ids, event_labels, metadata = load_action_labels(label_fn, event_vocab_df)
     utils.saveMetadata(metadata, out_labels_dir)
-    utils.saveMetadata(metadata, event_data_dir)
-    utils.saveMetadata(metadata, action_data_dir)
-    utils.saveMetadata(metadata, part_data_dir)
+    for name, dir_ in data_dirs.items():
+        utils.saveMetadata(metadata, dir_)
 
     logger.info(f"Loaded {len(seq_ids)} sequences from {label_fn}")
 
     part_names = [name for name in part_vocab if name != '']
-    event_to_index = {name: i for i, name in enumerate(event_vocab)}
-    action_to_index = {name: i for i, name in enumerate(action_vocab)}
-    part_to_index = {name: i for i, name in enumerate(part_vocab)}
+    col_names = [f"{name}_active" for name in part_names]
+    integerizers = {
+        'event': {name: i for i, name in enumerate(event_vocab)},
+        'action': {name: i for i, name in enumerate(action_vocab)},
+        'part': {name: i for i, name in enumerate(part_vocab)}
+    }
 
+    all_slowfast_labels = collections.defaultdict(list)
     counts = np.zeros((len(action_vocab), len(part_vocab)), dtype=int)
     for i, seq_id in enumerate(seq_ids):
         seq_id_str = f"seq={seq_id}"
@@ -273,7 +308,7 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
 
         event_data = make_event_data(
             event_segs, glob.glob(os.path.join(frames_dir, seq_dir_name, '*.jpg')),
-            event_to_index, action_to_index, part_to_index,
+            integerizers['event'], integerizers['action'], integerizers['part'],
             event_vocab.index('NA'), action_vocab.index('NA'), False
         )
 
@@ -281,27 +316,44 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
         event_segs.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_segs.csv"), index=False)
 
         filenames = event_data['fn'].to_list()
-        event_indices = event_data['event'].to_numpy()
-        action_indices = event_data['action'].to_numpy()
-        part_is_active = event_data[[f"{name}_active" for name in part_names]].to_numpy()
-
-        utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', event_data_dir)
-        utils.saveVariable(event_indices, f'{seq_id_str}_labels', event_data_dir)
-        utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', action_data_dir)
-        utils.saveVariable(action_indices, f'{seq_id_str}_labels', action_data_dir)
-        utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', part_data_dir)
-        utils.saveVariable(part_is_active, f'{seq_id_str}_labels', part_data_dir)
+        label_indices = {}
+        for name in label_types:
+            if name == 'part':
+                label_indices[name] = event_data[col_names].to_numpy()
+                labels_slowfast = make_slowfast_labels(
+                    event_segs[['start', 'end']], getActivePart(event_segs[col_names], part_names),
+                    event_data['fn'], integerizers[name]
+                )
+            else:
+                label_indices[name] = event_data[name].to_numpy()
+                labels_slowfast = make_slowfast_labels(
+                    event_segs[['start', 'end']], event_segs[name],
+                    event_data['fn'], integerizers[name]
+                )
+            utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', data_dirs[name])
+            utils.saveVariable(label_indices[name], f'{seq_id_str}_labels', data_dirs[name])
+            labels_slowfast.to_csv(
+                os.path.join(data_dirs[name], f'{seq_id_str}_slowfast-labels.csv'),
+                index=False
+            )
+            all_slowfast_labels[name].append(labels_slowfast)
 
         plot_event_labels(
             os.path.join(fig_dir, f"{seq_id_str}.png"),
-            event_indices, action_indices, part_is_active,
+            label_indices['event'], label_indices['action'], label_indices['part'],
             event_vocab, action_vocab, part_names
         )
 
-        for part_activity_row, action_index in zip(part_is_active, action_indices):
+        for part_activity_row, action_index in zip(label_indices['part'], label_indices['action']):
             for i, is_active in enumerate(part_activity_row):
-                part_index = part_to_index[part_names[i]]
+                part_index = integerizers['part'][part_names[i]]
                 counts[action_index, part_index] += int(is_active)
+
+    for name, labels in all_slowfast_labels.items():
+        pd.concat(labels, axis=0).to_csv(
+            os.path.join(data_dirs[name], 'slowfast-labels.csv'),
+            index=False
+        )
 
     utils.saveVariable(counts, 'action-part-counts', out_labels_dir)
 

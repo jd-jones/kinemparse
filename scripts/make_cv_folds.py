@@ -3,6 +3,7 @@ import logging
 import json
 
 import yaml
+import pandas as pd
 
 from mathtools import utils
 
@@ -54,6 +55,8 @@ def main(
     cv_folds = utils.makeDataSplits(dataset_size, metadata=dataset.metadata, **cv_params)
     save_cv_folds(cv_folds, os.path.join(out_data_dir, 'cv-folds.json'))
 
+    split_names = ('train', 'val', 'test')
+
     # Check folds
     for cv_index, cv_fold in enumerate(cv_folds):
         train_data, val_data, test_data = dataset.getFold(cv_fold)
@@ -65,6 +68,23 @@ def main(
             f'CV fold {cv_index + 1} / {len(cv_folds)}: {len(trial_ids)} total '
             f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
         )
+
+        slowfast_labels_path = os.path.join(data_dir, 'slowfast-labels.csv')
+        if os.path.exists(slowfast_labels_path):
+            cv_str = f"cvfold={cv_index}"
+            slowfast_labels = pd.read_csv(slowfast_labels_path, index_col=False)
+            for split_indices, split_name in zip(cv_fold, split_names):
+                split = pd.concat(
+                    tuple(
+                        slowfast_labels.loc[slowfast_labels['video_id'] == vid_id]
+                        for vid_id in dataset.metadata.loc[split_indices]['dir_name'].to_list()
+                    ),
+                    axis=0
+                )
+                split.to_csv(
+                    os.path.join(out_data_dir, f"{cv_str}_slowfast_{split_name}.csv"),
+                    index=False, header=False
+                )
 
 
 if __name__ == "__main__":
