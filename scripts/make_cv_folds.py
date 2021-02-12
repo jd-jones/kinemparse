@@ -23,7 +23,7 @@ def save_cv_folds(cv_folds, fn):
 def main(
         out_dir=None, data_dir=None, prefix='trial=',
         feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
-        cv_params={}):
+        cv_params={}, slowfast_csv_params={}):
 
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
@@ -72,19 +72,23 @@ def main(
         slowfast_labels_path = os.path.join(data_dir, 'slowfast-labels.csv')
         if os.path.exists(slowfast_labels_path):
             cv_str = f"cvfold={cv_index}"
-            slowfast_labels = pd.read_csv(slowfast_labels_path, index_col=False)
+            slowfast_labels = pd.read_csv(
+                slowfast_labels_path, index_col=False,
+                **slowfast_csv_params
+            )
             for split_indices, split_name in zip(cv_fold, split_names):
-                split = pd.concat(
-                    tuple(
-                        slowfast_labels.loc[slowfast_labels['video_id'] == vid_id]
-                        for vid_id in dataset.metadata.iloc[split_indices]['dir_name'].to_list()
-                    ),
-                    axis=0
+                matches = tuple(
+                    slowfast_labels.loc[slowfast_labels['video_name'] == vid_id]
+                    for vid_id in dataset.metadata.iloc[split_indices]['dir_name'].to_list()
                 )
-                split.to_csv(
-                    os.path.join(out_data_dir, f"{cv_str}_slowfast_{split_name}.csv"),
-                    index=False, header=False
-                )
+                if matches:
+                    split = pd.concat(matches, axis=0)
+                    split.to_csv(
+                        os.path.join(out_data_dir, f"{cv_str}_slowfast_{split_name}.csv"),
+                        index=False, header=False, **slowfast_csv_params
+                    )
+                else:
+                    logger.info(f'  Skipping empty slowfast split: {split_name}')
 
 
 if __name__ == "__main__":

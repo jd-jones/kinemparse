@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#$ -wd /home/jdjones/data/output
+#$ -wd /home/jdjones/data/output/grid_logs
 #$ -V
 #$ -N ikea_anu_pipeline
 #$ -j y -o $JOB_NAME-$JOB_ID.out
@@ -10,7 +10,6 @@
 set -ue
 
 conda activate kinemparse
-
 cd /home/jdjones/repo/kinemparse/egs/ikea_anu
-./run.sh --start_at=2 --stop_after=2
-# ./videos_to_frames.sh
+
+./run.sh "$@"

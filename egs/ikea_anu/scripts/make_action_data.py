@@ -99,11 +99,12 @@ def load_action_labels(label_fn, event_vocab):
     with open(label_fn, 'r') as _file:
         gt_segments = json.load(_file)
 
-    def get_metadata(seq_name):
+    def get_metadata(seq_name, ann_seq):
         furn_name, string = seq_name.split('/')
         person, color, place = string.split('_')[:3]
         dir_name = seq_name.replace('/', '_')
-        return (furn_name, person, color, place, dir_name)
+        split_name = ann_seq['subset']['subset']
+        return (furn_name, person, color, place, split_name, dir_name)
 
     ignore_seqs = (
         'Lack_Side_Table_Special_Test',
@@ -111,11 +112,11 @@ def load_action_labels(label_fn, event_vocab):
 
     metadata = pd.DataFrame(
         tuple(
-            get_metadata(seq_name)
+            get_metadata(seq_name, ann_seq)
             for seq_name, ann_seq in gt_segments['database'].items()
             if seq_name not in ignore_seqs
         ),
-        columns=['furn_name', 'person', 'color', 'place', 'dir_name']
+        columns=['furn_name', 'person', 'color', 'place', 'split_name', 'dir_name']
     )
 
     ann_seqs = {
@@ -208,14 +209,14 @@ def make_event_data(
     return data_and_labels
 
 
-def make_slowfast_labels(segment_bounds, labels, fns, integerizer):
-    slowfast_labels = pd.DataFrame(
-        {
-            'video_id': fns[segment_bounds['start']].apply(
+def make_slowfast_labels(segment_bounds, labels, fns, integerizer, col_format='standard'):
+    if col_format == 'standard':
+        col_dict = {
+            'video_name': fns[segment_bounds['start']].apply(
                 lambda x: os.path.dirname(x).split('/')[-1]
             ).to_list(),
-            'action_id': [integerizer[name] for name in labels.to_list()],
-            'action_name': labels.to_list(),
+            'label_id': [integerizer[name] for name in labels.to_list()],
+            'label_name': labels.to_list(),
             'start_frame': fns[segment_bounds['start']].apply(
                 lambda x: os.path.basename(x)
             ).to_list(),
@@ -223,7 +224,27 @@ def make_slowfast_labels(segment_bounds, labels, fns, integerizer):
                 lambda x: os.path.basename(x)
             ).to_list()
         }
-    )
+    elif col_format == 'ikea_tk':
+        col_dict = {
+            'segment_id': ['IGNORE_THIS_COL' for name in labels.to_list()],
+            'label_id': [integerizer[name] for name in labels.to_list()],
+            'start_frame': fns[segment_bounds['start']].apply(
+                lambda x: int(os.path.splitext(os.path.basename(x))[0])
+            ).to_list(),
+            'end_frame': fns[segment_bounds['end']].apply(
+                lambda x: int(os.path.splitext(os.path.basename(x))[0])
+            ).to_list(),
+            'label_name': labels.to_list(),
+            'video_name': fns[segment_bounds['start']].apply(
+                lambda x: os.path.dirname(x).split('/')[-1]
+            ).to_list(),
+        }
+    else:
+        accepted_args = ('standard', 'ikea_tk')
+        err_str = f"Unrecognized argument col_format={col_format}; expected one of {accepted_args}"
+        raise ValueError(err_str)
+
+    slowfast_labels = pd.DataFrame(col_dict)
     return slowfast_labels
 
 
@@ -240,7 +261,9 @@ def getActivePart(part_activity_segs, part_labels):
     return active_parts
 
 
-def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
+def main(
+        out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None,
+        col_format='standard', slowfast_csv_params={}):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
     annotation_dir = os.path.expanduser(annotation_dir)
@@ -301,13 +324,13 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
         seq_dir_name = metadata['dir_name'].loc[seq_id]
 
         event_segs = event_labels[i]
-        event_segs = event_segs.loc[event_segs['event'] != 'NA']
+        # event_segs = event_segs.loc[event_segs['event'] != 'NA']
         if not event_segs.any(axis=None):
             logger.warning(f"No event labels for sequence {seq_id}")
             continue
 
         event_data = make_event_data(
-            event_segs, glob.glob(os.path.join(frames_dir, seq_dir_name, '*.jpg')),
+            event_segs, sorted(glob.glob(os.path.join(frames_dir, seq_dir_name, '*.jpg'))),
             integerizers['event'], integerizers['action'], integerizers['part'],
             event_vocab.index('NA'), action_vocab.index('NA'), False
         )
@@ -322,19 +345,21 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
                 label_indices[name] = event_data[col_names].to_numpy()
                 labels_slowfast = make_slowfast_labels(
                     event_segs[['start', 'end']], getActivePart(event_segs[col_names], part_names),
-                    event_data['fn'], integerizers[name]
+                    event_data['fn'], integerizers[name],
+                    col_format=col_format
                 )
             else:
                 label_indices[name] = event_data[name].to_numpy()
                 labels_slowfast = make_slowfast_labels(
                     event_segs[['start', 'end']], event_segs[name],
-                    event_data['fn'], integerizers[name]
+                    event_data['fn'], integerizers[name],
+                    col_format=col_format
                 )
             utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', data_dirs[name])
             utils.saveVariable(label_indices[name], f'{seq_id_str}_labels', data_dirs[name])
             labels_slowfast.to_csv(
                 os.path.join(data_dirs[name], f'{seq_id_str}_slowfast-labels.csv'),
-                index=False
+                index=False, **slowfast_csv_params
             )
             all_slowfast_labels[name].append(labels_slowfast)
 
@@ -352,7 +377,7 @@ def main(out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None):
     for name, labels in all_slowfast_labels.items():
         pd.concat(labels, axis=0).to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels.csv'),
-            index=False
+            index=False, **slowfast_csv_params
         )
 
     utils.saveVariable(counts, 'action-part-counts', out_labels_dir)
