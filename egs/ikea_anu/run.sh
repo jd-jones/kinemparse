@@ -95,7 +95,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --prefix "seq=" \
         --feature_fn_format "frame-fns.json" \
         --label_fn_format "labels.npy" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 5}"
+        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1

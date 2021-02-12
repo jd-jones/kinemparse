@@ -10,7 +10,6 @@
 
 set -ue
 
-
 # SET DEFAULTS
 data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir='/home/jdjones/data/output/ikea_anu/actions-from-video'
