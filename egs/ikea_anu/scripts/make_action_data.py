@@ -209,6 +209,29 @@ def make_event_data(
     return data_and_labels
 
 
+def make_window_clips(event_data, col_format='standard', **win_params):
+    def make_indices():
+        raise NotImplementedError()
+
+    def majority_vote(labels):
+        raise NotImplementedError()
+
+    if col_format != 'standard':
+        raise NotImplementedError()
+
+    import pdb; pdb.set_trace()
+
+    win_indices = make_indices(**win_params)
+    d = {
+        name: [majority_vote(event_data.loc[indices][name]) for indices in win_indices]
+        for name in event_data.columns if name != 'fn'
+    }
+    d['start'] = [event_data.loc[indices[0]]['fn'] for indices in win_indices]
+    d['end'] = [event_data.loc[indices[-1]]['fn'] for indices in win_indices]
+
+    return pd.DataFrame(d)
+
+
 def make_slowfast_labels(segment_bounds, labels, fns, integerizer, col_format='standard'):
     if col_format == 'standard':
         col_dict = {
@@ -263,7 +286,7 @@ def getActivePart(part_activity_segs, part_labels):
 
 def main(
         out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None,
-        col_format='standard', slowfast_csv_params={}):
+        col_format='standard', win_params={}, slowfast_csv_params={}):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
     annotation_dir = os.path.expanduser(annotation_dir)
@@ -335,6 +358,8 @@ def main(
             event_vocab.index('NA'), action_vocab.index('NA'), False
         )
 
+        event_windows = make_window_clips(event_data, col_format='standard', **win_params)
+
         event_data.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_data.csv"), index=False)
         event_segs.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_segs.csv"), index=False)
 
@@ -346,14 +371,14 @@ def main(
                 labels_slowfast = make_slowfast_labels(
                     event_segs[['start', 'end']], getActivePart(event_segs[col_names], part_names),
                     event_data['fn'], integerizers[name],
-                    col_format=col_format
+                    col_format=col_format, clip_type='segment'
                 )
             else:
                 label_indices[name] = event_data[name].to_numpy()
                 labels_slowfast = make_slowfast_labels(
                     event_segs[['start', 'end']], event_segs[name],
                     event_data['fn'], integerizers[name],
-                    col_format=col_format
+                    col_format=col_format, clip_type='segment'
                 )
             utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', data_dirs[name])
             utils.saveVariable(label_indices[name], f'{seq_id_str}_labels', data_dirs[name])

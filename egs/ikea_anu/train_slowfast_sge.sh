@@ -50,7 +50,7 @@ data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
 phase_dir="${base_dir}/${label_type}s-from-video"
 folds_dir="${phase_dir}/cv-folds/data"
-out_dir="${phase_dir}/train_slowfast_balanced"
+out_dir="${phase_dir}/train_slowfast"
 config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
 
 
@@ -77,7 +77,7 @@ python tools/run_net.py \
   TRAIN.CHECKPOINT_PERIOD 1 \
   TRAIN.EVAL_PERIOD 1 \
   TRAIN.BATCH_SIZE 32 \
-  TRAIN.BALANCED_SAMPLING "True" \
+  TRAIN.BALANCED_SAMPLING "False" \
   TEST.BATCH_SIZE 32 \
   TEST.NUM_ENSEMBLE_VIEWS 1 \
   TEST.NUM_SPATIAL_CROPS 1 \
