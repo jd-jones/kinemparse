@@ -1,1 +1,0 @@
-../../../scripts/predict_video_pytorch.py

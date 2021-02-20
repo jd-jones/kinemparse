@@ -209,27 +209,22 @@ def make_event_data(
     return data_and_labels
 
 
-def make_window_clips(event_data, col_format='standard', **win_params):
-    def make_indices():
-        raise NotImplementedError()
-
-    def majority_vote(labels):
-        raise NotImplementedError()
-
-    if col_format != 'standard':
-        raise NotImplementedError()
-
-    import pdb; pdb.set_trace()
-
-    win_indices = make_indices(**win_params)
+def make_window_clips(event_data, event_vocab, action_vocab, stride=1, **win_params):
+    num_samples = event_data.shape[0]
+    win_indices = utils.slidingWindowSlices(event_data, stride=stride, **win_params)
     d = {
-        name: [majority_vote(event_data.loc[indices][name]) for indices in win_indices]
+        # name: [utils.majorityVote(event_data.loc[indices][name]) for indices in win_indices]
+        name: [event_data.iloc[i][name] for i in range(0, num_samples, stride)]
         for name in event_data.columns if name != 'fn'
     }
-    d['start'] = [event_data.loc[indices[0]]['fn'] for indices in win_indices]
-    d['end'] = [event_data.loc[indices[-1]]['fn'] for indices in win_indices]
+    d['event'] = [event_vocab[i] for i in d['event']]
+    d['action'] = [action_vocab[i] for i in d['action']]
+    d['start'] = [sl.start for sl in win_indices]
+    d['end'] = [min(sl.stop, event_data.shape[0]) - 1 for sl in win_indices]
 
-    return pd.DataFrame(d)
+    window_clips = pd.DataFrame(d)
+
+    return window_clips
 
 
 def make_slowfast_labels(segment_bounds, labels, fns, integerizer, col_format='standard'):
@@ -249,7 +244,7 @@ def make_slowfast_labels(segment_bounds, labels, fns, integerizer, col_format='s
         }
     elif col_format == 'ikea_tk':
         col_dict = {
-            'segment_id': ['IGNORE_THIS_COL' for name in labels.to_list()],
+            'segment_id': [i for i, name in enumerate(labels.to_list())],
             'label_id': [integerizer[name] for name in labels.to_list()],
             'start_frame': fns[segment_bounds['start']].apply(
                 lambda x: int(os.path.splitext(os.path.basename(x))[0])
@@ -340,7 +335,8 @@ def main(
         'part': {name: i for i, name in enumerate(part_vocab)}
     }
 
-    all_slowfast_labels = collections.defaultdict(list)
+    all_slowfast_labels_seg = collections.defaultdict(list)
+    all_slowfast_labels_win = collections.defaultdict(list)
     counts = np.zeros((len(action_vocab), len(part_vocab)), dtype=int)
     for i, seq_id in enumerate(seq_ids):
         seq_id_str = f"seq={seq_id}"
@@ -358,7 +354,10 @@ def main(
             event_vocab.index('NA'), action_vocab.index('NA'), False
         )
 
-        event_windows = make_window_clips(event_data, col_format='standard', **win_params)
+        event_wins = make_window_clips(
+            event_data, vocabs['event'], vocabs['action'],
+            **win_params
+        )
 
         event_data.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_data.csv"), index=False)
         event_segs.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_segs.csv"), index=False)
@@ -368,25 +367,40 @@ def main(
         for name in label_types:
             if name == 'part':
                 label_indices[name] = event_data[col_names].to_numpy()
-                labels_slowfast = make_slowfast_labels(
+                seg_labels_slowfast = make_slowfast_labels(
                     event_segs[['start', 'end']], getActivePart(event_segs[col_names], part_names),
                     event_data['fn'], integerizers[name],
-                    col_format=col_format, clip_type='segment'
+                    col_format=col_format
+                )
+                win_labels_slowfast = make_slowfast_labels(
+                    event_wins[['start', 'end']], getActivePart(event_wins[col_names], part_names),
+                    event_data['fn'], integerizers[name],
+                    col_format=col_format
                 )
             else:
                 label_indices[name] = event_data[name].to_numpy()
-                labels_slowfast = make_slowfast_labels(
+                seg_labels_slowfast = make_slowfast_labels(
                     event_segs[['start', 'end']], event_segs[name],
                     event_data['fn'], integerizers[name],
-                    col_format=col_format, clip_type='segment'
+                    col_format=col_format
+                )
+                win_labels_slowfast = make_slowfast_labels(
+                    event_wins[['start', 'end']], event_wins[name],
+                    event_data['fn'], integerizers[name],
+                    col_format=col_format
                 )
             utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', data_dirs[name])
             utils.saveVariable(label_indices[name], f'{seq_id_str}_labels', data_dirs[name])
-            labels_slowfast.to_csv(
+            seg_labels_slowfast.to_csv(
                 os.path.join(data_dirs[name], f'{seq_id_str}_slowfast-labels.csv'),
                 index=False, **slowfast_csv_params
             )
-            all_slowfast_labels[name].append(labels_slowfast)
+            win_labels_slowfast.to_csv(
+                os.path.join(data_dirs[name], f'{seq_id_str}_slowfast-labels.csv'),
+                index=False, **slowfast_csv_params
+            )
+            all_slowfast_labels_seg[name].append(seg_labels_slowfast)
+            all_slowfast_labels_win[name].append(win_labels_slowfast)
 
         plot_event_labels(
             os.path.join(fig_dir, f"{seq_id_str}.png"),
@@ -399,9 +413,14 @@ def main(
                 part_index = integerizers['part'][part_names[i]]
                 counts[action_index, part_index] += int(is_active)
 
-    for name, labels in all_slowfast_labels.items():
+    for name, labels in all_slowfast_labels_seg.items():
         pd.concat(labels, axis=0).to_csv(
-            os.path.join(data_dirs[name], 'slowfast-labels.csv'),
+            os.path.join(data_dirs[name], 'slowfast-labels_seg.csv'),
+            index=False, **slowfast_csv_params
+        )
+    for name, labels in all_slowfast_labels_win.items():
+        pd.concat(labels, axis=0).to_csv(
+            os.path.join(data_dirs[name], 'slowfast-labels_win.csv'),
             index=False, **slowfast_csv_params
         )
 

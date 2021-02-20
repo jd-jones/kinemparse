@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import glob
 
 import yaml
 import pandas as pd
@@ -23,7 +24,7 @@ def save_cv_folds(cv_folds, fn):
 def main(
         out_dir=None, data_dir=None, prefix='trial=',
         feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
-        cv_params={}, slowfast_csv_params={}):
+        slowfast_labels_path=None, cv_params={}, slowfast_csv_params={}):
 
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
@@ -69,11 +70,12 @@ def main(
             f'({len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test)'
         )
 
-        slowfast_labels_path = os.path.join(data_dir, 'slowfast-labels.csv')
-        if os.path.exists(slowfast_labels_path):
+        slowfast_labels_pattern = os.path.join(data_dir, 'slowfast-labels*.csv')
+        for slowfast_labels_path in glob.glob(slowfast_labels_pattern):
             cv_str = f"cvfold={cv_index}"
+            fn = os.path.basename(slowfast_labels_path)
             slowfast_labels = pd.read_csv(
-                slowfast_labels_path, index_col=False,
+                slowfast_labels_path, index_col=False, keep_default_na=False,
                 **slowfast_csv_params
             )
             for split_indices, split_name in zip(cv_fold, split_names):
@@ -84,7 +86,7 @@ def main(
                 if matches:
                     split = pd.concat(matches, axis=0)
                     split.to_csv(
-                        os.path.join(out_data_dir, f"{cv_str}_slowfast_{split_name}.csv"),
+                        os.path.join(out_data_dir, f"{cv_str}_{split_name}_{fn}"),
                         index=False, header=False, **slowfast_csv_params
                     )
                 else:

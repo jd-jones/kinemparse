@@ -27,7 +27,7 @@ for arg in "$@"; do
         --debug)
             debug_str="-m pdb"
             ;;
-        --label-type=*)
+        --label_type=*)
             label_type="${arg#*=}"
             ;;
         *) # Unknown option: print error and exit
@@ -55,9 +55,10 @@ dataset_dir="${output_dir}/dataset"
 phase_dir="${output_dir}/${label_type}s-from-video"
 viz_dir="${phase_dir}/visualize"
 cv_folds_dir="${phase_dir}/cv-folds"
-preds_dir="${phase_dir}/action-preds"
-batch_preds_dir="${preds_dir}/batches"
-eval_dir="${preds_dir}/eval"
+scores_dir="${phase_dir}/scores"
+
+slowfast_scores_dir="${phase_dir}/run-slowfast"
+scores_eval_dir="${scores_dir}/eval"
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -86,7 +87,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --annotation_dir "${annotation_dir}" \
         --frames_dir "${frames_dir}" \
         --col_format "ikea_tk" \
-        --slowfast_csv_params "{'sep': ' '}"
+        --slowfast_csv_params "{'sep': ' '}" \
+        --win_params "{'win_size': 150, 'stride': 15}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
@@ -111,29 +113,40 @@ fi
 ((++STAGE))
 
 
+# NOT AUTOMATED: Train slowfast by hand here
+
+
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Predict edge labels"
-    python ${debug_str} predict_video_pytorch.py \
-        --out_dir "${batch_preds_dir}" \
-        --data_dir "${dataset_dir}/action-dataset" \
-        --prefix "seq=" \
-        --file_fn_format "frame-fns.json" \
-        --label_fn_format "labels.npy" \
-        --gpu_dev_id "'0'" \
-        --batch_size "20" \
-        --learning_rate "0.001" \
-        --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
-        --train_params "{'num_epochs': 5, 'test_metric': 'Accuracy', 'seq_as_batch': 'sample mode'}" \
-        --model_params "{'finetune_extractor': True, 'feature_extractor_name': 'resnet18'}" \
-        --viz_params "{}"
-    # python analysis.py \
-    #     --out_dir "${edge_label_batches_dir}/system-performance" \
-    #     --results_file "${edge_label_batches_dir}/results.csv"
-    # python postprocess_assembly_scores.py \
-    #     --out_dir "${edge_label_dir}" \
-    #     --data_dir "${data_dir}/data" \
-    #     --scores_dir "${edge_label_batches_dir}/data" \
-    #     --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}"
+    echo "STAGE ${STAGE}: Post-process slowfast output"
+    python ${debug_str} postprocess_slowfast_output.py \
+        --out_dir "${scores_dir}" \
+        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --results_file "${slowfast_scores_dir}/results_test.pkl" \
+        --cv_file "${cv_folds_dir}/data/cvfold=1_test_slowfast-labels_win.csv" \
+        --col_format "ikea_tk" \
+        --win_params "{'win_size': 150, 'stride': 15}" \
+        --slowfast_csv_params "{'sep': ' '}"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Evaluate system output"
+    python ${debug_str} eval_system_output.py \
+        --out_dir "${scores_eval_dir}" \
+        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --scores_dir "${scores_dir}/data" \
+        --frames_dir "${frames_dir}" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
+        --only_fold 1 \
+        --plot_io "False" \
+        --prefix "seq="
+    python ${debug_str} analysis.py \
+        --out_dir "${scores_eval_dir}/aggregate-results" \
+        --results_file "${scores_eval_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
