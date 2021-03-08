@@ -3,11 +3,12 @@ import logging
 import collections
 
 import yaml
-import numpy as np
+# import numpy as np
+# from matplotlib import pyplot as plt
 
 import LCTM.metrics
 
-from mathtools import utils
+from mathtools import utils, metrics
 
 
 logger = logging.getLogger(__name__)
@@ -26,15 +27,9 @@ def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
     return append_to
 
 
-def oov_rate(state_seq, state_vocab):
-    state_is_oov = ~np.array([s in state_vocab for s in state_seq], dtype=bool)
-    prop_state_oov = state_is_oov.sum() / state_is_oov.size
-    return prop_state_oov
-
-
 def main(
         out_dir=None, data_dir=None, scores_dir=None, frames_dir=None,
-        only_fold=None, plot_io=None, prefix='seq=',
+        vocab_from_scores_dir=None, only_fold=None, plot_io=None, prefix='seq=',
         results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
 
     data_dir = os.path.expanduser(data_dir)
@@ -74,12 +69,19 @@ def main(
 
     logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
 
-    # vocab = utils.loadVariable('vocab', data_dir)
+    if vocab_from_scores_dir:
+        vocab = utils.loadVariable('vocab', scores_dir)
+    else:
+        vocab = utils.loadVariable('vocab', data_dir)
+
     all_metrics = collections.defaultdict(list)
 
     # Define cross-validation folds
     cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
+
+    all_pred_seqs = []
+    all_true_seqs = []
 
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
@@ -107,11 +109,26 @@ def main(
 
             utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
+            all_pred_seqs.append(pred_seq)
+            all_true_seqs.append(true_seq)
+
             if plot_io:
                 utils.plot_array(
                     score_seq.T, (true_seq, pred_seq), ('true', 'pred'),
                     fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
                 )
+
+    confusions = metrics.confusionMatrix(all_pred_seqs, all_true_seqs, len(vocab))
+    utils.saveVariable(confusions, "confusions", out_data_dir)
+
+    per_class_acc, class_counts = metrics.perClassAcc(confusions, return_counts=True)
+    logger.info(f"MACRO ACC: {per_class_acc.mean() * 100:.2f}%")
+
+    metrics.plotConfusions(os.path.join(fig_dir, 'confusions.png'), confusions, vocab)
+    metrics.plotPerClassAcc(
+        os.path.join(fig_dir, 'per-class-results.png'),
+        vocab, per_class_acc, class_counts
+    )
 
 
 if __name__ == "__main__":

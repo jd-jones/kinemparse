@@ -281,15 +281,14 @@ def getActivePart(part_activity_segs, part_labels):
 
 def main(
         out_dir=None, data_dir=None, annotation_dir=None, frames_dir=None,
-        col_format='standard', win_params={}, slowfast_csv_params={}):
+        col_format='standard', win_params={}, slowfast_csv_params={},
+        label_types=('event', 'action', 'part')):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
     annotation_dir = os.path.expanduser(annotation_dir)
     frames_dir = os.path.expanduser(frames_dir)
 
     annotation_dir = os.path.join(annotation_dir, 'action_annotations')
-
-    label_types = ('event', 'action', 'part')
 
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
@@ -316,6 +315,7 @@ def main(
         'action': action_vocab,
         'part': part_vocab
     }
+    vocabs = {label_name: vocabs[label_name] for label_name in label_types}
     for name, vocab in vocabs.items():
         utils.saveVariable(vocab, 'vocab', data_dirs[name])
 
@@ -330,9 +330,8 @@ def main(
     part_names = [name for name in part_vocab if name != '']
     col_names = [f"{name}_active" for name in part_names]
     integerizers = {
-        'event': {name: i for i, name in enumerate(event_vocab)},
-        'action': {name: i for i, name in enumerate(action_vocab)},
-        'part': {name: i for i, name in enumerate(part_vocab)}
+        label_name: {name: i for i, name in enumerate(label_vocab)}
+        for label_name, label_vocab in vocabs.items()
     }
 
     all_slowfast_labels_seg = collections.defaultdict(list)
@@ -343,7 +342,6 @@ def main(
         seq_dir_name = metadata['dir_name'].loc[seq_id]
 
         event_segs = event_labels[i]
-        # event_segs = event_segs.loc[event_segs['event'] != 'NA']
         if not event_segs.any(axis=None):
             logger.warning(f"No event labels for sequence {seq_id}")
             continue

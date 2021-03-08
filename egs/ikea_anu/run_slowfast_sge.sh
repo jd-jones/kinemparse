@@ -46,16 +46,14 @@ esac
 
 
 # -=( SET I/O PATHS )==--------------------------------------------------------
+config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
 data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
 phase_dir="${base_dir}/${label_type}s-from-video"
 folds_dir="${phase_dir}/cv-folds/data"
-# folds_dir="${base_dir}"
 out_dir="${phase_dir}/run-slowfast"
-config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
 
 pretrained_checkpoint_file="${base_dir}/I3D_8x8_R50.pkl"
-# trained_checkpoint_file="${phase_dir}/train-slowfast-balanced/best_model.pyth"
 trained_checkpoint_file=''
 
 

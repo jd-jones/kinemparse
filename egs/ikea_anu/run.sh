@@ -55,7 +55,7 @@ dataset_dir="${output_dir}/dataset"
 phase_dir="${output_dir}/${label_type}s-from-video"
 viz_dir="${phase_dir}/visualize"
 cv_folds_dir="${phase_dir}/cv-folds"
-scores_dir="${phase_dir}/scores"
+scores_dir="${phase_dir}/scores_BACKUP"
 
 slowfast_scores_dir="${phase_dir}/run-slowfast"
 scores_eval_dir="${scores_dir}/eval"

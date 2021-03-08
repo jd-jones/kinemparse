@@ -9,8 +9,6 @@ output_dir="~/data/output/meccano"
 
 # READONLY DIRS
 input_dir="~/data/meccano"
-data_dir="${input_dir}/data"
-annotation_dir="${input_dir}/annotations"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 action_data_dir="${output_dir}/action_dataset"
@@ -56,8 +54,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Make action dataset"
     python ${debug_str} make_action_data.py \
         --out_dir "${action_data_dir}" \
-        --data_dir "${data_dir}" \
-        --annotation_dir "${annotation_dir}"
+        --annotation_dir "${input_dir}" \
+        --frames_dir "${input_dir}/active_object_frames"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
