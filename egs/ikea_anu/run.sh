@@ -86,8 +86,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir "${raw_data_dir}" \
         --annotation_dir "${annotation_dir}" \
         --frames_dir "${frames_dir}" \
-        --col_format "ikea_tk" \
-        --slowfast_csv_params "{'sep': ' '}" \
+        --slowfast_csv_params "{'sep': ','}" \
         --win_params "{'win_size': 150, 'stride': 15}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
@@ -105,7 +104,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --feature_fn_format "frame-fns.json" \
         --label_fn_format "labels.npy" \
         --cv_params "{'by_group': 'split_name', 'n_splits': 2, 'val_ratio': 0}" \
-        --slowfast_csv_params "{'sep': ' '}"
+        --slowfast_csv_params "{'sep': ','}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0

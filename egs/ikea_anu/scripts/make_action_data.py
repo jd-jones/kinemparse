@@ -233,14 +233,9 @@ def make_slowfast_labels(segment_bounds, labels, fns, integerizer, col_format='s
             'video_name': fns[segment_bounds['start']].apply(
                 lambda x: os.path.dirname(x).split('/')[-1]
             ).to_list(),
-            'label_id': [integerizer[name] for name in labels.to_list()],
-            'label_name': labels.to_list(),
-            'start_frame': fns[segment_bounds['start']].apply(
-                lambda x: os.path.basename(x)
-            ).to_list(),
-            'end_frame': fns[segment_bounds['end']].apply(
-                lambda x: os.path.basename(x)
-            ).to_list()
+            'start_index': segment_bounds['start'].to_list(),
+            'end_index': segment_bounds['end'].to_list(),
+            'label_id': [integerizer[name] for name in labels.to_list()]
         }
     elif col_format == 'ikea_tk':
         col_dict = {
@@ -391,11 +386,11 @@ def main(
             utils.saveVariable(label_indices[name], f'{seq_id_str}_labels', data_dirs[name])
             seg_labels_slowfast.to_csv(
                 os.path.join(data_dirs[name], f'{seq_id_str}_slowfast-labels.csv'),
-                index=False, **slowfast_csv_params
+                **slowfast_csv_params
             )
             win_labels_slowfast.to_csv(
                 os.path.join(data_dirs[name], f'{seq_id_str}_slowfast-labels.csv'),
-                index=False, **slowfast_csv_params
+                **slowfast_csv_params
             )
             all_slowfast_labels_seg[name].append(seg_labels_slowfast)
             all_slowfast_labels_win[name].append(win_labels_slowfast)
@@ -414,12 +409,12 @@ def main(
     for name, labels in all_slowfast_labels_seg.items():
         pd.concat(labels, axis=0).to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_seg.csv'),
-            index=False, **slowfast_csv_params
+            **slowfast_csv_params
         )
     for name, labels in all_slowfast_labels_win.items():
         pd.concat(labels, axis=0).to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_win.csv'),
-            index=False, **slowfast_csv_params
+            **slowfast_csv_params
         )
 
     utils.saveVariable(counts, 'action-part-counts', out_labels_dir)

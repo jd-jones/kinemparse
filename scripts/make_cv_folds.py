@@ -75,7 +75,7 @@ def main(
             cv_str = f"cvfold={cv_index}"
             fn = os.path.basename(slowfast_labels_path)
             slowfast_labels = pd.read_csv(
-                slowfast_labels_path, index_col=False, keep_default_na=False,
+                slowfast_labels_path, index_col=0, keep_default_na=False,
                 **slowfast_csv_params
             )
             for split_indices, split_name in zip(cv_fold, split_names):
@@ -87,7 +87,7 @@ def main(
                     split = pd.concat(matches, axis=0)
                     split.to_csv(
                         os.path.join(out_data_dir, f"{cv_str}_{split_name}_{fn}"),
-                        index=False, header=False, **slowfast_csv_params
+                        header=False, **slowfast_csv_params
                     )
                 else:
                     logger.info(f'  Skipping empty slowfast split: {split_name}')

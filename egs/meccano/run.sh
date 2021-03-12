@@ -11,7 +11,7 @@ output_dir="~/data/output/meccano"
 input_dir="~/data/meccano"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-action_data_dir="${output_dir}/action_dataset"
+action_data_dir="${output_dir}/dataset"
 
 start_at="0"
 stop_after="100"
