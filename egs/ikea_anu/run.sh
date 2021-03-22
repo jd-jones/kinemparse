@@ -112,7 +112,16 @@ fi
 ((++STAGE))
 
 
-# NOT AUTOMATED: Train slowfast by hand here
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Make cross-validation folds"
+    qsub run_slowfast_sge.sh --label_type=event
+    qsub run_slowfast_sge.sh --label_type=action
+    qsub run_slowfast_sge.sh --label_type=part
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
 
 
 if [ "$start_at" -le "${STAGE}" ]; then

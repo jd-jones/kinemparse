@@ -18,17 +18,28 @@ pd.options.mode.chained_assignment = None
 logger = logging.getLogger(__name__)
 
 
-def load_pyslowfast_labels(ann_dir):
+def load_pyslowfast_labels(ann_dir, fold_fns=('test.csv', 'train.csv', 'val.csv')):
     def load_fold_labels(fn):
         col_names = ['video_id', 'action_id', 'action_name', 'start_frame', 'end_frame']
         fold_labels = pd.read_csv(fn, names=col_names)
         return fold_labels
 
-    fold_fns = ('test.csv', 'train.csv', 'val.csv')
-    labels = pd.concat(
-        tuple(load_fold_labels(os.path.join(ann_dir, fn)) for fn in fold_fns),
-        axis=0
-    )
+    def make_metadata(label_df, fold_fn):
+        split_name, _ = os.path.splitext(fold_fn)
+        vid_ids = label_df['video_id'].unique()
+        splits = [split_name for i in range(vid_ids.shape[0])]
+        metadata = pd.DataFrame(
+            {'split_name': splits, 'dir_name': [f"{i}" for i in vid_ids]},
+            index=vid_ids
+        )
+        return metadata
+
+    labels = tuple(load_fold_labels(os.path.join(ann_dir, fn)) for fn in fold_fns)
+    metadata = tuple(make_metadata(labels[i], fold_fn) for i, fold_fn in enumerate(fold_fns))
+
+    labels = pd.concat(labels, axis=0)
+    metadata = pd.concat(metadata, axis=0)
+
     vocab = tuple(
         labels.loc[labels['action_id'] == i]['action_name'].iloc[0]
         for i in range(labels['action_id'].max() + 1)
@@ -43,7 +54,7 @@ def load_pyslowfast_labels(ann_dir):
     seq_ids = seq_ids[sort_indices]
     labels = tuple(labels[i] for i in sort_indices)
 
-    return seq_ids, labels, vocab
+    return seq_ids, labels, vocab, metadata
 
 
 def load_coco_labels(ann_dir):
@@ -127,11 +138,11 @@ def load_all_labels(annotation_dir):
 
         return event_labels
 
-    event_seq_ids, event_labels, event_vocab = load_pyslowfast_labels(
+    event_seq_ids, event_labels, event_vocab, metadata = load_pyslowfast_labels(
         os.path.join(annotation_dir, 'MECCANO_action_temporal_annotations')
     )
 
-    action_seq_ids, action_labels, action_vocab = load_pyslowfast_labels(
+    action_seq_ids, action_labels, action_vocab, __ = load_pyslowfast_labels(
         os.path.join(annotation_dir, 'MECCANO_verb_temporal_annotations')
     )
 
@@ -182,7 +193,7 @@ def load_all_labels(annotation_dir):
         'part': part_vocab
     }
 
-    return seq_ids, all_labels, all_vocabs
+    return seq_ids, all_labels, all_vocabs, metadata
 
 
 def plot_event_labels(
@@ -326,9 +337,13 @@ def main(
         if not os.path.exists(dir_):
             os.makedirs(dir_)
 
-    seq_ids, all_labels, vocabs = load_all_labels(annotation_dir)
+    seq_ids, all_labels, vocabs, metadata = load_all_labels(annotation_dir)
     event_labels, action_labels, part_labels = all_labels
     vocabs = {label_name: vocabs[label_name] for label_name in label_types}
+
+    utils.saveMetadata(metadata, out_labels_dir)
+    for name, dir_ in data_dirs.items():
+        utils.saveMetadata(metadata, dir_)
 
     logger.info(f"Loaded {len(seq_ids)} sequence labels from {annotation_dir}")
 
@@ -353,7 +368,7 @@ def main(
         event_segs = event_segs.loc[event_segs['event'] != 'check_booklet']
 
         event_data = make_event_data(
-            event_segs, sorted(glob.glob(os.path.join(frames_dir, f'{seq_id:02d}_*.jpg'))),
+            event_segs, sorted(glob.glob(os.path.join(frames_dir, f'{seq_id}', '*.jpg'))),
             integerizers['event'], integerizers['action'], integerizers['part'],
             vocabs['event'].index(''), vocabs['action'].index(''), False
         )

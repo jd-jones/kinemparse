@@ -87,7 +87,7 @@ def main(
                     split = pd.concat(matches, axis=0)
                     split.to_csv(
                         os.path.join(out_data_dir, f"{cv_str}_{split_name}_{fn}"),
-                        header=False, **slowfast_csv_params
+                        **slowfast_csv_params
                     )
                 else:
                     logger.info(f'  Skipping empty slowfast split: {split_name}')
