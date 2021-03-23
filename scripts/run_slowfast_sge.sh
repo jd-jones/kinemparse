@@ -12,6 +12,9 @@ set -ue
 
 # -=( SET DEFAULTS )==---------------------------------------------------------
 label_type='event'
+config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
+data_dir='/home/jdjones/data/ikea_anu/video_frames'
+base_dir="/home/jdjones/data/output/ikea_anu"
 
 
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
@@ -19,6 +22,18 @@ for arg in "$@"; do
     case $arg in
         --label_type=*)
             label_type="${arg#*=}"
+            shift
+            ;;
+        --config_dir=*)
+            config_dir="${arg#*=}"
+            shift
+            ;;
+        --data_dir=*)
+            data_dir="${arg#*=}"
+            shift
+            ;;
+        --base_dir=*)
+            base_dir="${arg#*=}"
             shift
             ;;
         *) # Unknown option: print error and exit
@@ -46,9 +61,6 @@ esac
 
 
 # -=( SET I/O PATHS )==--------------------------------------------------------
-config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
-data_dir='/home/jdjones/data/ikea_anu/video_frames'
-base_dir="/home/jdjones/data/output/ikea_anu"
 phase_dir="${base_dir}/${label_type}s-from-video"
 folds_dir="${phase_dir}/cv-folds/data"
 out_dir="${phase_dir}/run-slowfast"
@@ -67,30 +79,8 @@ cd "/home/jdjones/repo/CompositionalActions/slowfast"
 python tools/run_net.py \
     --cfg "${config_dir}/I3D_8x8_R50.yaml" \
     OUTPUT_DIR "${out_dir}" \
-    LOG_MODEL_INFO "False" \
-    NUM_GPUS 2 \
-    TENSORBOARD.ENABLE "True" \
-    DATA_LOADER.NUM_WORKERS 4 \
     MODEL.NUM_CLASSES "${num_classes}" \
-    DATA.TRAIN_CSV 'cvfold=1_train_slowfast-labels_seg.csv' \
-    DATA.VAL_CSV 'cvfold=1_test_slowfast-labels_seg.csv' \
-    DATA.TEST_CSV 'cvfold=1_test_slowfast-labels_win.csv' \
     DATA.PATH_TO_DATA_DIR "${folds_dir}" \
     DATA.PATH_PREFIX "${data_dir}" \
-    TRAIN.ENABLE 'True' \
     TRAIN.CHECKPOINT_FILE_PATH "${pretrained_checkpoint_file}" \
-    TRAIN.CHECKPOINT_TYPE 'caffe2' \
-    TRAIN.CHECKPOINT_PERIOD 1 \
-    TRAIN.EVAL_PERIOD 1 \
-    TRAIN.BATCH_SIZE 32 \
-    TRAIN.BALANCED_SAMPLING "False" \
-    TEST.ENABLE 'True' \
-    TEST.CHECKPOINT_FILE_PATH "${trained_checkpoint_file}" \
-    TEST.CHECKPOINT_TYPE 'pytorch' \
-    TEST.BATCH_SIZE 32 \
-    TEST.NUM_ENSEMBLE_VIEWS 1 \
-    TEST.NUM_SPATIAL_CROPS 1 \
-    TEST.SAVE_RESULTS_PATH "results_test.pkl" \
-    SOLVER.MAX_EPOCH 100 \
-    SOLVER.BASE_LR 0.05 \
-    BN.USE_PRECISE_STATS "False"
+    TEST.CHECKPOINT_FILE_PATH "${trained_checkpoint_file}"

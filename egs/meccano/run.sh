@@ -41,10 +41,12 @@ done
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
+config_dir="${eg_root}/config"
 output_dir="~/data/output/meccano"
 
 # READONLY DIRS
 input_dir="~/data/meccano"
+frames_dir="${input_dir}/video_frames"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 dataset_dir="${output_dir}/dataset"
@@ -74,7 +76,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} make_action_data.py \
         --out_dir "${dataset_dir}" \
         --annotation_dir "${input_dir}" \
-        --frames_dir "${input_dir}/video_frames" \
+        --frames_dir "${frames_dir}" \
         --slowfast_csv_params "{'sep': ','}" \
         --win_params "{'win_size': 100, 'stride': 10}"
 fi
@@ -106,9 +108,14 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Train action recognition models"
-    qsub run_slowfast_sge.sh --label_type=event
-    qsub run_slowfast_sge.sh --label_type=action
-    qsub run_slowfast_sge.sh --label_type=part
+    label_types=('event' 'action' 'part')
+    for label_type in ${label_types[@]}; do
+        qsub run_slowfast_sge.sh \
+            --label_type="${label_type}" \
+            --config_dir="${config_dir}" \
+            --data_dir="${frames_dir}" \
+            --base_dir="${output_dir}"
+    done
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0

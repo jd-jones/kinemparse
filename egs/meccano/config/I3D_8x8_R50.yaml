@@ -16,7 +16,7 @@ DATA:
   TEST_CROP_SIZE: 256
   INPUT_CHANNEL_NUM: [3]
   TRAIN_CSV: 'cvfold=0_train_slowfast-labels_seg.csv'
-  VAL_CSV: 'cvfold=0_test_slowfast-labels_seg.csv'
+  VAL_CSV: 'cvfold=0_val_slowfast-labels_seg.csv'
   TEST_CSV: 'cvfold=0_test_slowfast-labels_win.csv'
 RESNET:
   ZERO_INIT_FINAL_BN: True
