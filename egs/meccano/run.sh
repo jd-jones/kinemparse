@@ -42,16 +42,22 @@ done
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
-output_dir="~/data/output/meccano"
+output_dir="${HOME}/data/output/meccano"
 
 # READONLY DIRS
-input_dir="~/data/meccano"
+input_dir="${HOME}/data/meccano"
 frames_dir="${input_dir}/video_frames"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 dataset_dir="${output_dir}/dataset"
 phase_dir="${output_dir}/${label_type}s-from-video"
 cv_folds_dir="${phase_dir}/cv-folds"
+
+# Figure out how many classes there are by counting commas in the vocab file.
+# (This won't work if the vocab contains non-alphanumeric objects or if
+# something in the vocab contains a comma)
+vocab_file="${dataset_dir}/${label_type}-dataset/vocab.json"
+num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -107,15 +113,13 @@ fi
 
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Train action recognition models"
-    label_types=('event' 'action' 'part')
-    for label_type in ${label_types[@]}; do
-        qsub run_slowfast_sge.sh \
-            --label_type="${label_type}" \
-            --config_dir="${config_dir}" \
-            --data_dir="${frames_dir}" \
-            --base_dir="${output_dir}"
-    done
+    echo "STAGE ${STAGE}: Train action recognition model"
+    qsub run_slowfast_sge.sh \
+        --config_dir="${config_dir}" \
+        --data_dir="${frames_dir}" \
+        --base_dir="${output_dir}" \
+        --label_type="${label_type}" \
+        --num_classes="${num_classes}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0

@@ -5,7 +5,7 @@
 #$ -j y -o $JOB_NAME-$JOB_ID.out
 #$ -M jdjones@jhu.edu
 #$ -m e
-#$ -l ram_free=10G,mem_free=10G,gpu=2,hostname=b1[123456789]|c0*|c1[123456789]
+#$ -l ram_free=15G,mem_free=15G,gpu=2,hostname=b1[123456789]|c0*|c1[123456789]
 #$ -q g.q
 
 set -ue
@@ -15,6 +15,7 @@ label_type='event'
 config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
 data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
+num_classes=33
 
 
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
@@ -22,6 +23,10 @@ for arg in "$@"; do
     case $arg in
         --label_type=*)
             label_type="${arg#*=}"
+            shift
+            ;;
+        --num_classes=*)
+            num_classes="${arg#*=}"
             shift
             ;;
         --config_dir=*)
@@ -42,23 +47,6 @@ for arg in "$@"; do
             ;;
     esac
 done
-
-case $label_type in
-    'event')
-        num_classes=33
-        ;;
-    'action')
-        num_classes=14
-        ;;
-    'part')
-        num_classes=11
-        ;;
-    *) # Unknown option: print error and exit
-        echo "Error: Unrecognized label_type ${arg}" >&2
-        exit 1
-        ;;
-esac
-
 
 # -=( SET I/O PATHS )==--------------------------------------------------------
 phase_dir="${base_dir}/${label_type}s-from-video"

@@ -340,6 +340,8 @@ def main(
     seq_ids, all_labels, vocabs, metadata = load_all_labels(annotation_dir)
     event_labels, action_labels, part_labels = all_labels
     vocabs = {label_name: vocabs[label_name] for label_name in label_types}
+    for name, vocab in vocabs.items():
+        utils.saveVariable(vocab, 'vocab', data_dirs[name])
 
     utils.saveMetadata(metadata, out_labels_dir)
     for name, dir_ in data_dirs.items():

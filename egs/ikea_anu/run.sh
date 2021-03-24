@@ -60,6 +60,12 @@ scores_dir="${phase_dir}/scores_BACKUP"
 slowfast_scores_dir="${phase_dir}/run-slowfast"
 scores_eval_dir="${scores_dir}/eval"
 
+# Figure out how many classes there are by counting commas in the vocab file.
+# (This won't work if the vocab contains non-alphanumeric objects or if
+# something in the vocab contains a comma)
+vocab_file="${dataset_dir}/${label_type}-dataset/vocab.json"
+num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
+
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
 cd ${scripts_dir}
@@ -113,10 +119,13 @@ fi
 
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Make cross-validation folds"
-    qsub run_slowfast_sge.sh --label_type=event
-    qsub run_slowfast_sge.sh --label_type=action
-    qsub run_slowfast_sge.sh --label_type=part
+    echo "STAGE ${STAGE}: Train action recognition model"
+    qsub run_slowfast_sge.sh \
+        --config_dir="${config_dir}" \
+        --data_dir="${frames_dir}" \
+        --base_dir="${output_dir}" \
+        --label_type="${label_type}" \
+        --num_classes="${num_classes}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
