@@ -17,18 +17,13 @@ data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
 num_classes=33
 
+eval_crit='topk_accuracy'
+eval_crit_params='["k", 1]'
+eval_crit_name='top1_acc'
 
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
 for arg in "$@"; do
     case $arg in
-        --label_type=*)
-            label_type="${arg#*=}"
-            shift
-            ;;
-        --num_classes=*)
-            num_classes="${arg#*=}"
-            shift
-            ;;
         --config_dir=*)
             config_dir="${arg#*=}"
             shift
@@ -39,6 +34,26 @@ for arg in "$@"; do
             ;;
         --base_dir=*)
             base_dir="${arg#*=}"
+            shift
+            ;;
+        --label_type=*)
+            label_type="${arg#*=}"
+            shift
+            ;;
+        --num_classes=*)
+            num_classes="${arg#*=}"
+            shift
+            ;;
+        --eval_crit=*)
+            eval_crit="${arg#*=}"
+            shift
+            ;;
+        --eval_crit_params=*)
+            eval_crit_params="${arg#*=}"
+            shift
+            ;;
+        --eval_crit_name=*)
+            eval_crit_name="${arg#*=}"
             shift
             ;;
         *) # Unknown option: print error and exit
@@ -71,4 +86,7 @@ python tools/run_net.py \
     DATA.PATH_TO_DATA_DIR "${folds_dir}" \
     DATA.PATH_PREFIX "${data_dir}" \
     TRAIN.CHECKPOINT_FILE_PATH "${pretrained_checkpoint_file}" \
+    TRAIN.EVAL_CRIT "${eval_crit}" \
+    TRAIN.EVAL_CRIT_PARAMS "${eval_crit_params}" \
+    TRAIN.EVAL_CRIT_NAME "${eval_crit_name}" \
     TEST.CHECKPOINT_FILE_PATH "${trained_checkpoint_file}"

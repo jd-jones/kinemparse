@@ -30,11 +30,28 @@ for arg in "$@"; do
             label_type="${arg#*=}"
             ;;
 		*) # Unknown option: print help and exit
-            # TODO: print help
-            exit 0
-			;;
+            echo "Error: Unrecognized argument ${arg}" >&2
+            exit 1
+            ;;
 	esac
 done
+
+case $label_type in
+    'event' | 'action')
+        eval_crit='topk_accuracy'
+        eval_crit_params='["k", 1]'
+        eval_crit_name='top1_acc'
+        ;;
+    'part')
+        eval_crit='F1'
+        eval_crit_params='["background_index", 0]'
+        eval_crit_name='F1'
+        ;;
+    *)
+        echo "Error: Unrecognized label_type ${label_type}" >&2
+        exit 1
+        ;;
+esac
 
 
 # -=( SET I/O PATHS )==--------------------------------------------------------
@@ -72,7 +89,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --skip_download
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
+    exit 0
 fi
 ((++STAGE))
 
@@ -87,7 +104,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --win_params "{'win_size': 100, 'stride': 10}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
-    exit 1
+    exit 0
 fi
 ((++STAGE))
 
@@ -119,7 +136,10 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir="${frames_dir}" \
         --base_dir="${output_dir}" \
         --label_type="${label_type}" \
-        --num_classes="${num_classes}"
+        --num_classes="${num_classes}" \
+        --eval_crit="${eval_crit}" \
+        --eval_crit_params="${eval_crit_params}" \
+        --eval_crit_name="${eval_crit_name}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
