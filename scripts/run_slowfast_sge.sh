@@ -16,7 +16,7 @@ config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
 data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
 num_classes=33
-
+loss_func='cross_entropy'
 eval_crit='topk_accuracy'
 eval_crit_params='["k", 1]'
 eval_crit_name='top1_acc'
@@ -42,6 +42,10 @@ for arg in "$@"; do
             ;;
         --num_classes=*)
             num_classes="${arg#*=}"
+            shift
+            ;;
+        --loss_func=*)
+            loss_func="${arg#*=}"
             shift
             ;;
         --eval_crit=*)
@@ -83,6 +87,7 @@ python tools/run_net.py \
     --cfg "${config_dir}/I3D_8x8_R50.yaml" \
     OUTPUT_DIR "${out_dir}" \
     MODEL.NUM_CLASSES "${num_classes}" \
+    MODEL.LOSS_FUNC "${loss_func}" \
     DATA.PATH_TO_DATA_DIR "${folds_dir}" \
     DATA.PATH_PREFIX "${data_dir}" \
     TRAIN.CHECKPOINT_FILE_PATH "${pretrained_checkpoint_file}" \

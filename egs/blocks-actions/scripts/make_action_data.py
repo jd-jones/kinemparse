@@ -1,7 +1,5 @@
 import os
 import logging
-import json
-import glob
 import collections
 
 import yaml
@@ -10,6 +8,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from mathtools import utils
+from blocks.core import duplocorpus, definitions
 
 # Disable chained assignment warnings: see https://stackoverflow.com/a/20627316/3829959
 pd.options.mode.chained_assignment = None
@@ -18,181 +17,141 @@ pd.options.mode.chained_assignment = None
 logger = logging.getLogger(__name__)
 
 
-def load_pyslowfast_labels(ann_dir, fold_fns=('test.csv', 'train.csv', 'val.csv')):
-    def load_fold_labels(fn):
-        col_names = ['video_id', 'action_id', 'action_name', 'start_frame', 'end_frame']
-        fold_labels = pd.read_csv(fn, names=col_names)
-        return fold_labels
+def actions_to_events(actions_arr):
+    def event_from_parts(df_row):
+        args = sorted([df_row.object, df_row.target])
+        args = [arg for arg in args if arg]
+        arg_str = ','.join(args)
+        event_name = f"{df_row.action}({arg_str})"
+        return event_name
 
-    def make_metadata(label_df, fold_fn):
-        split_name, _ = os.path.splitext(fold_fn)
-        vid_ids = label_df['video_id'].unique()
-        splits = [split_name for i in range(vid_ids.shape[0])]
-        metadata = pd.DataFrame(
-            {'split_name': splits, 'dir_name': [f"{i}" for i in vid_ids]},
-            index=vid_ids
+    actions_df = pd.DataFrame(actions_arr)
+
+    # Make part-activity dataframe
+    is_active = np.zeros((actions_df.shape[0], len(definitions.blocks)))
+    for col_name in ('object', 'target'):
+        col = actions_df[col_name].to_numpy()
+        rows, cols = np.nonzero(col >= 0)
+        is_active[rows, cols] = True
+    col_names = [f"{name}_active" for name in definitions.blocks]
+    part_is_active = pd.DataFrame(is_active, columns=col_names)
+
+    # Make event and action-name dataframe
+    for key in ('action', 'object', 'target'):
+        if key == 'action':
+            vocab = definitions.actions
+        else:
+            vocab = definitions.blocks
+        actions_df[key] = ['' if i == -1 else vocab[i] for i in actions_df[key]]
+    actions_df['event'] = actions_df.apply(event_from_parts)
+
+    # Combine event/action, part dataframes
+    col_names = ['start', 'end', 'event', 'action']
+    events_df = pd.concat((actions_df[col_names], part_is_active), axis=1)
+    return events_df
+
+
+def fixStartEndIndices(action_seq, rgb_frame_timestamp_seq, selected_frame_indices):
+    new_times = rgb_frame_timestamp_seq[selected_frame_indices]
+    start_times = rgb_frame_timestamp_seq[action_seq['start']]
+    end_times = rgb_frame_timestamp_seq[action_seq['end']]
+
+    action_seq['start'] = utils.nearestIndices(new_times, start_times)
+    action_seq['end'] = utils.nearestIndices(new_times, end_times)
+
+    return action_seq
+
+
+def load_all_labels(
+        corpus_name, default_annotator, metadata_file, metadata_criteria,
+        start_video_from_first_touch=True, subsample_period=None):
+    def load_one(trial_id):
+        if start_video_from_first_touch:
+            label_seq = corpus.readLabels(trial_id, default_annotator)[0]
+            first_touch_idxs = label_seq['start'][label_seq['action'] == 7]
+            if not len(first_touch_idxs):
+                raise AssertionError("No first touch annotated")
+            first_touch_idx = int(first_touch_idxs[0])
+            # Video is sampled at 30 FPS --> start one second before the first
+            # touch was annotated (unless that frame would have happened before
+            # the camera started recording)
+            start_idx = max(0, first_touch_idx - 30)
+            selected_frame_indices = slice(start_idx, None, subsample_period)
+
+        logger.info("  Loading labels...")
+        action_seq, annotator_name, is_valid = corpus.readLabels(trial_id, default_annotator)
+        if not is_valid:
+            raise AssertionError("No labels")
+
+        if not (action_seq['action'] == 7).sum():
+            logger.warning(f'    trial {trial_id}: missing first touch labels')
+
+        rgb_frame_fn_seq = corpus.getRgbFrameFns(trial_id)
+        if rgb_frame_fn_seq is None:
+            raise AssertionError("No RGB frames")
+
+        rgb_frame_timestamp_seq = corpus.readRgbTimestamps(trial_id, times_only=True)
+        if rgb_frame_timestamp_seq is None:
+            raise AssertionError("No RGB timestamps")
+
+        depth_frame_fn_seq = corpus.getDepthFrameFns(trial_id)
+        if depth_frame_fn_seq is None:
+            raise AssertionError("No depth frames")
+
+        depth_frame_timestamp_seq = corpus.readDepthTimestamps(trial_id, times_only=True)
+        if depth_frame_timestamp_seq is None:
+            raise AssertionError("No depth timestamps")
+
+        if action_seq['start'].max() >= len(rgb_frame_fn_seq):
+            raise AssertionError("Actions longer than rgb frames")
+
+        if action_seq['end'].max() >= len(rgb_frame_fn_seq):
+            raise AssertionError("Actions longer than rgb frames")
+
+        action_seq = fixStartEndIndices(
+            action_seq, rgb_frame_timestamp_seq, selected_frame_indices
         )
-        return metadata
+        action_seq = actions_to_events(action_seq)
 
-    labels = tuple(load_fold_labels(os.path.join(ann_dir, fn)) for fn in fold_fns)
-    metadata = tuple(make_metadata(labels[i], fold_fn) for i, fold_fn in enumerate(fold_fns))
+        rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
+        depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
+        rgb_frame_fn_seq = rgb_frame_fn_seq[selected_frame_indices]
+        depth_frame_fn_seq = depth_frame_fn_seq[selected_frame_indices]
 
-    labels = pd.concat(labels, axis=0)
-    metadata = pd.concat(metadata, axis=0)
+        return action_seq, rgb_frame_fn_seq, annotator_name
 
-    vocab = tuple(
-        labels.loc[labels['action_id'] == i]['action_name'].iloc[0]
-        for i in range(labels['action_id'].max() + 1)
-    )
-    seq_ids = labels['video_id'].unique()
-    labels = tuple(
-        labels.loc[labels['video_id'] == i].drop('video_id', axis=1).sort_values(by='start_frame')
-        for i in seq_ids
-    )
+    metadata = loadMetadata(metadata_file, metadata_criteria=metadata_criteria)
+    corpus = duplocorpus.DuploCorpus(corpus_name)
+    seq_ids = metadata['VidID']
 
-    sort_indices = seq_ids.argsort()
-    seq_ids = seq_ids[sort_indices]
-    labels = tuple(labels[i] for i in sort_indices)
+    event_labels = []
+    frame_fn_seqs = []
+    annotator_names = []
+    unique_events = frozenset()
+    for i, seq_id in enumerate(seq_ids):
+        try:
+            event_df, rgb_frame_fn_seq, annotator_name = load_one(seq_id)
+        except AssertionError as e:
+            warn_str = f"Skipping video {seq_id}: {e}"
+            logger.warning(warn_str)
+            continue
 
-    return seq_ids, labels, vocab, metadata
+        event_labels.append(event_df)
+        frame_fn_seqs.append(rgb_frame_fn_seq)
+        annotator_names.append(annotator_name)
+        unique_events |= frozenset(event_df['event'].to_list())
+    metadata['annotator'] = annotator_names
 
-
-def load_coco_labels(ann_dir):
-    def load_fold_labels(fn):
-        with open(fn, 'rt') as file_:
-            fold_labels = json.load(file_)
-
-        image_metadata = pd.DataFrame(fold_labels['images']).set_index('id')
-        vocab = pd.DataFrame(fold_labels['categories'])
-        labels = pd.DataFrame(fold_labels['annotations'])
-        labels['file_name'] = image_metadata.loc[labels['image_id']].reset_index()['file_name']
-        labels.drop('image_id', axis=1)
-
-        return vocab, labels
-
-    fold_vocabs, fold_labels = zip(*tuple(
-        load_fold_labels(os.path.join(ann_dir, f"instances_meccano_{fn}"))
-        for fn in ('test.json', 'train.json', 'val.json')
-    ))
-
-    vocab = utils.selectSingleFromEq(fold_vocabs).set_index('id')
-    labels = pd.concat(fold_labels, axis=0)
-    labels['category_name'] = vocab.loc[labels['category_id']].reset_index()['name']
-    return labels, vocab
-
-
-def load_all_labels(annotation_dir):
-    def get_objects(obj_labels, event_label):
-        i_s = event_label.start_frame_index
-        i_e = event_label.end_frame_index
-        in_seg = (obj_labels.index >= i_s) * (obj_labels.index <= i_e)
-        objects = obj_labels.iloc[in_seg]['category_name'].unique()
-        return objects
-
-    def make_event_labels(l_part, l_act, l_event, part_vocab):
-        cols = ['start_frame_index', 'end_frame_index']
-        if not (l_event[cols] == l_act[cols]).all(axis=None):
-            raise AssertionError('Actions do not match events')
-
-        event_objs = tuple(
-            get_objects(l_part, tup)
-            for tup in l_event.itertuples()
-        )
-
-        max_num_args = max(len(x) for x in event_objs)
-        event_objs = pd.DataFrame(
-            {
-                f'arg{i}': tuple(objs[i] if i < len(objs) else '' for objs in event_objs)
-                for i in range(max_num_args)
-            },
-        )
-
-        l_event = l_event.rename(mapper={'action_name': 'event_name'}, axis=1)
-
-        part_is_active = {}
-        event_names = l_event['event_name'].copy()
-        for name in part_vocab:
-            if name == '':
-                continue
-            part_is_active[f"{name}_active"] = event_names.str.contains(name).to_numpy()
-            event_names = event_names.str.replace(name, '')
-
-        event_cols = ['start_frame_index', 'end_frame_index', 'event_name']
-        act_cols = ['action_name']
-        event_labels = pd.concat(
-            (
-                pd.DataFrame(l_event[event_cols].values, columns=event_cols),
-                pd.DataFrame(l_act[act_cols].values, columns=act_cols),
-                pd.DataFrame(part_is_active)
-            ), axis=1
-        )
-
-        event_labels = event_labels.rename(
-            mapper={
-                'start_frame_index': 'start',
-                'end_frame_index': 'end',
-                'action_name': 'action',
-                'event_name': 'event'
-            }, axis=1
-        )
-
-        return event_labels
-
-    event_seq_ids, event_labels, event_vocab, metadata = load_pyslowfast_labels(
-        os.path.join(annotation_dir, 'MECCANO_action_temporal_annotations')
-    )
-
-    action_seq_ids, action_labels, action_vocab, __ = load_pyslowfast_labels(
-        os.path.join(annotation_dir, 'MECCANO_verb_temporal_annotations')
-    )
-
-    def fix_action_name(label_seq):
-        label_seq['action_name'] = label_seq['action_name'].str.replace('takedriver', 'take')
-        return label_seq
-
-    action_labels = tuple(fix_action_name(label) for label in action_labels)
-
-    part_labels, part_vocab = load_coco_labels(
-        os.path.join(annotation_dir, 'MECCANO_object_annotations')
-    )
-
-    event_vocab = ('',) + event_vocab
-    action_vocab = ('',) + action_vocab
-    part_vocab = ('',) + tuple(part_vocab['name'].unique().tolist())
-
-    part_labels['seq_id'] = part_labels['file_name'].str.split('_').str.get(0).astype(int)
-    part_labels['file_name'] = part_labels['file_name'].str.split('_').str.get(1)
-    part_seq_ids = part_labels['seq_id'].unique()
-    part_seq_ids.sort()
-    part_labels = tuple(
-        part_labels[part_labels['seq_id'] == i].drop('seq_id', axis=1)
-        for i in part_seq_ids
-    )
-
-    for label in part_labels:
-        label['frame_index'] = label['file_name'].str.strip('.jpg').astype(int)
-        label.set_index('frame_index', inplace=True)
-    for label in action_labels:
-        label['start_frame_index'] = label['start_frame'].str.strip('.jpg').astype(int)
-        label['end_frame_index'] = label['end_frame'].str.strip('.jpg').astype(int)
-    for label in event_labels:
-        label['start_frame_index'] = label['start_frame'].str.strip('.jpg').astype(int)
-        label['end_frame_index'] = label['end_frame'].str.strip('.jpg').astype(int)
-
-    event_labels = tuple(
-        make_event_labels(*tup, part_vocab)
-        for tup in zip(part_labels, action_labels, event_labels)
-    )
-
-    seq_ids = utils.selectSingleFromEq((event_seq_ids, action_seq_ids))
-
+    event_vocab = ('',) + tuple(sorted(unique_events))
+    action_vocab = ('',) + definitions.actions
+    part_vocab = ('',) + definitions.blocks
     all_vocabs = {
         'event': event_vocab,
         'action': action_vocab,
         'part': part_vocab
     }
 
-    return seq_ids, event_labels, all_vocabs, metadata
+    return seq_ids, event_labels, frame_fn_seqs, all_vocabs, metadata
 
 
 def plot_event_labels(
@@ -314,12 +273,29 @@ def make_slowfast_labels(segment_bounds, label_indices, fns):
     return slowfast_labels
 
 
+def loadMetadata(metadata_file, metadata_criteria={}):
+    metadata = pd.read_excel(metadata_file, index_col=None)
+    metadata = metadata.drop(columns=['Eyetrackingfilename', 'Notes'])
+    metadata = metadata.loc[:, ~metadata.columns.str.contains('^Unnamed')]
+
+    metadata = metadata.dropna(subset=['TaskID', 'VidID'])
+    for key, value in metadata_criteria.items():
+        in_corpus = metadata[key] == value
+        metadata = metadata[in_corpus]
+
+    metadata['VidID'] = metadata['VidID'].astype(int)
+    metadata['TaskID'] = metadata['TaskID'].astype(int)
+
+    metadata = metadata.set_index('VidID', verify_integrity=True)
+    return metadata
+
+
 def main(
-        out_dir=None, annotation_dir=None, frames_dir=None,
-        win_params={}, slowfast_csv_params={}, label_types=('event', 'action', 'part')):
+        out_dir=None, metadata_file=None, corpus_name=None, default_annotator=None,
+        metadata_criteria={}, win_params={}, slowfast_csv_params={},
+        label_types=('event', 'action', 'part')):
     out_dir = os.path.expanduser(out_dir)
-    annotation_dir = os.path.expanduser(annotation_dir)
-    frames_dir = os.path.expanduser(frames_dir)
+    metadata_file = os.path.expanduser(metadata_file)
 
     logger = utils.setupRootLogger(filename=os.path.join(out_dir, 'log.txt'))
 
@@ -336,7 +312,10 @@ def main(
         if not os.path.exists(dir_):
             os.makedirs(dir_)
 
-    seq_ids, event_labels, vocabs, metadata = load_all_labels(annotation_dir)
+    seq_ids, event_labels, frame_fn_seqs, vocabs, metadata = load_all_labels(
+        corpus_name, default_annotator, metadata_file, metadata_criteria,
+        start_video_from_first_touch=True, subsample_period=None
+    )
     vocabs = {label_name: vocabs[label_name] for label_name in label_types}
     for name, vocab in vocabs.items():
         utils.saveVariable(vocab, 'vocab', data_dirs[name])
@@ -345,7 +324,7 @@ def main(
     for name, dir_ in data_dirs.items():
         utils.saveMetadata(metadata, dir_)
 
-    logger.info(f"Loaded {len(seq_ids)} sequence labels from {annotation_dir}")
+    logger.info(f"Loaded {len(seq_ids)} sequence labels from {corpus_name} dataset")
 
     part_names = [name for name in vocabs['part'] if name != '']
     col_names = [f"{name}_active" for name in part_names]
@@ -363,12 +342,13 @@ def main(
         seq_id_str = f"seq={seq_id}"
 
         event_segs = event_labels[i]
+        frame_fns = frame_fn_seqs[i]
 
         # Ignore 'check booklet' events because they don't have an impact on construction
         event_segs = event_segs.loc[event_segs['event'] != 'check_booklet']
 
         event_data = make_event_data(
-            event_segs, sorted(glob.glob(os.path.join(frames_dir, f'{seq_id}', '*.jpg'))),
+            event_segs, frame_fns,
             integerizers['event'], integerizers['action'], integerizers['part'],
             vocabs['event'].index(''), vocabs['action'].index(''), False
         )

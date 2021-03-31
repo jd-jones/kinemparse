@@ -88,9 +88,8 @@ STAGE=0
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Download meccano data"
-    ./download_meccano_data.sh \
-        --dest_dir=${input_dir} \
-        --skip_download
+    ./download_blocks_data.sh \
+        --dest_dir=${input_dir}
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
@@ -102,8 +101,10 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Make action dataset"
     python ${debug_str} make_action_data.py \
         --out_dir "${dataset_dir}" \
-        --annotation_dir "${input_dir}" \
-        --frames_dir "${frames_dir}" \
+        --metadata_file "~/data/blocks/data/blocks_file_index.xlsx" \
+        --metadata_criteria "{'GroupID': 'Child'}" \
+        --corpus_name "child" \
+        --default_annotator "Cathryn" \
         --slowfast_csv_params "{'sep': ','}" \
         --win_params "{'win_size': 100, 'stride': 10}"
 fi
