@@ -42,11 +42,10 @@ done
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
-output_dir="${HOME}/data/output/meccano"
+output_dir="${HOME}/data/output/blocks-actions"
 
 # READONLY DIRS
-input_dir="${HOME}/data/meccano"
-frames_dir="${input_dir}/video_frames"
+input_dir="${HOME}/data/blocks"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 dataset_dir="${output_dir}/dataset"
@@ -56,8 +55,8 @@ cv_folds_dir="${phase_dir}/cv-folds"
 # Figure out how many classes there are by counting commas in the vocab file.
 # (This won't work if the vocab contains non-alphanumeric objects or if
 # something in the vocab contains a comma)
-vocab_file="${dataset_dir}/${label_type}-dataset/vocab.json"
-num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
+# vocab_file="${dataset_dir}/${label_type}-dataset/vocab.json"
+# num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
 
 case $label_type in
     'event' | 'action')

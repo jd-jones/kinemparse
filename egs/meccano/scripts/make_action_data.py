@@ -290,7 +290,9 @@ def make_clips(event_data, event_vocab, action_vocab, clip_type='window', stride
         name: get_clip_labels(event_data[name].to_numpy())
         for name in event_data.columns if name != 'fn'
     }
+    d['event_id'] = d['event']
     d['event'] = [event_vocab[i] for i in d['event']]
+    d['action_id'] = d['action']
     d['action'] = [action_vocab[i] for i in d['action']]
     d['start'] = [sl.start for sl in clip_slices]
     d['end'] = [min(sl.stop, event_data.shape[0]) - 1 for sl in clip_slices]

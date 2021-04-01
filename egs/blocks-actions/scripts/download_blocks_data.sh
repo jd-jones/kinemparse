@@ -31,11 +31,15 @@ if [ "${mount}" == "true" ]; then
     echo "STEP 1: Mount dataset"
     remote_drive='//cloud.nas.jh.edu/lcsr-cogsci-blocks$'
     mkdir -p "${dest_dir}"
-    sudo mount -t cifs "${remote_drive}" "${dest_dir}" -o \
-        username=jjone229,\
-        domain=WIN,\
-        uid=jjone229,\
-        gid=lcsr,\
-        dir_mode=0700,\
-        file_mode=0700
+    opts=( \
+        'username=jjone229,' \
+        'domain=WIN,' \
+        'uid=jjone229,' \
+        'gid=lcsr,' \
+        'dir_mode=0700,' \
+        'file_mode=0700,' \
+        'vers=3.0' \
+    )
+    opt_str=$(IFS=; echo "${opts[*]}")
+    sudo mount -t cifs "${remote_drive}" "${dest_dir}" -o "${opt_str}"
 fi

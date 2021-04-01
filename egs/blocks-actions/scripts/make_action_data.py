@@ -17,7 +17,7 @@ pd.options.mode.chained_assignment = None
 logger = logging.getLogger(__name__)
 
 
-def actions_to_events(actions_arr):
+def actions_to_events(actions_arr, use_coarse_actions=False):
     def event_from_parts(df_row):
         args = sorted([df_row.object, df_row.target])
         args = [arg for arg in args if arg]
@@ -25,14 +25,29 @@ def actions_to_events(actions_arr):
         event_name = f"{df_row.action}({arg_str})"
         return event_name
 
+    def coarsen_actions(actions_df, part_is_active):
+        action_names = actions_df['action'].to_list()
+        is_connection = [a in definitions.constructive_actions for a in action_names]
+        # is_disconnection = [a in definitions.deconstructive_actions for a in action_names]
+        is_rotation = [a in definitions.rotation_actions for a in action_names]
+        is_tag = [a in definitions.annotation_tags for a in action_names]
+
+        actions_df['action'].loc[is_connection] = 'connect'
+        actions_df['action'].loc[is_rotation] = 'rotate'
+
+        is_not_tag = ~np.array(is_tag, dtype=bool)
+        actions_df = actions_df.loc[is_not_tag]
+        part_is_active = part_is_active.loc[is_not_tag]
+        return actions_df, part_is_active
+
     actions_df = pd.DataFrame(actions_arr)
 
     # Make part-activity dataframe
-    is_active = np.zeros((actions_df.shape[0], len(definitions.blocks)))
+    is_active = np.zeros((actions_df.shape[0], len(definitions.blocks)), dtype=bool)
     for col_name in ('object', 'target'):
         col = actions_df[col_name].to_numpy()
-        rows, cols = np.nonzero(col >= 0)
-        is_active[rows, cols] = True
+        rows = np.nonzero(col >= 0)[0]
+        is_active[rows, col[rows]] = True
     col_names = [f"{name}_active" for name in definitions.blocks]
     part_is_active = pd.DataFrame(is_active, columns=col_names)
 
@@ -43,7 +58,9 @@ def actions_to_events(actions_arr):
         else:
             vocab = definitions.blocks
         actions_df[key] = ['' if i == -1 else vocab[i] for i in actions_df[key]]
-    actions_df['event'] = actions_df.apply(event_from_parts)
+    if use_coarse_actions:
+        actions_df, part_is_active = coarsen_actions(actions_df, part_is_active)
+    actions_df['event'] = actions_df.apply(event_from_parts, axis=1)
 
     # Combine event/action, part dataframes
     col_names = ['start', 'end', 'event', 'action']
@@ -64,7 +81,8 @@ def fixStartEndIndices(action_seq, rgb_frame_timestamp_seq, selected_frame_indic
 
 def load_all_labels(
         corpus_name, default_annotator, metadata_file, metadata_criteria,
-        start_video_from_first_touch=True, subsample_period=None):
+        start_video_from_first_touch=True, subsample_period=None,
+        use_coarse_actions=False):
     def load_one(trial_id):
         if start_video_from_first_touch:
             label_seq = corpus.readLabels(trial_id, default_annotator)[0]
@@ -111,7 +129,7 @@ def load_all_labels(
         action_seq = fixStartEndIndices(
             action_seq, rgb_frame_timestamp_seq, selected_frame_indices
         )
-        action_seq = actions_to_events(action_seq)
+        action_seq = actions_to_events(action_seq, use_coarse_actions=use_coarse_actions)
 
         rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
         depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
@@ -122,12 +140,14 @@ def load_all_labels(
 
     metadata = loadMetadata(metadata_file, metadata_criteria=metadata_criteria)
     corpus = duplocorpus.DuploCorpus(corpus_name)
-    seq_ids = metadata['VidID']
+    seq_ids = metadata.index.to_numpy()
 
     event_labels = []
     frame_fn_seqs = []
     annotator_names = []
     unique_events = frozenset()
+    unique_actions = frozenset()
+    processed_seq_ids = []
     for i, seq_id in enumerate(seq_ids):
         try:
             event_df, rgb_frame_fn_seq, annotator_name = load_one(seq_id)
@@ -140,17 +160,21 @@ def load_all_labels(
         frame_fn_seqs.append(rgb_frame_fn_seq)
         annotator_names.append(annotator_name)
         unique_events |= frozenset(event_df['event'].to_list())
+        unique_actions |= frozenset(event_df['action'].to_list())
+        processed_seq_ids.append(seq_id)
+
+    metadata = metadata.loc[processed_seq_ids]
     metadata['annotator'] = annotator_names
+    seq_ids = metadata.index.to_numpy()
 
     event_vocab = ('',) + tuple(sorted(unique_events))
-    action_vocab = ('',) + definitions.actions
-    part_vocab = ('',) + definitions.blocks
+    action_vocab = ('',) + tuple(sorted(unique_actions))
+    part_vocab = ('',) + tuple(definitions.blocks)
     all_vocabs = {
         'event': event_vocab,
         'action': action_vocab,
         'part': part_vocab
     }
-
     return seq_ids, event_labels, frame_fn_seqs, all_vocabs, metadata
 
 
@@ -249,7 +273,9 @@ def make_clips(event_data, event_vocab, action_vocab, clip_type='window', stride
         name: get_clip_labels(event_data[name].to_numpy())
         for name in event_data.columns if name != 'fn'
     }
+    d['event_id'] = d['event']
     d['event'] = [event_vocab[i] for i in d['event']]
+    d['action_id'] = d['action']
     d['action'] = [action_vocab[i] for i in d['action']]
     d['start'] = [sl.start for sl in clip_slices]
     d['end'] = [min(sl.stop, event_data.shape[0]) - 1 for sl in clip_slices]
@@ -314,7 +340,8 @@ def main(
 
     seq_ids, event_labels, frame_fn_seqs, vocabs, metadata = load_all_labels(
         corpus_name, default_annotator, metadata_file, metadata_criteria,
-        start_video_from_first_touch=True, subsample_period=None
+        start_video_from_first_touch=True, subsample_period=None,
+        use_coarse_actions=True
     )
     vocabs = {label_name: vocabs[label_name] for label_name in label_types}
     for name, vocab in vocabs.items():
