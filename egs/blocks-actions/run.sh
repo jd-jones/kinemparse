@@ -88,7 +88,10 @@ STAGE=0
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Download meccano data"
     ./download_blocks_data.sh \
-        --dest_dir=${input_dir}
+        --dest_dir=${input_dir} \
+        --source_videos_dir="${input_dir}/data/child/video-frames" \
+        --dest_videos_dir="${HOME}/data/blocks-videos" \
+        --skip_mount
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0

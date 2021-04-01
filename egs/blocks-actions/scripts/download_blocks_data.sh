@@ -4,6 +4,9 @@ set -ue
 # -=( SET DEFAULTS )==---------------------------------------------------------
 dest_dir="${HOME}/data/blocks"
 mount=true
+copy=true
+source_videos_dir=''
+dest_videos_dir=''
 
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
 for arg in "$@"; do
@@ -14,6 +17,18 @@ for arg in "$@"; do
 			;;
 		--skip_mount)
             mount=false
+			shift
+			;;
+		--skip_copy)
+            copy=false
+			shift
+			;;
+        --source_videos_dir=*)
+			source_videos_dir="${arg#*=}"
+			shift
+			;;
+        --dest_videos_dir=*)
+			dest_videos_dir="${arg#*=}"
 			shift
 			;;
 		*) # Unknown option: print help and exit
@@ -42,4 +57,21 @@ if [ "${mount}" == "true" ]; then
     )
     opt_str=$(IFS=; echo "${opts[*]}")
     sudo mount -t cifs "${remote_drive}" "${dest_dir}" -o "${opt_str}"
+fi
+
+
+if [ "${copy}" == "true" ]; then
+    echo "STEP 2: Copy frames"
+    for video_dir in "${source_videos_dir}"/*-rgb/; do
+        video_id=$(basename "${video_dir%-*}")
+        dest_video_dir="${dest_videos_dir}/${video_id}"
+        mkdir -p "${dest_video_dir}"
+        echo "  Converting frames for video ${video_id}"
+        for source_file in "${video_dir}"*.png; do
+            orig_fn=$(basename "${source_file}")
+            name="${orig_fn%.*}"
+            dest_file="${dest_video_dir}/${name}.jpg"
+            convert "${source_file}" "${dest_file}"
+        done
+    done
 fi

@@ -82,7 +82,7 @@ def fixStartEndIndices(action_seq, rgb_frame_timestamp_seq, selected_frame_indic
 def load_all_labels(
         corpus_name, default_annotator, metadata_file, metadata_criteria,
         start_video_from_first_touch=True, subsample_period=None,
-        use_coarse_actions=False):
+        use_coarse_actions=False, frames_dir=None):
     def load_one(trial_id):
         if start_video_from_first_touch:
             label_seq = corpus.readLabels(trial_id, default_annotator)[0]
