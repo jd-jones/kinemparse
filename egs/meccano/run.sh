@@ -52,6 +52,10 @@ frames_dir="${input_dir}/video_frames"
 dataset_dir="${output_dir}/dataset"
 phase_dir="${output_dir}/${label_type}s-from-video"
 cv_folds_dir="${phase_dir}/cv-folds"
+scores_dir="${phase_dir}/scores"
+
+slowfast_scores_dir="${phase_dir}/run-slowfast"
+scores_eval_dir="${scores_dir}/eval"
 
 # Figure out how many classes there are by counting commas in the vocab file.
 # (This won't work if the vocab contains non-alphanumeric objects or if
@@ -145,6 +149,43 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --eval_crit="${eval_crit}" \
         --eval_crit_params="${eval_crit_params}" \
         --eval_crit_name="${eval_crit_name}"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Post-process slowfast output"
+    python ${debug_str} postprocess_slowfast_output.py \
+        --out_dir "${scores_dir}" \
+        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --results_file "${slowfast_scores_dir}/results_test.pkl" \
+        --cv_file "${cv_folds_dir}/data/cvfold=0_test_slowfast-labels_win.csv" \
+        --slowfast_csv_params "{'sep': ','}" \
+        --win_params "{'win_size': 100, 'stride': 10}"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Evaluate system output"
+    python ${debug_str} eval_system_output.py \
+        --out_dir "${scores_eval_dir}" \
+        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --scores_dir "${scores_dir}/data" \
+        --frames_dir "${frames_dir}" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
+        --only_fold 0 \
+        --plot_io "False" \
+        --prefix "seq="
+    python ${debug_str} analysis.py \
+        --out_dir "${scores_eval_dir}/aggregate-results" \
+        --results_file "${scores_eval_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
