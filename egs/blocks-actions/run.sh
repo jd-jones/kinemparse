@@ -90,7 +90,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     ./download_blocks_data.sh \
         --dest_dir=${input_dir} \
         --source_videos_dir="${input_dir}/data/child/video-frames" \
-        --dest_videos_dir="${HOME}/data/blocks-videos" \
+        --dest_videos_dir="${HOME}/data/blocks-videos-as-jpg/child" \
         --skip_mount
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then

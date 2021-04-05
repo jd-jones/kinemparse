@@ -65,6 +65,17 @@ if [ "${copy}" == "true" ]; then
     for video_dir in "${source_videos_dir}"/*-rgb/; do
         video_id=$(basename "${video_dir%-*}")
         dest_video_dir="${dest_videos_dir}/${video_id}"
+
+        if [ -d "${dest_video_dir}" ]; then
+            echo "  Skipping video ${video_id}: dest directory exists"
+            continue
+        fi
+
+        if [ -z "$(ls -A ${video_dir})" ]; then
+            echo "  Skipping video ${video_id}: source directory empty"
+            continue
+        fi
+
         mkdir -p "${dest_video_dir}"
         echo "  Converting frames for video ${video_id}"
         for source_file in "${video_dir}"*.png; do

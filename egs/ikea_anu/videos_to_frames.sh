@@ -6,7 +6,6 @@ set -ue
 data_dir="${HOME}/data/ikea_anu/data/ANU_ikea_dataset_video"
 out_dir="${HOME}/data/ikea_anu/video_frames"
 
-
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
 for arg in "$@"; do
 	case $arg in
