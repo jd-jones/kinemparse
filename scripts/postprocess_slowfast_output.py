@@ -54,14 +54,19 @@ def main(
         matches_video = (slowfast_labels['video_name'] == vid_name).to_numpy()
         win_labels = gt_labels[matches_video].numpy()
         win_scores = model_scores[matches_video, :].numpy()
-        win_preds = win_scores.argmax(axis=1)
+
+        if win_labels.shape == win_scores.shape:
+            win_preds = (win_scores > 0.5).astype(int)
+        else:
+            win_preds = win_scores.argmax(axis=1)
 
         seq_id_str = f"seq={vid_id}"
         utils.saveVariable(win_scores, f'{seq_id_str}_score-seq', out_data_dir)
         utils.saveVariable(win_labels, f'{seq_id_str}_true-label-seq', out_data_dir)
         utils.saveVariable(win_preds, f'{seq_id_str}_pred-label-seq', out_data_dir)
         utils.plot_array(
-            win_scores.T, (win_labels, win_preds), ('true', 'pred'), tick_names=vocab,
+            win_scores.T, (win_labels.T, win_preds.T), ('true', 'pred'),
+            tick_names=vocab,
             fn=os.path.join(fig_dir, f"{seq_id_str}.png"),
             subplot_width=12, subplot_height=5
         )

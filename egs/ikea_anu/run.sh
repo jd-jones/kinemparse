@@ -56,6 +56,7 @@ phase_dir="${output_dir}/${label_type}s-from-video"
 viz_dir="${phase_dir}/visualize"
 cv_folds_dir="${phase_dir}/cv-folds"
 scores_dir="${phase_dir}/scores"
+connections_dir="${phase_dir}/connection-scores"
 
 slowfast_scores_dir="${phase_dir}/run-slowfast"
 scores_eval_dir="${scores_dir}/eval"
@@ -169,3 +170,21 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
 fi
 ((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Compute connection scores from action scores"
+    python ${debug_str} connections_from_actions.py \
+        --out_dir "${connections_dir}" \
+        --scores_dir "${scores_dir}" \
+        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --plot_io "True" \
+        --only_fold 1 \
+        --prefix "seq="
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
+
+

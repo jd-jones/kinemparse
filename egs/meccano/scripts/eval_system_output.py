@@ -6,7 +6,7 @@ import yaml
 import numpy as np
 # from matplotlib import pyplot as plt
 
-import LCTM.metrics
+# import LCTM.metrics
 
 from mathtools import utils, metrics
 
@@ -15,12 +15,23 @@ logger = logging.getLogger(__name__)
 
 
 def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
-    state_acc = (pred_seq == true_seq).astype(float).mean()
+    tp = metrics.truePositives(pred_seq, true_seq)
+    # tn = metrics.trueNegatives(pred_seq, true_seq)
+    fp = metrics.falsePositives(pred_seq, true_seq)
+    fn = metrics.falseNegatives(pred_seq, true_seq)
+
+    prc = utils.safeDivide(tp, tp + fp)
+    rec = utils.safeDivide(tp, tp + fn)
+    f1 = utils.safeDivide(2 * prc * rec, prc + rec)
+    acc = (pred_seq == true_seq).astype(float).mean()
 
     metric_dict = {
-        'State Accuracy' + name_suffix: state_acc,
-        'State Edit Score' + name_suffix: LCTM.metrics.edit_score(pred_seq, true_seq) / 100,
-        'State Overlap Score' + name_suffix: LCTM.metrics.overlap_score(pred_seq, true_seq) / 100
+        'Accuracy' + name_suffix: acc,
+        'Precision' + name_suffix: prc,
+        'Recall' + name_suffix: rec,
+        'F1' + name_suffix: f1
+        # 'Edit Score' + name_suffix: LCTM.metrics.edit_score(pred_seq, true_seq) / 100,
+        # 'Overlap Score' + name_suffix: LCTM.metrics.overlap_score(pred_seq, true_seq) / 100
     }
 
     append_to.update(metric_dict)
