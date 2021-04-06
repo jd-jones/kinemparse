@@ -3,14 +3,60 @@ import logging
 
 import yaml
 import numpy as np
+import pandas as pd
 # from matplotlib import pyplot as plt
 
 import LCTM.metrics
+import pywrapfst as openfst
 
 from mathtools import utils
+from seqtools import fstutils_openfst as libfst
 
 
 logger = logging.getLogger(__name__)
+
+
+def transducer_from_connection_attrs(
+        transition_weights,
+        action_ids=None, transition_ids=None,
+        input_table=None, output_table=None,
+        arc_type='standard'):
+    num_inputs, num_states, _ = transition_weights.shape
+
+    fst = openfst.VectorFst(arc_type=arc_type)
+    fst.set_input_symbols(input_table)
+    fst.set_output_symbols(output_table)
+
+    zero = openfst.Weight.zero(fst.weight_type())
+    one = openfst.Weight.one(fst.weight_type())
+
+    fst.set_start(fst.add_state())
+
+    def makeState(i):
+        state = fst.add_state()
+        arc = openfst.Arc(libfst.EPSILON, libfst.EPSILON, one, state)
+        fst.add_arc(fst.start(), arc)
+        fst.set_final(state, one)
+        return state
+
+    states = tuple(makeState(i) for i in range(num_states))
+
+    for i_action, arr in enumerate(transition_weights):
+        for i_cur, row in enumerate(arr):
+            for i_next, tx_weight in enumerate(row):
+                cur_state = states[i_cur]
+                next_state = states[i_next]
+                weight = openfst.Weight(fst.weight_type(), tx_weight)
+                transition_id = transition_ids[i_cur, i_next] + 1
+                action_id = action_ids[i_action] + 1
+                if weight != zero:
+                    arc = openfst.Arc(action_id, transition_id, weight, next_state)
+                    fst.add_arc(cur_state, arc)
+
+    if not fst.verify():
+        raise openfst.FstError("fst.verify() returned False")
+
+    return fst
 
 
 class AttributeClassifier(object):
@@ -23,26 +69,31 @@ class AttributeClassifier(object):
         self.event_attrs = event_attrs
         self.connection_attrs = connection_attrs
 
-    def forward(self, action_scores, part_scores):
+        # TODO: Instantiate transducers for each action using event_attrs and
+        #   connection_attrs
+        transition_weights = None
+        self.lattice = transducer_from_connection_attrs(
+            transition_weights,
+            action_ids=None, transition_ids=None,
+            input_table=None, output_table=None,
+            arc_type='standard'
+        )
+
+    def forward(self, event_scores):
         """ Combine action and part scores into event scores.
 
         Parameters
         ----------
-        action_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_ACTIONS)
-        part_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_PARTS)
+        event_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_ACTIONS, NUM_PARTS)
 
         Returns
         -------
-        event_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_ACTIONS, NUM_PARTS)
+        connection_scores : np.ndarray of float with shape (NUM_SAMPLES, 2, NUM_EDGES)
         """
 
         # FIXME
-        event_scores = (
-            action_scores[:, :, None]
-            + part_scores[:, None, :]
-            + self.feat_ap[None, :, :]
-        )
-        return event_scores
+        connection_scores = None
+        return connection_scores
 
     def predict(self, outputs):
         """ Choose the best labels from an array of output activations.
@@ -81,11 +132,14 @@ def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
 
 def main(
         out_dir=None, data_dir=None, scores_dir=None,
+        event_attr_fn=None, connection_attr_fn=None,
         only_fold=None, plot_io=None, prefix='seq=',
         results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
 
     data_dir = os.path.expanduser(data_dir)
     scores_dir = os.path.expanduser(scores_dir)
+    event_attr_fn = os.path.expanduser(event_attr_fn)
+    connection_attr_fn = os.path.expanduser(connection_attr_fn)
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -126,6 +180,10 @@ def main(
     cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
+    # Load event, connection attributes
+    event_attrs = pd.read_csv(event_attr_fn, index_col=False)
+    connection_attrs = pd.read_csv(connection_attr_fn, index_col=False)
+
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
             continue
@@ -136,8 +194,7 @@ def main(
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
 
-        # TODO: LOAD EVENT, CONNECTION ATTRIBUTES
-        model = AttributeClassifier(event_attrs, connection_attrs)
+        model = AttributeClassifier(event_attrs.to_numpy(), connection_attrs.to_numpy())
 
         for i in test_indices:
             seq_id = seq_ids[i]
