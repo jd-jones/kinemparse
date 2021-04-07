@@ -170,6 +170,7 @@ def load_all_labels(
 
     metadata = metadata.loc[processed_seq_ids]
     metadata['annotator'] = annotator_names
+    metadata['dir_name'] = metadata.index
     seq_ids = metadata.index.to_numpy()
 
     event_vocab = ('',) + tuple(sorted(unique_events))
