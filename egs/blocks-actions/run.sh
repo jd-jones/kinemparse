@@ -86,7 +86,7 @@ STAGE=0
 
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Download meccano data"
+    echo "STAGE ${STAGE}: Download blocks data"
     ./download_blocks_data.sh \
         --dest_dir=${input_dir} \
         --source_videos_dir="${input_dir}/data/child/video-frames" \

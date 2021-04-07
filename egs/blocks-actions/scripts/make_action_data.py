@@ -126,17 +126,20 @@ def load_all_labels(
         if action_seq['end'].max() >= len(rgb_frame_fn_seq):
             raise AssertionError("Actions longer than rgb frames")
 
-        action_seq = fixStartEndIndices(
-            action_seq, rgb_frame_timestamp_seq, selected_frame_indices
-        )
+        rgb_frame_idx_seq = np.arange(len(rgb_frame_fn_seq))
+
+        # action_seq = fixStartEndIndices(
+        #     action_seq, rgb_frame_timestamp_seq, selected_frame_indices
+        # )
         action_seq = actions_to_events(action_seq, use_coarse_actions=use_coarse_actions)
 
-        rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
-        depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
+        # rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
         rgb_frame_fn_seq = rgb_frame_fn_seq[selected_frame_indices]
-        depth_frame_fn_seq = depth_frame_fn_seq[selected_frame_indices]
+        rgb_frame_idx_seq = rgb_frame_idx_seq[selected_frame_indices]
+        # depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
+        # depth_frame_fn_seq = depth_frame_fn_seq[selected_frame_indices]
 
-        return action_seq, rgb_frame_fn_seq, annotator_name
+        return action_seq, rgb_frame_fn_seq, rgb_frame_idx_seq, annotator_name
 
     metadata = loadMetadata(metadata_file, metadata_criteria=metadata_criteria)
     corpus = duplocorpus.DuploCorpus(corpus_name)
@@ -144,13 +147,14 @@ def load_all_labels(
 
     event_labels = []
     frame_fn_seqs = []
+    frame_fn_idx_seqs = []
     annotator_names = []
     unique_events = frozenset()
     unique_actions = frozenset()
     processed_seq_ids = []
     for i, seq_id in enumerate(seq_ids):
         try:
-            event_df, rgb_frame_fn_seq, annotator_name = load_one(seq_id)
+            event_df, rgb_frame_fn_seq, rgb_frame_fn_idx_seq, annotator_name = load_one(seq_id)
         except AssertionError as e:
             warn_str = f"Skipping video {seq_id}: {e}"
             logger.warning(warn_str)
@@ -158,6 +162,7 @@ def load_all_labels(
 
         event_labels.append(event_df)
         frame_fn_seqs.append(rgb_frame_fn_seq)
+        frame_fn_idx_seqs.append(rgb_frame_fn_idx_seq)
         annotator_names.append(annotator_name)
         unique_events |= frozenset(event_df['event'].to_list())
         unique_actions |= frozenset(event_df['action'].to_list())
@@ -175,7 +180,7 @@ def load_all_labels(
         'action': action_vocab,
         'part': part_vocab
     }
-    return seq_ids, event_labels, frame_fn_seqs, all_vocabs, metadata
+    return seq_ids, event_labels, frame_fn_seqs, frame_fn_idx_seqs, all_vocabs, metadata
 
 
 def plot_event_labels(
@@ -199,20 +204,24 @@ def plot_event_labels(
     plt.close()
 
 
-def make_labels(seg_bounds, seg_labels, default_val, num_samples=None):
+def make_labels(seg_bounds, seg_labels, default_val, num_samples=None, frame_indices=None):
     if num_samples is None:
         num_samples = seg_bounds.max() + 1
 
     label_shape = (num_samples,) + seg_labels.shape[1:]
     labels = np.full(label_shape, default_val, dtype=seg_labels.dtype)
     for (start, end), l in zip(seg_bounds, seg_labels):
-        labels[start:end + 1] = l
+        if frame_indices is None:
+            labels[start:end + 1] = l
+        else:
+            in_seg = (frame_indices >= start) & (frame_indices <= end)
+            labels[in_seg] = l
 
     return labels
 
 
 def make_event_data(
-        event_seq, filenames, event_to_index, action_to_index, part_vocab,
+        event_seq, filenames, frame_indices, event_to_index, action_to_index, part_vocab,
         event_default, action_default, part_default):
     event_indices = np.array([event_to_index[name] for name in event_seq['event']])
     action_indices = np.array([action_to_index[name] for name in event_seq['action']])
@@ -224,18 +233,22 @@ def make_event_data(
     seg_bounds = event_seq[['start', 'end']].values
     event_index_seq = make_labels(
         seg_bounds, event_indices, event_default,
-        num_samples=len(filenames)
+        num_samples=len(filenames),
+        frame_indices=frame_indices
     )
     action_index_seq = make_labels(
         seg_bounds, action_indices, action_default,
-        num_samples=len(filenames)
+        num_samples=len(filenames),
+        frame_indices=frame_indices
     )
     part_activity_seq = make_labels(
         seg_bounds, part_is_active, part_default,
-        num_samples=len(filenames)
+        num_samples=len(filenames),
+        frame_indices=frame_indices
     )
     data_and_labels = pd.DataFrame({
         'fn': filenames,
+        'fn_index': frame_indices,
         'event': event_index_seq,
         'action': action_index_seq
     })
@@ -277,18 +290,18 @@ def make_clips(event_data, event_vocab, action_vocab, clip_type='window', stride
     d['event'] = [event_vocab[i] for i in d['event']]
     d['action_id'] = d['action']
     d['action'] = [action_vocab[i] for i in d['action']]
-    d['start'] = [sl.start for sl in clip_slices]
-    d['end'] = [min(sl.stop, event_data.shape[0]) - 1 for sl in clip_slices]
+
+    fn_indices = event_data['fn_index'].to_numpy()
+    d['start'] = fn_indices[[sl.start for sl in clip_slices]]
+    d['end'] = fn_indices[[min(sl.stop, event_data.shape[0]) - 1 for sl in clip_slices]]
 
     window_clips = pd.DataFrame(d)
     return window_clips
 
 
-def make_slowfast_labels(segment_bounds, label_indices, fns):
+def make_slowfast_labels(segment_bounds, label_indices, video_names):
     col_dict = {
-        'video_name': fns[segment_bounds['start']].apply(
-            lambda x: os.path.dirname(x).split('/')[-1]
-        ).to_list(),
+        'video_name': video_names,
         'start_index': segment_bounds['start'].to_list(),
         'end_index': segment_bounds['end'].to_list(),
     }
@@ -338,7 +351,7 @@ def main(
         if not os.path.exists(dir_):
             os.makedirs(dir_)
 
-    seq_ids, event_labels, frame_fn_seqs, vocabs, metadata = load_all_labels(
+    seq_ids, event_labels, frame_fn_seqs, frame_fn_idx_seqs, vocabs, metadata = load_all_labels(
         corpus_name, default_annotator, metadata_file, metadata_criteria,
         start_video_from_first_touch=True, subsample_period=None,
         use_coarse_actions=True
@@ -370,12 +383,13 @@ def main(
 
         event_segs = event_labels[i]
         frame_fns = frame_fn_seqs[i]
+        frame_fn_idxs = frame_fn_idx_seqs[i]
 
-        # Ignore 'check booklet' events because they don't have an impact on construction
-        event_segs = event_segs.loc[event_segs['event'] != 'check_booklet']
+        # video_dir = os.path.dirname(frame_fns[0]).split('/')[-1]
+        video_dir = f"{seq_id}"
 
         event_data = make_event_data(
-            event_segs, frame_fns,
+            event_segs, frame_fns, frame_fn_idxs,
             integerizers['event'], integerizers['action'], integerizers['part'],
             vocabs['event'].index(''), vocabs['action'].index(''), False
         )
@@ -411,10 +425,12 @@ def main(
                 label_keys = [f'{name}_id']
 
             seg_labels_slowfast = make_slowfast_labels(
-                event_segs[bound_keys], event_segs[label_keys], event_data['fn']
+                event_segs[bound_keys], event_segs[label_keys],
+                [video_dir for _ in range(event_segs.shape[0])]
             )
             win_labels_slowfast = make_slowfast_labels(
-                event_wins[bound_keys], event_wins[label_keys], event_data['fn']
+                event_wins[bound_keys], event_wins[label_keys],
+                [video_dir for _ in range(event_wins.shape[0])]
             )
 
             utils.saveVariable(filenames, f'{seq_id_str}_frame-fns', data_dirs[name])
