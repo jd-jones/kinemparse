@@ -42,10 +42,10 @@ done
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
-output_dir="~/data/output/ikea_anu"
+output_dir="${HOME}/data/output/ikea_anu"
 
 # INPUT TO SCRIPT
-input_dir="~/data/ikea_anu"
+input_dir="${HOME}/data/ikea_anu"
 raw_data_dir="${input_dir}/data"
 annotation_dir="${input_dir}/annotations"
 frames_dir="${input_dir}/video_frames"
@@ -174,10 +174,16 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Compute connection scores from action scores"
-    python ${debug_str} connections_from_actions.py \
+    export LD_LIBRARY_PATH="${HOME}/miniconda3/envs/kinemparse/lib"
+    event_attr_fn="${dataset_dir}/labels/event-vocab.csv"
+    connection_attr_fn="${HOME}/data/action_to_connection/ikea-anu.csv"
+    python ${debug_str} event_to_connection.py \
         --out_dir "${connections_dir}" \
         --scores_dir "${scores_dir}" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --event_attr_fn "${event_attr_fn}" \
+        --connection_attr_fn "${connection_attr_fn}" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
         --only_fold 1 \
         --prefix "seq="

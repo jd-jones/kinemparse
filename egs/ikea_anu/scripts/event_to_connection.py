@@ -5,6 +5,7 @@ import yaml
 import numpy as np
 import pandas as pd
 # from matplotlib import pyplot as plt
+import graphviz as gv
 
 import LCTM.metrics
 import pywrapfst as openfst
@@ -17,11 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 def transducer_from_connection_attrs(
-        transition_weights,
-        action_ids=None, transition_ids=None,
+        transition_weights, transition_vocab, num_states,
         input_table=None, output_table=None,
         arc_type='standard'):
-    num_inputs, num_states, _ = transition_weights.shape
+    num_inputs, num_edges = transition_weights.shape
 
     fst = openfst.VectorFst(arc_type=arc_type)
     fst.set_input_symbols(input_table)
@@ -41,17 +41,17 @@ def transducer_from_connection_attrs(
 
     states = tuple(makeState(i) for i in range(num_states))
 
-    for i_action, arr in enumerate(transition_weights):
-        for i_cur, row in enumerate(arr):
-            for i_next, tx_weight in enumerate(row):
-                cur_state = states[i_cur]
-                next_state = states[i_next]
-                weight = openfst.Weight(fst.weight_type(), tx_weight)
-                transition_id = transition_ids[i_cur, i_next] + 1
-                action_id = action_ids[i_action] + 1
-                if weight != zero:
-                    arc = openfst.Arc(action_id, transition_id, weight, next_state)
-                    fst.add_arc(cur_state, arc)
+    for i_action, row in enumerate(transition_weights):
+        for i_edge, tx_weight in enumerate(row):
+            i_cur, i_next = transition_vocab[i_edge]
+            cur_state = states[i_cur]
+            next_state = states[i_next]
+            weight = openfst.Weight(fst.weight_type(), tx_weight)
+            transition_id = i_edge + 1
+            action_id = i_action + 1
+            if weight != zero:
+                arc = openfst.Arc(action_id, transition_id, weight, next_state)
+                fst.add_arc(cur_state, arc)
 
     if not fst.verify():
         raise openfst.FstError("fst.verify() returned False")
@@ -60,22 +60,46 @@ def transducer_from_connection_attrs(
 
 
 class AttributeClassifier(object):
-    def __init__(self, event_attrs, connection_attrs):
+    def __init__(self, event_attrs, connection_attrs, vocab):
         """
         Parameters
         ----------
-        action_part_counts : np.ndarray of int with shape (NUM_ACTIONS, NUM_PARTS)
+        event_attrs : pd.DataFrame
+        connection_attrs : pd.DataFrame
+        vocab : list( string )
         """
+
         self.event_attrs = event_attrs
         self.connection_attrs = connection_attrs
+        self.event_vocab = vocab
 
-        # TODO: Instantiate transducers for each action using event_attrs and
-        #   connection_attrs
-        transition_weights = None
+        # map event index to action index
+        # map action name to index: action_ids
+        # map transition name to index: transition_ids
+
+        transition_vocab = [
+            tuple(int(x) for x in col_name.split('->'))
+            for col_name in connection_attrs.columns if col_name != 'action'
+        ]
+        # transition_integerizer = {x: i for i, x in enumerate(transition_vocab)}
+        num_states = max(max(tx) for tx in transition_vocab) + 1
+
+        # event index --> all data
+        action_vocab = connection_attrs['action'].to_list()
+        # action_integerizer = {name: i for i, name in enumerate(action_vocab)}
+        # event_idx_to_action_idx = tuple(
+        #     action_integerizer[name]
+        #     for name in event_attrs.set_index('event').loc[self.event_vocab]['action']
+        # )
+
+        self.input_table = libfst.makeSymbolTable(action_vocab)
+        self.output_table = libfst.makeSymbolTable(transition_vocab)
+
+        # FIXME: Should take the log of transition weights
+        transition_weights = self.connection_attrs.drop(['action'], axis=1).to_numpy()
         self.lattice = transducer_from_connection_attrs(
-            transition_weights,
-            action_ids=None, transition_ids=None,
-            input_table=None, output_table=None,
+            transition_weights, transition_vocab, num_states,
+            input_table=self.input_table, output_table=self.output_table,
             arc_type='standard'
         )
 
@@ -174,15 +198,15 @@ def main(
 
     logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
 
-    # vocab = utils.loadVariable('vocab', data_dir)
+    vocab = utils.loadVariable('vocab', data_dir)
 
     # Define cross-validation folds
     cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     # Load event, connection attributes
-    event_attrs = pd.read_csv(event_attr_fn, index_col=False)
-    connection_attrs = pd.read_csv(connection_attr_fn, index_col=False)
+    event_attrs = pd.read_csv(event_attr_fn, index_col=False, keep_default_na=False)
+    connection_attrs = pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False)
 
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
@@ -194,7 +218,17 @@ def main(
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
 
-        model = AttributeClassifier(event_attrs.to_numpy(), connection_attrs.to_numpy())
+        model = AttributeClassifier(event_attrs, connection_attrs, vocab)
+        # Draw model.lattice
+        fn = os.path.join(fig_dir, f'cvfold={cv_index}_lattice')
+        model.lattice.draw(
+            fn, isymbols=model.input_table, osymbols=model.output_table,
+            vertical=True,
+            width=50, height=50,
+            portrait=True
+        )
+        gv.render('dot', 'png', fn)
+        import pdb; pdb.set_trace()
 
         for i in test_indices:
             seq_id = seq_ids[i]

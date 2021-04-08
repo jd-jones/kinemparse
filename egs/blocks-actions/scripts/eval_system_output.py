@@ -29,7 +29,7 @@ def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
         'Accuracy' + name_suffix: acc,
         'Precision' + name_suffix: prc,
         'Recall' + name_suffix: rec,
-        'F1' + name_suffix: f1
+        'F1' + name_suffix: f1,
         # 'Edit Score' + name_suffix: LCTM.metrics.edit_score(pred_seq, true_seq) / 100,
         # 'Overlap Score' + name_suffix: LCTM.metrics.overlap_score(pred_seq, true_seq) / 100
     }
