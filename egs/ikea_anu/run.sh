@@ -179,7 +179,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     connection_attr_fn="${HOME}/data/action_to_connection/ikea-anu.csv"
     python ${debug_str} event_to_connection.py \
         --out_dir "${connections_dir}" \
-        --scores_dir "${scores_dir}" \
+        --scores_dir "${scores_dir}/data" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --event_attr_fn "${event_attr_fn}" \
         --connection_attr_fn "${connection_attr_fn}" \

@@ -17,11 +17,16 @@ from seqtools import fstutils_openfst as libfst
 logger = logging.getLogger(__name__)
 
 
+def draw_fst(fn, fst, extension='png', **draw_kwargs):
+    fst.draw(fn, **draw_kwargs)
+    gv.render('dot', extension, fn)
+    os.remove(fn)
+
+
 def transducer_from_connection_attrs(
         transition_weights, transition_vocab, num_states,
         input_table=None, output_table=None,
         arc_type='standard'):
-    num_inputs, num_edges = transition_weights.shape
 
     fst = openfst.VectorFst(arc_type=arc_type)
     fst.set_input_symbols(input_table)
@@ -59,6 +64,36 @@ def transducer_from_connection_attrs(
     return fst
 
 
+def single_state_transducer(
+        transition_weights, input_table=None, output_table=None,
+        arc_type='standard'):
+
+    fst = openfst.VectorFst(arc_type=arc_type)
+    fst.set_input_symbols(input_table)
+    fst.set_output_symbols(output_table)
+
+    zero = openfst.Weight.zero(fst.weight_type())
+    one = openfst.Weight.one(fst.weight_type())
+
+    state = fst.add_state()
+    fst.set_start(state)
+    fst.set_final(state, one)
+
+    for i_input, row in enumerate(transition_weights):
+        for i_output, tx_weight in enumerate(row):
+            weight = openfst.Weight(fst.weight_type(), tx_weight)
+            input_id = i_input + 1
+            output_id = i_output + 1
+            if weight != zero:
+                arc = openfst.Arc(input_id, output_id, weight, state)
+                fst.add_arc(state, arc)
+
+    if not fst.verify():
+        raise openfst.FstError("fst.verify() returned False")
+
+    return fst
+
+
 class AttributeClassifier(object):
     def __init__(self, event_attrs, connection_attrs, vocab):
         """
@@ -71,36 +106,48 @@ class AttributeClassifier(object):
 
         self.event_attrs = event_attrs
         self.connection_attrs = connection_attrs
-        self.event_vocab = vocab
 
         # map event index to action index
         # map action name to index: action_ids
         # map transition name to index: transition_ids
 
-        transition_vocab = [
+        self.event_vocab = vocab
+        self.action_vocab = connection_attrs['action'].to_list()
+        self.transition_vocab = [
             tuple(int(x) for x in col_name.split('->'))
             for col_name in connection_attrs.columns if col_name != 'action'
         ]
-        # transition_integerizer = {x: i for i, x in enumerate(transition_vocab)}
-        num_states = max(max(tx) for tx in transition_vocab) + 1
+
+        self.num_events = len(self.event_vocab)
+        self.num_actions = len(self.action_vocab)
+        self.num_transitions = len(self.transition_vocab)
+
+        self.event_symbols = libfst.makeSymbolTable(self.event_vocab)
+        self.action_symbols = libfst.makeSymbolTable(self.action_vocab)
+        self.transition_symbols = libfst.makeSymbolTable(self.transition_vocab)
 
         # event index --> all data
-        action_vocab = connection_attrs['action'].to_list()
-        # action_integerizer = {name: i for i, name in enumerate(action_vocab)}
-        # event_idx_to_action_idx = tuple(
-        #     action_integerizer[name]
-        #     for name in event_attrs.set_index('event').loc[self.event_vocab]['action']
-        # )
-
-        self.input_table = libfst.makeSymbolTable(action_vocab)
-        self.output_table = libfst.makeSymbolTable(transition_vocab)
-
-        # FIXME: Should take the log of transition weights
-        transition_weights = self.connection_attrs.drop(['action'], axis=1).to_numpy()
-        self.lattice = transducer_from_connection_attrs(
-            transition_weights, transition_vocab, num_states,
-            input_table=self.input_table, output_table=self.output_table,
+        action_integerizer = {name: i for i, name in enumerate(self.action_vocab)}
+        event_action_weights = np.zeros((self.num_events, self.num_actions), dtype=float)
+        for i, name in enumerate(event_attrs.set_index('event').loc[self.event_vocab]['action']):
+            event_action_weights[i, action_integerizer[name]] = 1
+        self.event_to_action = single_state_transducer(
+            -np.log(event_action_weights),
+            input_table=self.event_symbols, output_table=self.action_symbols,
             arc_type='standard'
+        )
+
+        self.action_to_connection = transducer_from_connection_attrs(
+            -np.log(self.connection_attrs.drop(['action'], axis=1).to_numpy()),
+            self.transition_vocab,
+            max(max(tx) for tx in self.transition_vocab) + 1,
+            input_table=self.action_symbols, output_table=self.transition_symbols,
+            arc_type='standard'
+        )
+
+        self.event_to_connection = openfst.compose(
+            self.event_to_action,
+            self.action_to_connection
         )
 
     def forward(self, event_scores):
@@ -108,15 +155,23 @@ class AttributeClassifier(object):
 
         Parameters
         ----------
-        event_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_ACTIONS, NUM_PARTS)
+        event_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_EVENTS)
 
         Returns
         -------
         connection_scores : np.ndarray of float with shape (NUM_SAMPLES, 2, NUM_EDGES)
         """
 
-        # FIXME
-        connection_scores = None
+        # Convert event scores to lattice
+        lattice = libfst.fromArray(
+            -event_scores,
+            input_symbols=None,  # self.event_symbols,
+            output_symbols=self.event_symbols,
+            arc_type='standard'
+        )
+
+        # Compose event scores with event --> connection map
+        connection_scores = openfst.compose(lattice, self.event_to_connection)
         return connection_scores
 
     def predict(self, outputs):
@@ -179,14 +234,6 @@ def main(
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
 
-    io_dir_images = os.path.join(fig_dir, 'model-io_images')
-    if not os.path.exists(io_dir_images):
-        os.makedirs(io_dir_images)
-
-    io_dir_plots = os.path.join(fig_dir, 'model-io_plots')
-    if not os.path.exists(io_dir_plots):
-        os.makedirs(io_dir_plots)
-
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
@@ -220,15 +267,24 @@ def main(
 
         model = AttributeClassifier(event_attrs, connection_attrs, vocab)
         # Draw model.lattice
-        fn = os.path.join(fig_dir, f'cvfold={cv_index}_lattice')
-        model.lattice.draw(
-            fn, isymbols=model.input_table, osymbols=model.output_table,
-            vertical=True,
-            width=50, height=50,
-            portrait=True
+
+        draw_fst(
+            os.path.join(fig_dir, f'cvfold={cv_index}_event-to-action'),
+            model.event_to_action,
+            vertical=True, width=50, height=50, portrait=True
         )
-        gv.render('dot', 'png', fn)
-        import pdb; pdb.set_trace()
+
+        draw_fst(
+            os.path.join(fig_dir, f'cvfold={cv_index}_action-to-connection'),
+            model.action_to_connection,
+            vertical=True, width=50, height=50, portrait=True
+        )
+
+        draw_fst(
+            os.path.join(fig_dir, f'cvfold={cv_index}_event-to-connection'),
+            model.event_to_connection,
+            vertical=True, width=50, height=50, portrait=True
+        )
 
         for i in test_indices:
             seq_id = seq_ids[i]
@@ -239,6 +295,13 @@ def main(
             # true_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
 
             connection_score_seq = model.forward(event_score_seq)
+            # draw_fst(
+            #     os.path.join(fig_dir, f'seq={seq_id}_connection-scores'),
+            #     connection_score_seq,
+            #     vertical=True, width=50, height=50, portrait=True
+            # )
+            print(connection_score_seq)
+            import pdb; pdb.set_trace()
             pred_connection_seq = model.predict(connection_score_seq)
 
             # metric_dict = eval_metrics(pred_seq, true_seq)
