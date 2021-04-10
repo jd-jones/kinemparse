@@ -64,6 +64,75 @@ def transducer_from_connection_attrs(
     return fst
 
 
+def durationFst(label, num_states, final_weights=None, arc_type='standard', symbol_table=None):
+    """ Construct a left-to-right WFST from an input sequence.
+
+    Parameters
+    ----------
+    input_seq : iterable(int or string)
+
+    Returns
+    -------
+    fst : openfst.Fst
+    """
+
+    if num_states < 1:
+        raise AssertionError(f"num_states = {num_states}, but should be >= 1)")
+
+    fst = openfst.VectorFst(arc_type=arc_type)
+    one = openfst.Weight.one(fst.weight_type())
+    zero = openfst.Weight.zero(fst.weight_type())
+
+    if final_weights is None:
+        final_weights = [one for __ in range(num_states)]
+
+    if symbol_table is not None:
+        fst.set_input_symbols(symbol_table)
+        fst.set_output_symbols(symbol_table)
+
+    init_state = fst.add_state()
+    fst.set_start(init_state)
+
+    cur_state = fst.add_state()
+    arc = openfst.Arc(libfst.EPSILON, label + 1, one, cur_state)
+    fst.add_arc(init_state, arc)
+
+    for i in range(num_states):
+        next_state = fst.add_state()
+
+        arc = openfst.Arc(label + 1, libfst.EPSILON, one, next_state)
+        fst.add_arc(cur_state, arc)
+
+        final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
+        if final_weight != zero:
+            arc = openfst.Arc(label + 1, libfst.EPSILON, final_weight, cur_state)
+            fst.add_arc(cur_state, arc)
+            fst.set_final(cur_state, final_weight)
+
+        cur_state = next_state
+
+    if not fst.verify():
+        raise openfst.FstError("fst.verify() returned False")
+
+    return fst
+
+
+def make_duration_fst(final_weights, arc_type='standard', symbol_table=None):
+    num_classes, num_states = final_weights.shape
+
+    dur_fsts = [
+        durationFst(
+            i, num_states, final_weights=final_weights[i],
+            arc_type=arc_type, symbol_table=symbol_table
+        )
+        for i in range(num_classes)
+    ]
+
+    dur_fst = dur_fsts[0].union(*dur_fsts[1:]).closure(closure_plus=True)
+
+    return dur_fst
+
+
 def single_state_transducer(
         transition_weights, input_table=None, output_table=None,
         arc_type='standard'):
@@ -95,7 +164,7 @@ def single_state_transducer(
 
 
 class AttributeClassifier(object):
-    def __init__(self, event_attrs, connection_attrs, vocab):
+    def __init__(self, event_attrs, connection_attrs, vocab, event_duration_weights=None):
         """
         Parameters
         ----------
@@ -126,6 +195,13 @@ class AttributeClassifier(object):
         self.action_symbols = libfst.makeSymbolTable(self.action_vocab)
         self.transition_symbols = libfst.makeSymbolTable(self.transition_vocab)
 
+        self.event_duration_weights = event_duration_weights
+        self.event_duration_fst = make_duration_fst(
+            -np.log(self.event_duration_weights),
+            symbol_table=self.event_symbols,
+            arc_type='standard',
+        )
+
         # event index --> all data
         action_integerizer = {name: i for i, name in enumerate(self.action_vocab)}
         event_action_weights = np.zeros((self.num_events, self.num_actions), dtype=float)
@@ -145,9 +221,14 @@ class AttributeClassifier(object):
             arc_type='standard'
         )
 
-        self.event_to_connection = openfst.compose(
-            self.event_to_action,
-            self.action_to_connection
+        self.seq_model = libfst.easyCompose(
+            *[self.event_duration_fst, self.event_to_action, self.action_to_connection],
+            # determinize=True,
+            # minimize=True
+            # *[self.event_to_action, self.action_to_connection],
+            determinize=False,
+            minimize=False
+
         )
 
     def forward(self, event_scores):
@@ -165,13 +246,13 @@ class AttributeClassifier(object):
         # Convert event scores to lattice
         lattice = libfst.fromArray(
             -event_scores,
-            input_symbols=None,  # self.event_symbols,
+            input_symbols=None,
             output_symbols=self.event_symbols,
             arc_type='standard'
         )
 
         # Compose event scores with event --> connection map
-        connection_scores = openfst.compose(lattice, self.event_to_connection)
+        connection_scores = openfst.compose(lattice, self.seq_model)
         return connection_scores
 
     def predict(self, outputs):
@@ -265,8 +346,17 @@ def main(
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
 
-        model = AttributeClassifier(event_attrs, connection_attrs, vocab)
-        # Draw model.lattice
+        event_duration_weights = np.ones((event_attrs.shape[0], 10), dtype=float)
+        model = AttributeClassifier(
+            event_attrs, connection_attrs, vocab,
+            event_duration_weights=event_duration_weights
+        )
+
+        draw_fst(
+            os.path.join(fig_dir, f'cvfold={cv_index}_event-duration'),
+            model.event_duration_fst,
+            vertical=True, width=50, height=50, portrait=True
+        )
 
         draw_fst(
             os.path.join(fig_dir, f'cvfold={cv_index}_event-to-action'),
@@ -281,8 +371,8 @@ def main(
         )
 
         draw_fst(
-            os.path.join(fig_dir, f'cvfold={cv_index}_event-to-connection'),
-            model.event_to_connection,
+            os.path.join(fig_dir, f'cvfold={cv_index}_seq-model'),
+            model.seq_model,
             vertical=True, width=50, height=50, portrait=True
         )
 
@@ -317,7 +407,7 @@ def main(
                 utils.plot_array(
                     # connection_score_seq.T, (true_seq, pred_seq), ('true', 'pred'),
                     connection_score_seq.T, (pred_connection_seq,), ('pred',),
-                    fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
+                    fn=os.path.join(fig_dir, f"seq={seq_id:03d}.png")
                 )
 
 
