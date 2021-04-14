@@ -1,5 +1,7 @@
 import os
 import logging
+import json
+import itertools
 
 import yaml
 import numpy as np
@@ -163,8 +165,77 @@ def single_state_transducer(
     return fst
 
 
+def toArray(lattice):
+    zero = 0
+    # zero = openfst.Weight.zero(lattice.weight_type())
+    # one = openfst.Weight.one(lattice.weight_type())
+
+    num_inputs = lattice.input_symbols().num_symbols()
+    num_outputs = lattice.output_symbols().num_symbols()
+    weights = np.full((num_inputs, num_outputs), float(zero))
+
+    for state in lattice.states():
+        for arc in lattice.arcs(state):
+            weights[arc.ilabel, arc.olabel] += float(arc.weight)
+
+    return weights, lattice.weight_type()
+
+
+def loadPartInfo(fn):
+    with open(fn, 'rt') as file_:
+        data = json.load(file_)
+
+    part_vocab = data['part_vocab']
+    part_categories = data['part_categories']
+    part_connections = data['part_connections']
+
+    return part_vocab, part_categories, part_connections
+
+
+def events_to_actions(event_attrs, action_vocab, event_vocab, edge_vocab, part_categories):
+    def makeActiveParts(active_part_categories):
+        parts = tuple(
+            part_categories.get(part_category, [part_category])
+            for part_category in active_part_categories
+        )
+        return frozenset([frozenset(prod) for prod in itertools.product(*parts)])
+
+    num_events = len(event_vocab)
+    num_actions = len(action_vocab)
+    num_edges = len(edge_vocab)
+
+    # event index --> all data
+    action_integerizer = {name: i for i, name in enumerate(action_vocab)}
+    edge_integerizer = {name: i for i, name in enumerate(edge_vocab)}
+    event_attrs = event_attrs.set_index('event')
+
+    part_cols = [name for name in event_attrs.columns if name.endswith('_active')]
+
+    event_action_weights = np.zeros((num_edges, num_events, num_actions), dtype=float)
+    for i_event, event_name in enumerate(event_vocab):
+        row = event_attrs.loc[event_name]
+        action_name = row['action']
+        active_part_categories = tuple(
+            name.split('_active')[0] for name in part_cols if row[name]
+        )
+        for active_parts in makeActiveParts(active_part_categories):
+            active_edge_index = edge_integerizer.get(active_parts, None)
+            for i_edge, _ in enumerate(edge_vocab):
+                if active_edge_index == i_edge:
+                    i_action = action_integerizer[action_name]
+                else:
+                    # FIXME: Implement consistent background class
+                    i_action = action_integerizer['NA']
+                event_action_weights[i_edge, i_event, i_action] = 1
+
+    return event_action_weights
+
+
 class AttributeClassifier(object):
-    def __init__(self, event_attrs, connection_attrs, vocab, event_duration_weights=None):
+    def __init__(
+            self, event_attrs, connection_attrs, event_vocab,
+            part_vocab, part_categories, part_connections,
+            event_duration_weights=None):
         """
         Parameters
         ----------
@@ -176,41 +247,35 @@ class AttributeClassifier(object):
         self.event_attrs = event_attrs
         self.connection_attrs = connection_attrs
 
+        self.part_categories = part_categories
+        self.part_connections = part_connections
+
         # map event index to action index
         # map action name to index: action_ids
         # map transition name to index: transition_ids
 
-        self.event_vocab = vocab
+        self.event_vocab = event_vocab
         self.action_vocab = connection_attrs['action'].to_list()
-        self.transition_vocab = [
+        self.part_vocab = part_vocab
+        self.transition_vocab = tuple(
             tuple(int(x) for x in col_name.split('->'))
             for col_name in connection_attrs.columns if col_name != 'action'
-        ]
-
-        self.num_events = len(self.event_vocab)
-        self.num_actions = len(self.action_vocab)
-        self.num_transitions = len(self.transition_vocab)
+        )
+        self.edge_vocab = tuple(
+            frozenset([self.part_vocab[i], self.part_vocab[j]])
+            for i in range(self.num_parts) for j in range(i)
+        )
 
         self.event_symbols = libfst.makeSymbolTable(self.event_vocab)
         self.action_symbols = libfst.makeSymbolTable(self.action_vocab)
         self.transition_symbols = libfst.makeSymbolTable(self.transition_vocab)
+        self.edge_symbols = libfst.makeSymbolTable(self.edge_vocab)
 
         self.event_duration_weights = event_duration_weights
         self.event_duration_fst = make_duration_fst(
             -np.log(self.event_duration_weights),
             symbol_table=self.event_symbols,
             arc_type='standard',
-        )
-
-        # event index --> all data
-        action_integerizer = {name: i for i, name in enumerate(self.action_vocab)}
-        event_action_weights = np.zeros((self.num_events, self.num_actions), dtype=float)
-        for i, name in enumerate(event_attrs.set_index('event').loc[self.event_vocab]['action']):
-            event_action_weights[i, action_integerizer[name]] = 1
-        self.event_to_action = single_state_transducer(
-            -np.log(event_action_weights),
-            input_table=self.event_symbols, output_table=self.action_symbols,
-            arc_type='standard'
         )
 
         self.action_to_connection = transducer_from_connection_attrs(
@@ -221,15 +286,57 @@ class AttributeClassifier(object):
             arc_type='standard'
         )
 
-        self.seq_model = libfst.easyCompose(
-            *[self.event_duration_fst, self.event_to_action, self.action_to_connection],
-            # determinize=True,
-            # minimize=True
-            # *[self.event_to_action, self.action_to_connection],
-            determinize=False,
-            minimize=False
-
+        # event index --> all data
+        action_integerizer = {name: i for i, name in enumerate(self.action_vocab)}
+        event_action_weights = np.zeros((self.num_events, self.num_actions), dtype=float)
+        for i, name in enumerate(event_attrs.set_index('event').loc[self.event_vocab]['action']):
+            event_action_weights[i, action_integerizer[name]] = 1
+        event_action_weights = events_to_actions(
+            self.event_attrs,
+            self.action_vocab, self.event_vocab, self.edge_vocab,
+            self.part_categories
         )
+
+        self.event_to_action = []
+        self.seq_models = []
+        for i, edge_event_action_weights in enumerate(event_action_weights):
+            event_to_action = single_state_transducer(
+                -np.log(edge_event_action_weights),
+                input_table=self.event_symbols, output_table=self.action_symbols,
+                arc_type='standard'
+            )
+
+            seq_model = libfst.easyCompose(
+                *[self.event_duration_fst, event_to_action, self.action_to_connection],
+                # determinize=True,
+                # minimize=True
+                determinize=False,
+                minimize=False
+
+            )
+
+            self.event_to_action.append(event_to_action)
+            self.seq_models.append(seq_model)
+
+    @property
+    def num_events(self):
+        return len(self.event_vocab)
+
+    @property
+    def num_parts(self):
+        return len(self.part_vocab)
+
+    @property
+    def num_actions(self):
+        return len(self.action_vocab)
+
+    @property
+    def num_transitions(self):
+        return len(self.transition_vocab)
+
+    @property
+    def num_edges(self):
+        return len(self.edge_vocab)
 
     def forward(self, event_scores):
         """ Combine action and part scores into event scores.
@@ -244,15 +351,30 @@ class AttributeClassifier(object):
         """
 
         # Convert event scores to lattice
+        sample_symbols = libfst.makeSymbolTable(
+            tuple(f"{i}" for i in range(event_scores.shape[0]))
+        )
         lattice = libfst.fromArray(
             -event_scores,
-            input_symbols=None,
+            input_symbols=sample_symbols,
             output_symbols=self.event_symbols,
             arc_type='standard'
         )
 
-        # Compose event scores with event --> connection map
-        connection_scores = openfst.compose(lattice, self.seq_model)
+        def getScores(seq_model):
+            # Compose event scores with event --> connection map
+            decode_lattice = openfst.compose(lattice, seq_model)
+
+            # Compute edge posterior marginals
+            grad_lattice = libfst.fstArcGradient(decode_lattice)
+            connection_scores, weight_type = toArray(grad_lattice)
+            return connection_scores
+
+        connection_scores = np.stack(
+            tuple(getScores(seq_model) for seq_model in self.seq_models),
+            axis=-1
+        )
+
         return connection_scores
 
     def predict(self, outputs):
@@ -260,20 +382,14 @@ class AttributeClassifier(object):
 
         Parameters
         ----------
-        outputs : np.ndarray of float with shape (NUM_SAMPLES, NUM_ACTIONS, NUM_PARTS)
+        outputs : np.ndarray of float with shape (NUM_SAMPLES, NUM_CLASSES, ...)
 
         Returns
         -------
-        preds : np.ndarray of int with shape (NUM_SAMPLES, 2)
-            preds[:, 0] contains the index of the action predicted for each sample.
-            preds[:, 1] contains the index of the part predicted for each sample.
+        preds : np.ndarray of int with shape (NUM_SAMPLES, ...)
         """
 
-        # FIXME
-        pair_scores = outputs.reshape(outputs.shape[0], -1)
-        pair_preds = pair_scores.argmax(axis=-1)
-        # preds = np.column_stack(np.unravel_index(pair_preds, outputs.shape[1:]))
-        preds = np.unravel_index(pair_preds, outputs.shape[1:])
+        preds = outputs.argmax(axis=1)
         return preds
 
 
@@ -292,7 +408,7 @@ def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
 
 def main(
         out_dir=None, data_dir=None, scores_dir=None,
-        event_attr_fn=None, connection_attr_fn=None,
+        event_attr_fn=None, connection_attr_fn=None, part_info_fn=None,
         only_fold=None, plot_io=None, prefix='seq=',
         results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
 
@@ -300,6 +416,7 @@ def main(
     scores_dir = os.path.expanduser(scores_dir)
     event_attr_fn = os.path.expanduser(event_attr_fn)
     connection_attr_fn = os.path.expanduser(connection_attr_fn)
+    part_info_fn = os.path.expanduser(part_info_fn)
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -326,7 +443,7 @@ def main(
 
     logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
 
-    vocab = utils.loadVariable('vocab', data_dir)
+    event_vocab = utils.loadVariable('vocab', data_dir)
 
     # Define cross-validation folds
     cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
@@ -335,6 +452,7 @@ def main(
     # Load event, connection attributes
     event_attrs = pd.read_csv(event_attr_fn, index_col=False, keep_default_na=False)
     connection_attrs = pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False)
+    part_vocab, part_categories, part_connections = loadPartInfo(part_info_fn)
 
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
@@ -348,7 +466,8 @@ def main(
 
         event_duration_weights = np.ones((event_attrs.shape[0], 10), dtype=float)
         model = AttributeClassifier(
-            event_attrs, connection_attrs, vocab,
+            event_attrs, connection_attrs, event_vocab,
+            part_vocab, part_categories, part_connections,
             event_duration_weights=event_duration_weights
         )
 
@@ -358,11 +477,12 @@ def main(
             vertical=True, width=50, height=50, portrait=True
         )
 
-        draw_fst(
-            os.path.join(fig_dir, f'cvfold={cv_index}_event-to-action'),
-            model.event_to_action,
-            vertical=True, width=50, height=50, portrait=True
-        )
+        for i, fst in enumerate(model.event_to_action):
+            draw_fst(
+                os.path.join(fig_dir, f'cvfold={cv_index}_event-to-action_edge={i}'),
+                fst,
+                vertical=True, width=50, height=50, portrait=True
+            )
 
         draw_fst(
             os.path.join(fig_dir, f'cvfold={cv_index}_action-to-connection'),
@@ -370,11 +490,11 @@ def main(
             vertical=True, width=50, height=50, portrait=True
         )
 
-        draw_fst(
-            os.path.join(fig_dir, f'cvfold={cv_index}_seq-model'),
-            model.seq_model,
-            vertical=True, width=50, height=50, portrait=True
-        )
+        # draw_fst(
+        #     os.path.join(fig_dir, f'cvfold={cv_index}_seq-model'),
+        #     model.seq_model,
+        #     vertical=True, width=50, height=50, portrait=True
+        # )
 
         for i in test_indices:
             seq_id = seq_ids[i]
@@ -384,14 +504,17 @@ def main(
             event_score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
             # true_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
 
+            logger.info(f"    event scores shape: {event_score_seq.shape}")
+
             connection_score_seq = model.forward(event_score_seq)
+            logger.info(f"    connection scores shape: {connection_score_seq.shape}")
             # draw_fst(
             #     os.path.join(fig_dir, f'seq={seq_id}_connection-scores'),
             #     connection_score_seq,
             #     vertical=True, width=50, height=50, portrait=True
             # )
-            print(connection_score_seq)
-            import pdb; pdb.set_trace()
+            # print(connection_score_seq)
+            # import pdb; pdb.set_trace()
             pred_connection_seq = model.predict(connection_score_seq)
 
             # metric_dict = eval_metrics(pred_seq, true_seq)

@@ -175,14 +175,16 @@ fi
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Compute connection scores from action scores"
     export LD_LIBRARY_PATH="${HOME}/miniconda3/envs/kinemparse/lib"
-    event_attr_fn="${dataset_dir}/labels/event-vocab.csv"
+    event_attr_fn="${HOME}/data/event_metadata/ikea-anu.csv"
     connection_attr_fn="${HOME}/data/action_to_connection/ikea-anu.csv"
+    part_info_fn="${HOME}/data/assembly_structures/ikea-anu.json"
     python ${debug_str} event_to_connection.py \
         --out_dir "${connections_dir}" \
         --scores_dir "${scores_dir}/data" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --event_attr_fn "${event_attr_fn}" \
         --connection_attr_fn "${connection_attr_fn}" \
+        --part_info_fn "${part_info_fn}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
         --only_fold 1 \
