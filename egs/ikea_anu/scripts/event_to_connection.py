@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import itertools
+import time
 
 import yaml
 import numpy as np
@@ -27,6 +28,7 @@ def draw_fst(fn, fst, extension='png', **draw_kwargs):
 
 def transducer_from_connection_attrs(
         transition_weights, transition_vocab, num_states,
+        init_weights=None, final_weights=None,
         input_table=None, output_table=None,
         arc_type='standard'):
 
@@ -37,13 +39,28 @@ def transducer_from_connection_attrs(
     zero = openfst.Weight.zero(fst.weight_type())
     one = openfst.Weight.one(fst.weight_type())
 
+    if init_weights is None:
+        init_weights = tuple(float(one) for __ in range(num_states))
+
+    if final_weights is None:
+        final_weights = tuple(float(one) for __ in range(num_states))
+
     fst.set_start(fst.add_state())
 
     def makeState(i):
         state = fst.add_state()
-        arc = openfst.Arc(libfst.EPSILON, libfst.EPSILON, one, state)
-        fst.add_arc(fst.start(), arc)
-        fst.set_final(state, one)
+
+        init_weight = openfst.Weight(fst.weight_type(), init_weights[i])
+        if init_weight != zero:
+            connection_id = i + 1
+            action_id = libfst.EPSILON
+            arc = openfst.Arc(action_id, connection_id, init_weight, state)
+            fst.add_arc(fst.start(), arc)
+
+        final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
+        if final_weight != zero:
+            fst.set_final(state, final_weight)
+
         return state
 
     states = tuple(makeState(i) for i in range(num_states))
@@ -54,10 +71,10 @@ def transducer_from_connection_attrs(
             cur_state = states[i_cur]
             next_state = states[i_next]
             weight = openfst.Weight(fst.weight_type(), tx_weight)
-            transition_id = i_edge + 1
+            connection_id = i_next + 1
             action_id = i_action + 1
             if weight != zero:
-                arc = openfst.Arc(action_id, transition_id, weight, next_state)
+                arc = openfst.Arc(action_id, connection_id, weight, next_state)
                 fst.add_arc(cur_state, arc)
 
     if not fst.verify():
@@ -107,9 +124,7 @@ def durationFst(label, num_states, final_weights=None, arc_type='standard', symb
 
         final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
         if final_weight != zero:
-            arc = openfst.Arc(label + 1, libfst.EPSILON, final_weight, cur_state)
-            fst.add_arc(cur_state, arc)
-            fst.set_final(cur_state, final_weight)
+            fst.set_final(next_state, final_weight)
 
         cur_state = next_state
 
@@ -218,15 +233,17 @@ def events_to_actions(event_attrs, action_vocab, event_vocab, edge_vocab, part_c
         active_part_categories = tuple(
             name.split('_active')[0] for name in part_cols if row[name]
         )
-        for active_parts in makeActiveParts(active_part_categories):
-            active_edge_index = edge_integerizer.get(active_parts, None)
-            for i_edge, _ in enumerate(edge_vocab):
+        all_active_parts = makeActiveParts(active_part_categories)
+        for i_edge, _ in enumerate(edge_vocab):
+            for active_parts in all_active_parts:
+                active_edge_index = edge_integerizer.get(active_parts, None)
                 if active_edge_index == i_edge:
                     i_action = action_integerizer[action_name]
-                else:
-                    # FIXME: Implement consistent background class
-                    i_action = action_integerizer['NA']
-                event_action_weights[i_edge, i_event, i_action] = 1
+                    break
+            else:
+                # FIXME: Implement consistent background class
+                i_action = action_integerizer['NA']
+            event_action_weights[i_edge, i_event, i_action] = 1
 
     return event_action_weights
 
@@ -261,30 +278,36 @@ class AttributeClassifier(object):
             tuple(int(x) for x in col_name.split('->'))
             for col_name in connection_attrs.columns if col_name != 'action'
         )
-        self.edge_vocab = tuple(
-            frozenset([self.part_vocab[i], self.part_vocab[j]])
-            for i in range(self.num_parts) for j in range(i)
-        )
+        self.edge_vocab = tuple(frozenset([
+            frozenset([part_1, part_2])
+            for part_1, neighbors in self.part_connections.items()
+            for part_2 in neighbors
+        ]))
+        self.connection_vocab = tuple(sorted(
+            frozenset().union(*[frozenset(t) for t in self.transition_vocab])
+        ))
 
         self.event_symbols = libfst.makeSymbolTable(self.event_vocab)
         self.action_symbols = libfst.makeSymbolTable(self.action_vocab)
         self.transition_symbols = libfst.makeSymbolTable(self.transition_vocab)
         self.edge_symbols = libfst.makeSymbolTable(self.edge_vocab)
+        self.connection_symbols = libfst.makeSymbolTable(self.connection_vocab)
 
         self.event_duration_weights = event_duration_weights
         self.event_duration_fst = make_duration_fst(
             -np.log(self.event_duration_weights),
             symbol_table=self.event_symbols,
             arc_type='standard',
-        )
+        ).arcsort(sort_type='ilabel')
 
         self.action_to_connection = transducer_from_connection_attrs(
             -np.log(self.connection_attrs.drop(['action'], axis=1).to_numpy()),
             self.transition_vocab,
-            max(max(tx) for tx in self.transition_vocab) + 1,
-            input_table=self.action_symbols, output_table=self.transition_symbols,
+            len(self.connection_vocab),
+            init_weights=-np.log(np.array([1, 0])),
+            input_table=self.action_symbols, output_table=self.connection_symbols,
             arc_type='standard'
-        )
+        ).arcsort(sort_type='ilabel')
 
         # event index --> all data
         action_integerizer = {name: i for i, name in enumerate(self.action_vocab)}
@@ -304,16 +327,17 @@ class AttributeClassifier(object):
                 -np.log(edge_event_action_weights),
                 input_table=self.event_symbols, output_table=self.action_symbols,
                 arc_type='standard'
-            )
+            ).arcsort(sort_type='ilabel')
 
             seq_model = libfst.easyCompose(
                 *[self.event_duration_fst, event_to_action, self.action_to_connection],
+                # *[event_to_action, self.action_to_connection],
                 # determinize=True,
                 # minimize=True
                 determinize=False,
                 minimize=False
 
-            )
+            ).arcsort(sort_type='ilabel')
 
             self.event_to_action.append(event_to_action)
             self.seq_models.append(seq_model)
@@ -359,23 +383,42 @@ class AttributeClassifier(object):
             input_symbols=sample_symbols,
             output_symbols=self.event_symbols,
             arc_type='standard'
-        )
+        ).arcsort(sort_type='ilabel')
 
         def getScores(seq_model):
             # Compose event scores with event --> connection map
+            init_time = time.time()
             decode_lattice = openfst.compose(lattice, seq_model)
+            time_str = makeTimeString(time.time() - init_time)
+            logger.info(f"compose finished in {time_str}")
+
+            num_states = decode_lattice.num_states()
+            num_arcs = sum(
+                decode_lattice.num_arcs(i) for i in range(num_states)
+            )
+            logger.info(f"Decode lattice has {num_arcs} arcs; {num_states} states")
 
             # Compute edge posterior marginals
+            init_time = time.time()
             grad_lattice = libfst.fstArcGradient(decode_lattice)
+            time_str = makeTimeString(time.time() - init_time)
+            logger.info(f"fstArcGradient finished in {time_str}")
+
+            init_time = time.time()
             connection_scores, weight_type = toArray(grad_lattice)
+            time_str = makeTimeString(time.time() - init_time)
+            logger.info(f"toArray finished in {time_str}")
+
+            # import pdb; pdb.set_trace()
             return connection_scores
 
-        connection_scores = np.stack(
-            tuple(getScores(seq_model) for seq_model in self.seq_models),
-            axis=-1
-        )
+        # connection_scores = np.stack(
+        #     tuple(getScores(seq_model) for seq_model in self.seq_models),
+        #     axis=-1
+        # )
 
-        return connection_scores
+        lattices = tuple(openfst.compose(lattice, seq_model) for seq_model in self.seq_models)
+        return lattices  # connection_scores
 
     def predict(self, outputs):
         """ Choose the best labels from an array of output activations.
@@ -389,8 +432,18 @@ class AttributeClassifier(object):
         preds : np.ndarray of int with shape (NUM_SAMPLES, ...)
         """
 
-        preds = outputs.argmax(axis=1)
-        return preds
+        preds = tuple(np.array(libfst.viterbi(lattice)) for lattice in outputs),
+        import pdb; pdb.set_trace()
+        edge_preds = np.stack(preds, axis=-1)
+        # preds = outputs.argmax(axis=1)
+        return edge_preds
+
+
+def makeTimeString(time_elapsed):
+    mins_elapsed = time_elapsed // 60
+    secs_elapsed = time_elapsed % 60
+    time_str = f'{mins_elapsed:.0f}m {secs_elapsed:.0f}s'
+    return time_str
 
 
 def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
@@ -502,12 +555,14 @@ def main(
 
             trial_prefix = f"{prefix}{seq_id}"
             event_score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
+            # FIXME: the serialized variables are probs, not log-probs
+            event_score_seq = np.log(event_score_seq)
             # true_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
 
             logger.info(f"    event scores shape: {event_score_seq.shape}")
 
             connection_score_seq = model.forward(event_score_seq)
-            logger.info(f"    connection scores shape: {connection_score_seq.shape}")
+            # logger.info(f"    connection scores shape: {connection_score_seq.shape}")
             # draw_fst(
             #     os.path.join(fig_dir, f'seq={seq_id}_connection-scores'),
             #     connection_score_seq,
@@ -521,7 +576,7 @@ def main(
             # for name, value in metric_dict.items():
             #     logger.info(f"    {name}: {value * 100:.2f}%")
 
-            utils.saveVariable(event_score_seq, f'{trial_prefix}_score-seq', out_data_dir)
+            # utils.saveVariable(connection_score_seq, f'{trial_prefix}_score-seq', out_data_dir)
             utils.saveVariable(pred_connection_seq, f'{trial_prefix}_pred-label-seq', out_data_dir)
             # utils.saveVariable(true_event_seq, f'{seq_id_str}_true-label-seq', out_data_dir)
             # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
@@ -529,7 +584,7 @@ def main(
             if plot_io:
                 utils.plot_array(
                     # connection_score_seq.T, (true_seq, pred_seq), ('true', 'pred'),
-                    connection_score_seq.T, (pred_connection_seq,), ('pred',),
+                    event_score_seq.T, (pred_connection_seq,), ('pred',),
                     fn=os.path.join(fig_dir, f"seq={seq_id:03d}.png")
                 )
 
