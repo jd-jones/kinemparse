@@ -6,6 +6,7 @@ import time
 
 import yaml
 import numpy as np
+import scipy
 import pandas as pd
 # from matplotlib import pyplot as plt
 import graphviz as gv
@@ -83,6 +84,34 @@ def transducer_from_connection_attrs(
     return fst
 
 
+def add_endpoints(fst, bos_str='<BOS>', eos_str='<EOS>'):
+    one = openfst.Weight.one(fst.weight_type())
+    zero = openfst.Weight.zero(fst.weight_type())
+
+    # add pre-initial state accepting BOS
+    i_bos_in = fst.input_symbols().find(bos_str)
+    i_bos_out = fst.output_symbols().find(bos_str)
+    old_start = fst.start()
+    new_start = fst.add_state()
+    fst.set_start(new_start)
+    init_arc = openfst.Arc(i_bos_in, i_bos_out, one, old_start)
+    fst.add_arc(new_start, init_arc)
+
+    # add superfinal state accepting EOS
+    i_eos_in = fst.input_symbols().find(eos_str)
+    i_eos_out = fst.output_symbols().find(eos_str)
+    new_final = fst.add_state()
+    for state in fst.states():
+        w_final = fst.final(state)
+        if w_final != zero:
+            fst.set_final(state, zero)
+            final_arc = openfst.Arc(i_eos_in, i_eos_out, w_final, new_final)
+            fst.add_arc(state, final_arc)
+    fst.set_final(new_final, one)
+
+    return fst
+
+
 def durationFst_BACKUP(
         label, num_states, final_weights=None, arc_type='standard',
         symbol_table=None):
@@ -136,7 +165,10 @@ def durationFst_BACKUP(
     return fst
 
 
-def durationFst(label_str, max_dur, final_weights=None, arc_type='standard', symbol_table=None):
+def durationFst(
+        label_str, seg_internal_str, seg_final_str, max_dur,
+        final_weights=None, input_symbols=None, output_symbols=None,
+        arc_type='standard'):
     """ Construct a left-to-right WFST from an input sequence.
 
     Parameters
@@ -148,7 +180,9 @@ def durationFst(label_str, max_dur, final_weights=None, arc_type='standard', sym
     fst : openfst.Fst
     """
 
-    LABEL_INDEX = symbol_table.find(label_str)
+    input_label = input_symbols.find(label_str)
+    output_label_int = output_symbols.find(seg_internal_str)
+    output_label_ext = output_symbols.find(seg_final_str)
 
     if max_dur < 1:
         raise AssertionError(f"max_dur = {max_dur}, but should be >= 1)")
@@ -160,9 +194,8 @@ def durationFst(label_str, max_dur, final_weights=None, arc_type='standard', sym
     if final_weights is None:
         final_weights = [one for __ in range(max_dur)]
 
-    if symbol_table is not None:
-        fst.set_input_symbols(symbol_table)
-        fst.set_output_symbols(symbol_table)
+    fst.set_input_symbols(input_symbols)
+    fst.set_output_symbols(output_symbols)
 
     states = tuple(fst.add_state() for __ in range(max_dur))
     final_state = fst.add_state()
@@ -174,12 +207,12 @@ def durationFst(label_str, max_dur, final_weights=None, arc_type='standard', sym
 
         final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
         if final_weight != zero:
-            arc = openfst.Arc(LABEL_INDEX, LABEL_INDEX, one, final_state)
+            arc = openfst.Arc(input_label, output_label_ext, one, final_state)
             fst.add_arc(cur_state, arc)
 
         if i + 1 < len(states):
             next_state = states[i + 1]
-            arc = openfst.Arc(LABEL_INDEX, libfst.EPSILON, one, next_state)
+            arc = openfst.Arc(input_label, output_label_int, one, next_state)
             fst.add_arc(cur_state, arc)
 
     if not fst.verify():
@@ -188,60 +221,41 @@ def durationFst(label_str, max_dur, final_weights=None, arc_type='standard', sym
     return fst
 
 
-def add_endpoints(fst, bos_str='<BOS>', eos_str='<EOS>'):
-    one = openfst.Weight.one(fst.weight_type())
-    zero = openfst.Weight.zero(fst.weight_type())
-
-    # add pre-initial state accepting BOS
-    i_bos_in = fst.input_symbols().find(bos_str)
-    i_bos_out = fst.output_symbols().find(bos_str)
-    old_start = fst.start()
-    new_start = fst.add_state()
-    fst.set_start(new_start)
-    init_arc = openfst.Arc(i_bos_in, i_bos_out, one, old_start)
-    fst.add_arc(new_start, init_arc)
-
-    # add superfinal state accepting EOS
-    i_eos_in = fst.input_symbols().find(eos_str)
-    i_eos_out = fst.output_symbols().find(eos_str)
-    new_final = fst.add_state()
-    for state in fst.states():
-        w_final = fst.final(state)
-        if w_final != zero:
-            fst.set_final(state, zero)
-            final_arc = openfst.Arc(i_eos_in, i_eos_out, w_final, new_final)
-            fst.add_arc(state, final_arc)
-    fst.set_final(new_final, one)
-
-    return fst
-
-
-def make_duration_fst(final_weights, class_vocab, arc_type='standard', symbol_table=None):
+def make_duration_fst(
+        final_weights, class_vocab, class_seg_to_str,
+        seg_internal_str='I', seg_final_str='F',
+        input_symbols=None, output_symbols=None,
+        arc_type='standard'):
     num_classes, num_states = final_weights.shape
 
     dur_fsts = [
         durationFst(
             class_vocab[i],
+            class_seg_to_str[class_vocab[i], seg_internal_str],
+            class_seg_to_str[class_vocab[i], seg_final_str],
             num_states, final_weights=final_weights[i],
-            arc_type=arc_type, symbol_table=symbol_table
+            arc_type=arc_type,
+            input_symbols=input_symbols,
+            output_symbols=output_symbols
         )
         for i in range(num_classes)
     ]
 
     empty = openfst.VectorFst(arc_type=arc_type)
-    empty.set_input_symbols(symbol_table)
-    empty.set_output_symbols(symbol_table)
+    empty.set_input_symbols(input_symbols)
+    empty.set_output_symbols(output_symbols)
     fst = empty.union(*dur_fsts).closure(closure_plus=True)
     return fst
 
 
 def single_state_transducer(
-        transition_weights, input_table=None, output_table=None,
+        transition_weights, row_vocab, col_vocab,
+        input_symbols=None, output_symbols=None,
         arc_type='standard'):
 
     fst = openfst.VectorFst(arc_type=arc_type)
-    fst.set_input_symbols(input_table)
-    fst.set_output_symbols(output_table)
+    fst.set_input_symbols(input_symbols)
+    fst.set_output_symbols(output_symbols)
 
     zero = openfst.Weight.zero(fst.weight_type())
     one = openfst.Weight.one(fst.weight_type())
@@ -253,8 +267,8 @@ def single_state_transducer(
     for i_input, row in enumerate(transition_weights):
         for i_output, tx_weight in enumerate(row):
             weight = openfst.Weight(fst.weight_type(), tx_weight)
-            input_id = i_input + 1
-            output_id = i_output + 1
+            input_id = fst.input_symbols().find(row_vocab[i_input])
+            output_id = fst.output_symbols().find(col_vocab[i_output])
             if weight != zero:
                 arc = openfst.Arc(input_id, output_id, weight, state)
                 fst.add_arc(state, arc)
@@ -265,10 +279,7 @@ def single_state_transducer(
     return fst
 
 
-def toArray(lattice, row_vocab, col_vocab):
-    row_integerizer = {name: i for i, name in enumerate(row_vocab)}
-    col_integerizer = {name: i for i, name in enumerate(col_vocab)}
-
+def toArray(lattice, row_integerizer, col_integerizer):
     zero = openfst.Weight.zero(lattice.weight_type())
     # one = openfst.Weight.one(lattice.weight_type())
 
@@ -282,8 +293,8 @@ def toArray(lattice, row_vocab, col_vocab):
             cur_weight = semiring_weights.get(io_key, zero)
             semiring_weights[io_key] = openfst.plus(cur_weight, arc.weight)
 
-    num_inputs = len(row_vocab)
-    num_outputs = len(col_vocab)
+    num_inputs = len(row_integerizer)
+    num_outputs = len(col_integerizer)
     weights = np.full((num_inputs, num_outputs), float(zero))
     for (i_name, o_name), weight in semiring_weights.items():
         row = row_integerizer.get(i_name, None)
@@ -498,62 +509,180 @@ def fromArray(
     return fst
 
 
-def __test(fig_dir):
-    num_classes = 2
-    num_samples = 10
-    max_dur = 4
-    min_dur = 2
+def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
+    eps_str = 'ε'
+    bos_str = '<BOS>'
+    eos_str = '<EOS>'
+    seg_internal_str = 'I'
+    seg_final_str = 'F'
 
-    aux_symbols = ('ε', '<BOS>', '<EOS>')
-    sample_vocab = tuple(f"{i}" for i in range(num_samples))
-    class_vocab = tuple(f"{i}" for i in range(num_classes))
+    aux_symbols = (eps_str, bos_str, eos_str)
+    seg_vocab = (seg_internal_str, seg_final_str)
+    sample_vocab = tuple(i for i in range(num_samples))
+    dur_vocab = tuple(i for i in range(1, max_dur + 1))
+    class_vocab = tuple(i for i in range(num_classes))
+    class_seg_vocab = tuple((c, s) for c in class_vocab for s in seg_vocab)
+
+    def to_strings(vocab):
+        return tuple(map(str, vocab))
+
+    def to_integerizer(vocab):
+        return {item: i for i, item in enumerate(vocab)}
+
+    sample_vocab_str = to_strings(sample_vocab)
+    seg_vocab_str = to_strings(seg_vocab)
+    class_vocab_str = to_strings(class_vocab)
+    class_seg_vocab_str = to_strings(class_seg_vocab)
+
+    # sample_integerizer = to_integerizer(sample_vocab)
+    seg_integerizer = to_integerizer(seg_vocab)
+    class_integerizer = to_integerizer(class_vocab)
+    # class_seg_integerizer = to_integerizer(class_seg_vocab)
+
+    sample_str_integerizer = to_integerizer(sample_vocab_str)
+    class_str_integerizer = to_integerizer(class_vocab_str)
+    class_seg_str_integerizer = to_integerizer(class_seg_vocab_str)
+
+    def get_parts(class_seg_key):
+        c, s = class_seg_vocab[class_seg_str_integerizer[class_seg_key]]
+        c_str = class_vocab_str[class_integerizer[c]]
+        s_str = seg_vocab_str[seg_integerizer[s]]
+        return c_str, s_str
+
+    class_seg_to_str = {get_parts(name): name for name in class_seg_vocab_str}
 
     sample_symbols = libfst.makeSymbolTable(aux_symbols + sample_vocab, prepend_epsilon=False)
+    # dur_symbols = libfst.makeSymbolTable(aux_symbols + dur_vocab, prepend_epsilon=False)
     class_symbols = libfst.makeSymbolTable(aux_symbols + class_vocab, prepend_epsilon=False)
+    # seg_symbols = libfst.makeSymbolTable(aux_symbols + seg_vocab, prepend_epsilon=False)
+    class_seg_symbols = libfst.makeSymbolTable(aux_symbols + class_seg_vocab, prepend_epsilon=False)
 
     obs_scores = np.zeros((num_samples, num_classes))
-    dur_scores = np.zeros((max_dur, num_classes))
-    dur_scores[:min_dur - 1, :] = np.inf
-    transition_scores = np.array([
-        [np.inf, 0],
-        [0, np.inf]
-    ])
-    init_scores = np.array([0, np.inf])
-    final_scores = np.array([np.inf, 0])
+
+    dur_scores = np.array(
+        [[0 if d >= min_dur else np.inf for d in dur_vocab] for c in class_vocab],
+        dtype=float
+    )
+
+    def score_transition(c_prev, s_prev, c_cur, s_cur):
+        if c_prev != c_cur:
+            if s_prev == seg_final_str and s_cur == seg_internal_str:
+                score = 0
+            else:
+                score = np.inf
+        else:
+            if s_prev == seg_internal_str and s_cur == seg_final_str:
+                score = 0
+            elif s_prev == seg_internal_str and s_cur == seg_internal_str:
+                score = 0
+            else:
+                score = np.inf
+        return score
+
+    transition_scores = np.array(
+        [
+            [
+                score_transition(c_prev, s_prev, c_cur, s_cur)
+                for (c_cur, s_cur) in class_seg_vocab
+            ]
+            for (c_prev, s_prev) in class_seg_vocab
+        ],
+        dtype=float
+    )
+    init_scores = np.array(
+        [0 if c == 0 and s == seg_internal_str else np.inf for (c, s) in class_seg_vocab],
+        dtype=float
+    )
+    final_scores = np.array(
+        [0 if c == 1 and s == seg_final_str else np.inf for (c, s) in class_seg_vocab],
+        dtype=float
+    )
+
+    def score_arc_state(class_seg_key, class_key):
+        c, s = class_seg_vocab[class_seg_str_integerizer[class_seg_key]]
+        c_prime = class_str_integerizer[class_key]
+
+        if c == c_prime:
+            score = 0
+        else:
+            score = np.inf
+
+        return score
+
+    class_seg_to_class_scores = np.array(
+        [
+            [
+                score_arc_state(class_seg_key, class_key)
+                for class_key in class_vocab_str
+            ]
+            for class_seg_key in class_seg_vocab_str
+        ],
+        dtype=float
+    )
+
+    def log_normalize(arr, axis=1):
+        denom = -scipy.special.logsumexp(-arr, axis=axis, keepdims=True)
+        return arr - denom
+
+    obs_scores = log_normalize(obs_scores)
+    dur_scores = log_normalize(dur_scores)
+    transition_scores = log_normalize(transition_scores)
+    init_scores = log_normalize(init_scores, axis=None)
+    final_scores = log_normalize(final_scores, axis=None)
 
     obs_fst = add_endpoints(
         fromArray(
-            obs_scores, sample_vocab, class_vocab,
+            obs_scores, sample_vocab_str, class_vocab_str,
             input_symbols=sample_symbols,
             output_symbols=class_symbols,
             arc_type='standard'
-        )
+        ),
+        bos_str=bos_str, eos_str=eos_str
     ).arcsort(sort_type='ilabel')
 
     dur_fst = add_endpoints(
         make_duration_fst(
-            dur_scores.T, class_vocab,
-            symbol_table=class_symbols,
+            dur_scores, class_vocab_str, class_seg_to_str,
+            seg_internal_str=seg_internal_str, seg_final_str=seg_final_str,
+            input_symbols=class_symbols,
+            output_symbols=class_seg_symbols,
             arc_type='standard',
-        )
+        ),
+        bos_str=bos_str, eos_str=eos_str
     ).arcsort(sort_type='ilabel')
 
     transition_fst = fromTransitions(
-        transition_scores, class_vocab, class_vocab,
+        transition_scores, class_seg_vocab_str, class_seg_vocab_str,
         init_weights=init_scores,
         final_weights=final_scores,
-        input_symbols=class_symbols,
-        output_symbols=class_symbols
+        input_symbols=class_seg_symbols,
+        output_symbols=class_seg_symbols
+    ).arcsort(sort_type='ilabel')
+
+    class_seg_to_class_fst = single_state_transducer(
+        class_seg_to_class_scores, class_seg_vocab_str, class_vocab_str,
+        input_symbols=class_seg_symbols, output_symbols=class_symbols,
+        arc_type='standard'
     ).arcsort(sort_type='ilabel')
 
     seq_model = openfst.compose(dur_fst, transition_fst)
-    decode_lattice = openfst.compose(obs_fst, seq_model).topsort()
+    decode_lattice = openfst.compose(obs_fst, seq_model).rmepsilon()
 
     # Result is in the log semiring (ie weights are negative log probs)
-    arc_probs = libfst.fstArcGradient(decode_lattice)
-    best_path = openfst.shortestpath(decode_lattice)
+    arc_scores = libfst.fstArcGradient(decode_lattice).arcsort(sort_type='ilabel')
+    best_arcs = openfst.shortestpath(decode_lattice).arcsort(sort_type='ilabel')
 
-    out_scores, weight_type = toArray(arc_probs, sample_vocab, class_vocab)
+    state_scores = openfst.compose(
+        arc_scores,
+        openfst.arcmap(class_seg_to_class_fst, map_type='to_log')
+    )
+    best_states = openfst.compose(best_arcs, class_seg_to_class_fst)
+
+    state_scores_arr, weight_type = toArray(
+        state_scores,
+        sample_str_integerizer,
+        class_str_integerizer
+    )
 
     draw_fst(
         os.path.join(fig_dir, 'obs_fst'), obs_fst,
@@ -581,17 +710,17 @@ def __test(fig_dir):
     )
 
     draw_fst(
-        os.path.join(fig_dir, 'arc_probs'), arc_probs,
+        os.path.join(fig_dir, 'state_scores'), state_scores,
         vertical=True, width=50, height=50, portrait=True
     )
 
     draw_fst(
-        os.path.join(fig_dir, 'best_path'), best_path,
+        os.path.join(fig_dir, 'best_states'), best_states,
         vertical=True, width=50, height=50, portrait=True
     )
 
     utils.plot_array(
-        obs_scores.T, (out_scores.T,), ('probs',),
+        obs_scores.T, (state_scores_arr.T,), ('-logprobs',),
         fn=os.path.join(fig_dir, "test_io.png")
     )
 
