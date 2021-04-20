@@ -509,6 +509,276 @@ def fromArray(
     return fst
 
 
+def makeTimeString(time_elapsed):
+    mins_elapsed = time_elapsed // 60
+    secs_elapsed = time_elapsed % 60
+    time_str = f'{mins_elapsed:.0f}m {secs_elapsed:.0f}s'
+    return time_str
+
+
+def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
+    state_acc = (pred_seq == true_seq).astype(float).mean()
+
+    metric_dict = {
+        'State Accuracy' + name_suffix: state_acc,
+        'State Edit Score' + name_suffix: LCTM.metrics.edit_score(pred_seq, true_seq) / 100,
+        'State Overlap Score' + name_suffix: LCTM.metrics.overlap_score(pred_seq, true_seq) / 100
+    }
+
+    append_to.update(metric_dict)
+    return append_to
+
+
+def to_strings(vocab):
+    return tuple(map(str, vocab))
+
+
+def to_integerizer(vocab):
+    return {item: i for i, item in enumerate(vocab)}
+
+
+class Vocabulary(object):
+    def __init__(self, vocab, aux_symbols=('ε',)):
+        # Object and string representations of the input vocabulary
+        self.vocab = tuple(vocab)
+        self.str_vocab = tuple(map(str, vocab))
+
+        # OpenFST symbol tables
+        self.aux_symbols = tuple(aux_symbols)
+        self.symbol_table = libfst.makeSymbolTable(
+            self.aux_symbols + self.str_vocab,
+            prepend_epsilon=False
+        )
+
+        # Map vocab items to their integer values
+        self.integerizer = {item: i for i, item in enumerate(self.vocab)}
+        self.str_integerizer = {item: i for i, item in enumerate(self.str_vocab)}
+
+    def to_str(self, obj):
+        i = self.integerizer[obj]
+        return self.str_vocab[i]
+
+    def to_obj(self, string):
+        i = self.str_integerizer[string]
+        return self.vocab[i]
+
+    def as_str(self):
+        return self.str_vocab
+
+    def as_raw(self):
+        return self.vocab
+
+
+class AttributeClassifier(object):
+    def __init__(
+            self, event_attrs, connection_attrs, event_vocab,
+            part_vocab, part_categories, part_connections,
+            event_duration_weights=None,
+            eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
+            seg_internal_str='I', seg_final_str='F'):
+        """
+        Parameters
+        ----------
+        event_attrs : pd.DataFrame
+        connection_attrs : pd.DataFrame
+        vocab : list( string )
+        """
+
+        self.event_attrs = event_attrs
+        self.connection_attrs = connection_attrs
+
+        self.part_categories = part_categories
+        self.part_connections = part_connections
+
+        # VOCABULARIES: OBJECT VERSIONS
+        aux_symbols = (eps_str, bos_str, eos_str)
+
+        def make_vocab(vocab):
+            return Vocabulary(vocab, aux_symbols=aux_symbols)
+
+        self.seg_vocab = make_vocab((seg_internal_str, seg_final_str))
+        self.event_vocab = make_vocab(event_vocab)
+        self.action_vocab = make_vocab(connection_attrs['action'].to_list())
+        self.part_vocab = make_vocab(part_vocab)
+        self.transition_vocab = make_vocab(
+            tuple(
+                tuple(int(x) for x in col_name.split('->'))
+                for col_name in connection_attrs.columns if col_name != 'action'
+            )
+        )
+        self.edge_vocab = make_vocab(
+            tuple(frozenset([
+                frozenset([part_1, part_2])
+                for part_1, neighbors in self.part_connections.items()
+                for part_2 in neighbors
+            ]))
+        )
+        self.connection_vocab = make_vocab(
+            tuple(sorted(
+                frozenset().union(*[frozenset(t) for t in self.transition_vocab.as_raw()])
+            ))
+        )
+        self.event_seg_vocab = make_vocab(
+            tuple((e, s) for e in self.event_vocab.as_raw() for s in self.seg_vocab.as_raw())
+        )
+
+        def get_parts(class_seg_key):
+            c, s = self.event_seg_vocab.to_obj(class_seg_key)
+            c_str = self.event_vocab.to_str(c)
+            s_str = self.seg_vocab.to_str(s)
+            return c_str, s_str
+        self.event_seg_to_str = {
+            get_parts(name): name
+            for name in self.event_seg_vocab.as_str()
+        }
+
+        self.event_duration_fst = add_endpoints(
+            make_duration_fst(
+                -np.log(event_duration_weights),
+                self.event_vocab.as_str(), self.event_seg_to_str,
+                seg_internal_str=seg_internal_str, seg_final_str=seg_final_str,
+                input_symbols=self.event_vocab.symbol_table,
+                output_symbols=self.event_seg_vocab.symbol_table,
+                arc_type='standard',
+            ),
+            bos_str=bos_str, eos_str=eos_str
+        ).arcsort(sort_type='ilabel')
+
+        self.action_to_connection = transducer_from_connection_attrs(
+            -np.log(self.connection_attrs.drop(['action'], axis=1).to_numpy()),
+            self.transition_vocab.as_raw(),
+            len(self.connection_vocab.as_raw()),
+            init_weights=-np.log(np.array([1, 0])),
+            input_table=self.action_vocab.symbol_table,
+            output_table=self.connection_vocab.symbol_table,
+            arc_type='standard'
+        ).arcsort(sort_type='ilabel')
+
+        # event index --> all data
+        event_action_weights = events_to_actions(
+            self.event_attrs,
+            self.action_vocab.as_raw(), self.event_vocab.as_raw(),
+            self.edge_vocab.as_raw(),
+            self.part_categories
+        )
+
+        self.event_to_action = []
+        self.seq_models = []
+        for i, edge_event_action_weights in enumerate(event_action_weights):
+            event_to_action = single_state_transducer(
+                -np.log(edge_event_action_weights),
+                self.event_vocab.as_str(), self.action_vocab.as_str(),
+                input_symbols=self.event_vocab.symbol_table,
+                output_symbols=self.action_vocab.symbol_table,
+                arc_type='standard'
+            ).arcsort(sort_type='ilabel')
+
+            # seq_model = libfst.easyCompose(
+            #     *[self.event_duration_fst, event_to_action, self.action_to_connection],
+            #     determinize=False,
+            #     minimize=False
+            # ).arcsort(sort_type='ilabel')
+
+            self.event_to_action.append(event_to_action)
+            # self.seq_models.append(seq_model)
+
+    @property
+    def num_events(self):
+        return len(self.event_vocab.as_raw())
+
+    @property
+    def num_parts(self):
+        return len(self.part_vocab.as_raw())
+
+    @property
+    def num_actions(self):
+        return len(self.action_vocab.as_raw())
+
+    @property
+    def num_transitions(self):
+        return len(self.transition_vocab.as_raw())
+
+    @property
+    def num_edges(self):
+        return len(self.edge_vocab.as_raw())
+
+    def forward(self, event_scores):
+        """ Combine action and part scores into event scores.
+
+        Parameters
+        ----------
+        event_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_EVENTS)
+
+        Returns
+        -------
+        connection_scores : np.ndarray of float with shape (NUM_SAMPLES, 2, NUM_EDGES)
+        """
+
+        # Convert event scores to lattice
+        sample_symbols = libfst.makeSymbolTable(
+            tuple(f"{i}" for i in range(event_scores.shape[0]))
+        )
+        lattice = libfst.fromArray(
+            -event_scores,
+            input_symbols=sample_symbols,
+            output_symbols=self.event_symbols,
+            arc_type='standard'
+        ).arcsort(sort_type='ilabel')
+
+        def getScores(seq_model):
+            # Compose event scores with event --> connection map
+            init_time = time.time()
+            decode_lattice = openfst.compose(lattice, seq_model)
+            time_str = makeTimeString(time.time() - init_time)
+            logger.info(f"compose finished in {time_str}")
+
+            num_states = decode_lattice.num_states()
+            num_arcs = sum(
+                decode_lattice.num_arcs(i) for i in range(num_states)
+            )
+            logger.info(f"Decode lattice has {num_arcs} arcs; {num_states} states")
+
+            # Compute edge posterior marginals
+            init_time = time.time()
+            grad_lattice = libfst.fstArcGradient(decode_lattice)
+            time_str = makeTimeString(time.time() - init_time)
+            logger.info(f"fstArcGradient finished in {time_str}")
+
+            init_time = time.time()
+            connection_scores, weight_type = toArray(grad_lattice)
+            time_str = makeTimeString(time.time() - init_time)
+            logger.info(f"toArray finished in {time_str}")
+
+            # import pdb; pdb.set_trace()
+            return connection_scores
+
+        # connection_scores = np.stack(
+        #     tuple(getScores(seq_model) for seq_model in self.seq_models),
+        #     axis=-1
+        # )
+
+        lattices = tuple(openfst.compose(lattice, seq_model) for seq_model in self.seq_models)
+        return lattices  # connection_scores
+
+    def predict(self, outputs):
+        """ Choose the best labels from an array of output activations.
+
+        Parameters
+        ----------
+        outputs : np.ndarray of float with shape (NUM_SAMPLES, NUM_CLASSES, ...)
+
+        Returns
+        -------
+        preds : np.ndarray of int with shape (NUM_SAMPLES, ...)
+        """
+
+        preds = tuple(np.array(libfst.viterbi(lattice)) for lattice in outputs),
+        # import pdb; pdb.set_trace()
+        edge_preds = np.stack(preds, axis=-1)
+        # preds = outputs.argmax(axis=1)
+        return edge_preds
+
+
 def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
     eps_str = 'ε'
     bos_str = '<BOS>'
@@ -725,217 +995,6 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
     )
 
 
-class AttributeClassifier(object):
-    def __init__(
-            self, event_attrs, connection_attrs, event_vocab,
-            part_vocab, part_categories, part_connections,
-            event_duration_weights=None):
-        """
-        Parameters
-        ----------
-        event_attrs : pd.DataFrame
-        connection_attrs : pd.DataFrame
-        vocab : list( string )
-        """
-
-        self.event_attrs = event_attrs
-        self.connection_attrs = connection_attrs
-
-        self.part_categories = part_categories
-        self.part_connections = part_connections
-
-        # map event index to action index
-        # map action name to index: action_ids
-        # map transition name to index: transition_ids
-
-        self.event_vocab = event_vocab
-        self.action_vocab = connection_attrs['action'].to_list()
-        self.part_vocab = part_vocab
-        self.transition_vocab = tuple(
-            tuple(int(x) for x in col_name.split('->'))
-            for col_name in connection_attrs.columns if col_name != 'action'
-        )
-        self.edge_vocab = tuple(frozenset([
-            frozenset([part_1, part_2])
-            for part_1, neighbors in self.part_connections.items()
-            for part_2 in neighbors
-        ]))
-        self.connection_vocab = tuple(sorted(
-            frozenset().union(*[frozenset(t) for t in self.transition_vocab])
-        ))
-
-        self.event_symbols = libfst.makeSymbolTable(self.event_vocab)
-        self.action_symbols = libfst.makeSymbolTable(self.action_vocab)
-        self.transition_symbols = libfst.makeSymbolTable(self.transition_vocab)
-        self.edge_symbols = libfst.makeSymbolTable(self.edge_vocab)
-        self.connection_symbols = libfst.makeSymbolTable(self.connection_vocab)
-
-        self.event_duration_weights = event_duration_weights
-        self.event_duration_fst = make_duration_fst(
-            -np.log(self.event_duration_weights),
-            symbol_table=self.event_symbols,
-            arc_type='standard',
-        ).arcsort(sort_type='ilabel')
-
-        self.action_to_connection = transducer_from_connection_attrs(
-            -np.log(self.connection_attrs.drop(['action'], axis=1).to_numpy()),
-            self.transition_vocab,
-            len(self.connection_vocab),
-            init_weights=-np.log(np.array([1, 0])),
-            input_table=self.action_symbols, output_table=self.connection_symbols,
-            arc_type='standard'
-        ).arcsort(sort_type='ilabel')
-
-        # event index --> all data
-        action_integerizer = {name: i for i, name in enumerate(self.action_vocab)}
-        event_action_weights = np.zeros((self.num_events, self.num_actions), dtype=float)
-        for i, name in enumerate(event_attrs.set_index('event').loc[self.event_vocab]['action']):
-            event_action_weights[i, action_integerizer[name]] = 1
-        event_action_weights = events_to_actions(
-            self.event_attrs,
-            self.action_vocab, self.event_vocab, self.edge_vocab,
-            self.part_categories
-        )
-
-        self.event_to_action = []
-        self.seq_models = []
-        for i, edge_event_action_weights in enumerate(event_action_weights):
-            event_to_action = single_state_transducer(
-                -np.log(edge_event_action_weights),
-                input_table=self.event_symbols, output_table=self.action_symbols,
-                arc_type='standard'
-            ).arcsort(sort_type='ilabel')
-
-            seq_model = libfst.easyCompose(
-                *[self.event_duration_fst, event_to_action, self.action_to_connection],
-                # *[event_to_action, self.action_to_connection],
-                # determinize=True,
-                # minimize=True
-                determinize=False,
-                minimize=False
-
-            ).arcsort(sort_type='ilabel')
-
-            self.event_to_action.append(event_to_action)
-            self.seq_models.append(seq_model)
-
-    @property
-    def num_events(self):
-        return len(self.event_vocab)
-
-    @property
-    def num_parts(self):
-        return len(self.part_vocab)
-
-    @property
-    def num_actions(self):
-        return len(self.action_vocab)
-
-    @property
-    def num_transitions(self):
-        return len(self.transition_vocab)
-
-    @property
-    def num_edges(self):
-        return len(self.edge_vocab)
-
-    def forward(self, event_scores):
-        """ Combine action and part scores into event scores.
-
-        Parameters
-        ----------
-        event_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_EVENTS)
-
-        Returns
-        -------
-        connection_scores : np.ndarray of float with shape (NUM_SAMPLES, 2, NUM_EDGES)
-        """
-
-        # Convert event scores to lattice
-        sample_symbols = libfst.makeSymbolTable(
-            tuple(f"{i}" for i in range(event_scores.shape[0]))
-        )
-        lattice = libfst.fromArray(
-            -event_scores,
-            input_symbols=sample_symbols,
-            output_symbols=self.event_symbols,
-            arc_type='standard'
-        ).arcsort(sort_type='ilabel')
-
-        def getScores(seq_model):
-            # Compose event scores with event --> connection map
-            init_time = time.time()
-            decode_lattice = openfst.compose(lattice, seq_model)
-            time_str = makeTimeString(time.time() - init_time)
-            logger.info(f"compose finished in {time_str}")
-
-            num_states = decode_lattice.num_states()
-            num_arcs = sum(
-                decode_lattice.num_arcs(i) for i in range(num_states)
-            )
-            logger.info(f"Decode lattice has {num_arcs} arcs; {num_states} states")
-
-            # Compute edge posterior marginals
-            init_time = time.time()
-            grad_lattice = libfst.fstArcGradient(decode_lattice)
-            time_str = makeTimeString(time.time() - init_time)
-            logger.info(f"fstArcGradient finished in {time_str}")
-
-            init_time = time.time()
-            connection_scores, weight_type = toArray(grad_lattice)
-            time_str = makeTimeString(time.time() - init_time)
-            logger.info(f"toArray finished in {time_str}")
-
-            # import pdb; pdb.set_trace()
-            return connection_scores
-
-        # connection_scores = np.stack(
-        #     tuple(getScores(seq_model) for seq_model in self.seq_models),
-        #     axis=-1
-        # )
-
-        lattices = tuple(openfst.compose(lattice, seq_model) for seq_model in self.seq_models)
-        return lattices  # connection_scores
-
-    def predict(self, outputs):
-        """ Choose the best labels from an array of output activations.
-
-        Parameters
-        ----------
-        outputs : np.ndarray of float with shape (NUM_SAMPLES, NUM_CLASSES, ...)
-
-        Returns
-        -------
-        preds : np.ndarray of int with shape (NUM_SAMPLES, ...)
-        """
-
-        preds = tuple(np.array(libfst.viterbi(lattice)) for lattice in outputs),
-        # import pdb; pdb.set_trace()
-        edge_preds = np.stack(preds, axis=-1)
-        # preds = outputs.argmax(axis=1)
-        return edge_preds
-
-
-def makeTimeString(time_elapsed):
-    mins_elapsed = time_elapsed // 60
-    secs_elapsed = time_elapsed % 60
-    time_str = f'{mins_elapsed:.0f}m {secs_elapsed:.0f}s'
-    return time_str
-
-
-def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
-    state_acc = (pred_seq == true_seq).astype(float).mean()
-
-    metric_dict = {
-        'State Accuracy' + name_suffix: state_acc,
-        'State Edit Score' + name_suffix: LCTM.metrics.edit_score(pred_seq, true_seq) / 100,
-        'State Overlap Score' + name_suffix: LCTM.metrics.overlap_score(pred_seq, true_seq) / 100
-    }
-
-    append_to.update(metric_dict)
-    return append_to
-
-
 def main(
         out_dir=None, data_dir=None, scores_dir=None,
         event_attr_fn=None, connection_attr_fn=None, part_info_fn=None,
@@ -966,8 +1025,8 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    __test(fig_dir)
-    return
+    # __test(fig_dir)
+    # return
 
     seq_ids = utils.getUniqueIds(
         data_dir, prefix=prefix, suffix='labels.*',
@@ -1028,6 +1087,8 @@ def main(
         #     model.seq_model,
         #     vertical=True, width=50, height=50, portrait=True
         # )
+
+        import pdb; pdb.set_trace()
 
         for i in test_indices:
             seq_id = seq_ids[i]
