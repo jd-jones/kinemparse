@@ -21,7 +21,7 @@ from seqtools import fstutils_openfst as libfst
 logger = logging.getLogger(__name__)
 
 
-def draw_fst(fn, fst, extension='png', **draw_kwargs):
+def draw_fst(fn, fst, extension='pdf', **draw_kwargs):
     fst.draw(fn, **draw_kwargs)
     gv.render('dot', extension, fn)
     os.remove(fn)
@@ -29,8 +29,12 @@ def draw_fst(fn, fst, extension='png', **draw_kwargs):
 
 def transducer_from_connection_attrs(
         transition_weights, transition_vocab, num_states,
+        input_vocab, output_vocab,
+        input_seg_to_str, output_seg_to_str,
         init_weights=None, final_weights=None,
         input_table=None, output_table=None,
+        eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
+        seg_internal_str='I', seg_final_str='F',
         arc_type='standard'):
 
     fst = openfst.VectorFst(arc_type=arc_type)
@@ -47,35 +51,56 @@ def transducer_from_connection_attrs(
         final_weights = tuple(float(one) for __ in range(num_states))
 
     fst.set_start(fst.add_state())
+    final_state = fst.add_state()
+    fst.set_final(final_state, one)
 
     def makeState(i):
         state = fst.add_state()
 
         init_weight = openfst.Weight(fst.weight_type(), init_weights[i])
         if init_weight != zero:
-            connection_id = i + 1
-            action_id = libfst.EPSILON
-            arc = openfst.Arc(action_id, connection_id, init_weight, state)
+            input_id = fst.input_symbols().find(bos_str)
+            output_id = fst.output_symbols().find(eps_str)
+            arc = openfst.Arc(input_id, output_id, init_weight, state)
             fst.add_arc(fst.start(), arc)
 
         final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
         if final_weight != zero:
-            fst.set_final(state, final_weight)
+            output_str = output_seg_to_str[output_vocab[i], seg_final_str]
+            input_id = fst.input_symbols().find(eos_str)
+            output_id = fst.output_symbols().find(output_str)
+            arc = openfst.Arc(input_id, output_id, final_weight, final_state)
+            fst.add_arc(state, arc)
 
         return state
 
     states = tuple(makeState(i) for i in range(num_states))
 
     for i_action, row in enumerate(transition_weights):
+        state_has_action_segment_internal_loop = set([])
         for i_edge, tx_weight in enumerate(row):
             i_cur, i_next = transition_vocab[i_edge]
             cur_state = states[i_cur]
             next_state = states[i_next]
             weight = openfst.Weight(fst.weight_type(), tx_weight)
-            connection_id = i_next + 1
-            action_id = i_action + 1
+
+            # CASE 1: (a, I) : (c_cur, I), self-loop, weight one
+            input_str = input_seg_to_str[input_vocab[i_action], seg_internal_str]
+            output_str = output_seg_to_str[output_vocab[i_cur], seg_internal_str]
+            input_id = fst.input_symbols().find(input_str)
+            output_id = fst.output_symbols().find(output_str)
+            if weight != zero and not (i_cur in state_has_action_segment_internal_loop):
+                arc = openfst.Arc(input_id, output_id, one, cur_state)
+                fst.add_arc(cur_state, arc)
+                state_has_action_segment_internal_loop.add(i_cur)
+
+            # CASE 2: (a, F) : (c_cur, I), transition arc, weight tx_weight
+            input_str = input_seg_to_str[input_vocab[i_action], seg_final_str]
+            output_str = output_seg_to_str[output_vocab[i_cur], seg_final_str]
+            input_id = fst.input_symbols().find(input_str)
+            output_id = fst.output_symbols().find(output_str)
             if weight != zero:
-                arc = openfst.Arc(action_id, connection_id, weight, next_state)
+                arc = openfst.Arc(input_id, output_id, weight, next_state)
                 fst.add_arc(cur_state, arc)
 
     if not fst.verify():
@@ -272,6 +297,63 @@ def single_state_transducer(
             if weight != zero:
                 arc = openfst.Arc(input_id, output_id, weight, state)
                 fst.add_arc(state, arc)
+
+    if not fst.verify():
+        raise openfst.FstError("fst.verify() returned False")
+
+    return fst
+
+
+def single_seg_transducer(
+        weights, input_vocab, output_vocab,
+        input_seg_to_str, output_seg_to_str,
+        input_symbols=None, output_symbols=None,
+        eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
+        seg_internal_str='I', seg_final_str='F',
+        arc_type='standard'):
+
+    fst = openfst.VectorFst(arc_type=arc_type)
+    fst.set_input_symbols(input_symbols)
+    fst.set_output_symbols(output_symbols)
+
+    zero = openfst.Weight.zero(fst.weight_type())
+    one = openfst.Weight.one(fst.weight_type())
+
+    state = fst.add_state()
+    fst.set_start(state)
+    fst.set_final(state, one)
+
+    def make_state(i_input, i_output, weight):
+        io_state = fst.add_state()
+
+        # CASE 1: (in, I) : (out, I), weight one, transition into io state
+        input_str = input_seg_to_str[input_vocab[i_input], seg_internal_str]
+        output_str = output_seg_to_str[output_vocab[i_output], seg_internal_str]
+        arc = openfst.Arc(
+            fst.input_symbols().find(input_str),
+            fst.output_symbols().find(output_str),
+            one,
+            io_state
+        )
+        fst.add_arc(state, arc)
+        fst.add_arc(io_state, arc.copy())
+
+        # CASE 2: (in, F) : (out, F), weight tx_weight
+        input_str = input_seg_to_str[input_vocab[i_input], seg_final_str]
+        output_str = output_seg_to_str[output_vocab[i_output], seg_final_str]
+        arc = openfst.Arc(
+            fst.input_symbols().find(input_str),
+            fst.output_symbols().find(output_str),
+            weight,
+            state
+        )
+        fst.add_arc(io_state, arc)
+
+    for i_input, row in enumerate(weights):
+        for i_output, tx_weight in enumerate(row):
+            weight = openfst.Weight(fst.weight_type(), tx_weight)
+            if weight != zero:
+                make_state(i_input, i_output, weight)
 
     if not fst.verify():
         raise openfst.FstError("fst.verify() returned False")
@@ -584,6 +666,12 @@ class AttributeClassifier(object):
         vocab : list( string )
         """
 
+        self.eps_str = eps_str
+        self.bos_str = bos_str
+        self.eos_str = eos_str
+        self.seg_internal_str = seg_internal_str
+        self.seg_final_str = seg_final_str
+
         self.event_attrs = event_attrs
         self.connection_attrs = connection_attrs
 
@@ -591,10 +679,10 @@ class AttributeClassifier(object):
         self.part_connections = part_connections
 
         # VOCABULARIES: OBJECT VERSIONS
-        aux_symbols = (eps_str, bos_str, eos_str)
+        self.aux_symbols = (eps_str, bos_str, eos_str)
 
         def make_vocab(vocab):
-            return Vocabulary(vocab, aux_symbols=aux_symbols)
+            return Vocabulary(vocab, aux_symbols=self.aux_symbols)
 
         self.seg_vocab = make_vocab((seg_internal_str, seg_final_str))
         self.event_vocab = make_vocab(event_vocab)
@@ -619,17 +707,44 @@ class AttributeClassifier(object):
             ))
         )
         self.event_seg_vocab = make_vocab(
-            tuple((e, s) for e in self.event_vocab.as_raw() for s in self.seg_vocab.as_raw())
+            tuple(
+                (e, s)
+                for e in self.event_vocab.as_raw()
+                for s in self.seg_vocab.as_raw()
+            )
+        )
+        self.action_seg_vocab = make_vocab(
+            tuple(
+                (a, s)
+                for a in self.action_vocab.as_raw()
+                for s in self.seg_vocab.as_raw()
+            )
+        )
+        self.connection_seg_vocab = make_vocab(
+            tuple(
+                (c, s)
+                for c in self.connection_vocab.as_raw()
+                for s in self.seg_vocab.as_raw()
+            )
         )
 
-        def get_parts(class_seg_key):
-            c, s = self.event_seg_vocab.to_obj(class_seg_key)
-            c_str = self.event_vocab.to_str(c)
+        def get_parts(class_seg_key, class_vocab, class_seg_vocab):
+            c, s = class_seg_vocab.to_obj(class_seg_key)
+            c_str = class_vocab.to_str(c)
             s_str = self.seg_vocab.to_str(s)
             return c_str, s_str
+
         self.event_seg_to_str = {
-            get_parts(name): name
+            get_parts(name, self.event_vocab, self.event_seg_vocab): name
             for name in self.event_seg_vocab.as_str()
+        }
+        self.action_seg_to_str = {
+            get_parts(name, self.action_vocab, self.action_seg_vocab): name
+            for name in self.action_seg_vocab.as_str()
+        }
+        self.connection_seg_to_str = {
+            get_parts(name, self.connection_vocab, self.connection_seg_vocab): name
+            for name in self.connection_seg_vocab.as_str()
         }
 
         self.event_duration_fst = add_endpoints(
@@ -646,11 +761,12 @@ class AttributeClassifier(object):
 
         self.action_to_connection = transducer_from_connection_attrs(
             -np.log(self.connection_attrs.drop(['action'], axis=1).to_numpy()),
-            self.transition_vocab.as_raw(),
-            len(self.connection_vocab.as_raw()),
+            self.transition_vocab.as_raw(), len(self.connection_vocab.as_raw()),
+            self.action_vocab.as_str(), self.connection_vocab.as_str(),
+            self.action_seg_to_str, self.connection_seg_to_str,
             init_weights=-np.log(np.array([1, 0])),
-            input_table=self.action_vocab.symbol_table,
-            output_table=self.connection_vocab.symbol_table,
+            input_table=self.action_seg_vocab.symbol_table,
+            output_table=self.connection_seg_vocab.symbol_table,
             arc_type='standard'
         ).arcsort(sort_type='ilabel')
 
@@ -662,25 +778,40 @@ class AttributeClassifier(object):
             self.part_categories
         )
 
+        connection_seg_to_connection_scores = [
+            [0 if c == c_other else np.inf for c_other in self.connection_vocab.as_raw()]
+            for c, s in self.connection_seg_vocab.as_raw()
+        ]
+        self.connection_seg_to_connection = single_state_transducer(
+            np.array(connection_seg_to_connection_scores, dtype=float),
+            self.connection_seg_vocab.as_str(), self.connection_vocab.as_str(),
+            input_symbols=self.connection_seg_vocab.symbol_table,
+            output_symbols=self.connection_vocab.symbol_table,
+            arc_type='standard'
+        ).arcsort(sort_type='ilabel')
+
         self.event_to_action = []
         self.seq_models = []
         for i, edge_event_action_weights in enumerate(event_action_weights):
-            event_to_action = single_state_transducer(
-                -np.log(edge_event_action_weights),
-                self.event_vocab.as_str(), self.action_vocab.as_str(),
-                input_symbols=self.event_vocab.symbol_table,
-                output_symbols=self.action_vocab.symbol_table,
-                arc_type='standard'
+            event_to_action = add_endpoints(
+                single_seg_transducer(
+                    -np.log(edge_event_action_weights),
+                    self.event_vocab.as_str(), self.action_vocab.as_str(),
+                    self.event_seg_to_str, self.action_seg_to_str,
+                    input_symbols=self.event_seg_vocab.symbol_table,
+                    output_symbols=self.action_seg_vocab.symbol_table,
+                    arc_type='standard'
+                )
             ).arcsort(sort_type='ilabel')
 
-            # seq_model = libfst.easyCompose(
-            #     *[self.event_duration_fst, event_to_action, self.action_to_connection],
-            #     determinize=False,
-            #     minimize=False
-            # ).arcsort(sort_type='ilabel')
+            seq_model = libfst.easyCompose(
+                *[self.event_duration_fst, event_to_action, self.action_to_connection],
+                determinize=False,
+                minimize=False
+            ).arcsort(sort_type='ilabel')
 
             self.event_to_action.append(event_to_action)
-            # self.seq_models.append(seq_model)
+            self.seq_models.append(seq_model)
 
     @property
     def num_events(self):
@@ -715,50 +846,51 @@ class AttributeClassifier(object):
         """
 
         # Convert event scores to lattice
-        sample_symbols = libfst.makeSymbolTable(
-            tuple(f"{i}" for i in range(event_scores.shape[0]))
+        sample_vocab = Vocabulary(
+            tuple(f"{i}" for i in range(event_scores.shape[0])),
+            aux_symbols=self.aux_symbols
         )
-        lattice = libfst.fromArray(
-            -event_scores,
-            input_symbols=sample_symbols,
-            output_symbols=self.event_symbols,
-            arc_type='standard'
+
+        lattice = add_endpoints(
+            fromArray(
+                -event_scores,
+                sample_vocab.as_str(), self.event_vocab.as_str(),
+                input_symbols=sample_vocab.symbol_table,
+                output_symbols=self.event_vocab.symbol_table,
+                arc_type='standard'
+            ),
+            bos_str=self.bos_str, eos_str=self.eos_str
         ).arcsort(sort_type='ilabel')
 
         def getScores(seq_model):
             # Compose event scores with event --> connection map
-            init_time = time.time()
-            decode_lattice = openfst.compose(lattice, seq_model)
-            time_str = makeTimeString(time.time() - init_time)
-            logger.info(f"compose finished in {time_str}")
-
-            num_states = decode_lattice.num_states()
-            num_arcs = sum(
-                decode_lattice.num_arcs(i) for i in range(num_states)
-            )
-            logger.info(f"Decode lattice has {num_arcs} arcs; {num_states} states")
-
             # Compute edge posterior marginals
-            init_time = time.time()
-            grad_lattice = libfst.fstArcGradient(decode_lattice)
-            time_str = makeTimeString(time.time() - init_time)
-            logger.info(f"fstArcGradient finished in {time_str}")
+            decode_lattice = openfst.compose(lattice, seq_model)
+            arc_score_lattice = libfst.fstArcGradient(decode_lattice)
+            state_score_lattice = openfst.compose(
+                arc_score_lattice,
+                openfst.arcmap(self.connection_seg_to_connection, map_type='to_log')
+            )
 
-            init_time = time.time()
-            connection_scores, weight_type = toArray(grad_lattice)
-            time_str = makeTimeString(time.time() - init_time)
-            logger.info(f"toArray finished in {time_str}")
-
-            # import pdb; pdb.set_trace()
+            connection_scores, weight_type = toArray(
+                state_score_lattice,
+                sample_vocab.str_integerizer,
+                self.connection_vocab.str_integerizer
+                # self.connection_seg_vocab.str_integerizer
+            )
             return connection_scores
 
-        # connection_scores = np.stack(
-        #     tuple(getScores(seq_model) for seq_model in self.seq_models),
-        #     axis=-1
-        # )
+        connection_neglogprobs = np.stack(
+            tuple(getScores(seq_model) for seq_model in self.seq_models),
+            axis=-1
+        )
 
-        lattices = tuple(openfst.compose(lattice, seq_model) for seq_model in self.seq_models)
-        return lattices  # connection_scores
+        # lattices = tuple(
+        #     openfst.compose(lattice, seq_model)
+        #     for seq_model in self.seq_models
+        # )
+        # return lattices
+        return -connection_neglogprobs
 
     def predict(self, outputs):
         """ Choose the best labels from an array of output activations.
@@ -772,10 +904,9 @@ class AttributeClassifier(object):
         preds : np.ndarray of int with shape (NUM_SAMPLES, ...)
         """
 
-        preds = tuple(np.array(libfst.viterbi(lattice)) for lattice in outputs),
-        # import pdb; pdb.set_trace()
-        edge_preds = np.stack(preds, axis=-1)
-        # preds = outputs.argmax(axis=1)
+        # preds = tuple(np.array(libfst.viterbi(lattice)) for lattice in outputs),
+        # edge_preds = np.stack(preds, axis=-1)
+        edge_preds = outputs.argmax(axis=1)
         return edge_preds
 
 
@@ -1088,8 +1219,6 @@ def main(
         #     vertical=True, width=50, height=50, portrait=True
         # )
 
-        import pdb; pdb.set_trace()
-
         for i in test_indices:
             seq_id = seq_ids[i]
             logger.info(f"  Processing sequence {seq_id}...")
@@ -1103,14 +1232,6 @@ def main(
             logger.info(f"    event scores shape: {event_score_seq.shape}")
 
             connection_score_seq = model.forward(event_score_seq)
-            # logger.info(f"    connection scores shape: {connection_score_seq.shape}")
-            # draw_fst(
-            #     os.path.join(fig_dir, f'seq={seq_id}_connection-scores'),
-            #     connection_score_seq,
-            #     vertical=True, width=50, height=50, portrait=True
-            # )
-            # print(connection_score_seq)
-            # import pdb; pdb.set_trace()
             pred_connection_seq = model.predict(connection_score_seq)
 
             # metric_dict = eval_metrics(pred_seq, true_seq)
@@ -1123,11 +1244,12 @@ def main(
             # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
             if plot_io:
-                utils.plot_array(
-                    # connection_score_seq.T, (true_seq, pred_seq), ('true', 'pred'),
-                    event_score_seq.T, (pred_connection_seq,), ('pred',),
-                    fn=os.path.join(fig_dir, f"seq={seq_id:03d}.png")
-                )
+                for i in range(connection_score_seq.shape[-1]):
+                    utils.plot_array(
+                        connection_score_seq[..., -1].T,
+                        (pred_connection_seq[..., -1],), ('pred',),
+                        fn=os.path.join(fig_dir, f"seq={seq_id:03d}_edge={i:02d}.png")
+                    )
 
 
 if __name__ == "__main__":
