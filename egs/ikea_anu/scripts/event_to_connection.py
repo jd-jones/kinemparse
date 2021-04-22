@@ -1208,7 +1208,7 @@ def main(
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
 
-        cv_str = 'cvfold={cv_index}'
+        cv_str = f'cvfold={cv_index}'
 
         event_duration_weights = np.ones((event_attrs.shape[0], 10), dtype=float)
         model = AttributeClassifier(
