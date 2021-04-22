@@ -2,7 +2,6 @@ import os
 import logging
 import json
 import itertools
-import time
 
 import yaml
 import numpy as np
@@ -680,60 +679,60 @@ class AttributeClassifier(object):
 
         # VOCABULARIES: OBJECT VERSIONS
         self.aux_symbols = (eps_str, bos_str, eos_str)
-
-        def make_vocab(vocab):
-            return Vocabulary(vocab, aux_symbols=self.aux_symbols)
-
-        self.seg_vocab = make_vocab((seg_internal_str, seg_final_str))
-        self.event_vocab = make_vocab(event_vocab)
-        self.action_vocab = make_vocab(connection_attrs['action'].to_list())
-        self.part_vocab = make_vocab(part_vocab)
-        self.transition_vocab = make_vocab(
-            tuple(
-                tuple(int(x) for x in col_name.split('->'))
-                for col_name in connection_attrs.columns if col_name != 'action'
-            )
+        seg_vocab = (seg_internal_str, seg_final_str)
+        action_vocab = connection_attrs['action'].to_list()
+        transition_vocab = tuple(
+            tuple(int(x) for x in col_name.split('->'))
+            for col_name in connection_attrs.columns if col_name != 'action'
         )
-        self.edge_vocab = make_vocab(
-            tuple(frozenset([
+        edge_vocab = tuple(
+            frozenset([
                 frozenset([part_1, part_2])
                 for part_1, neighbors in self.part_connections.items()
                 for part_2 in neighbors
-            ]))
+            ])
         )
-        self.connection_vocab = make_vocab(
-            tuple(sorted(
-                frozenset().union(*[frozenset(t) for t in self.transition_vocab.as_raw()])
-            ))
+        connection_vocab = tuple(
+            sorted(frozenset().union(*[frozenset(t) for t in transition_vocab]))
         )
-        self.event_seg_vocab = make_vocab(
-            tuple(
-                (e, s)
-                for e in self.event_vocab.as_raw()
+
+        event_action_weights = events_to_actions(
+            self.event_attrs,
+            action_vocab, event_vocab, edge_vocab,
+            self.part_categories
+        )
+
+        # FIXME: ONLY USED TO DEBUG
+        def make_dummy(vocab, prefix):
+            return tuple(f"{prefix}{i}" for i, _ in enumerate(vocab))
+        event_vocab = make_dummy(event_vocab, 'e')
+        action_vocab = make_dummy(action_vocab, 'a')
+
+        def make_vocab(vocab):
+            return Vocabulary(vocab, aux_symbols=self.aux_symbols)
+        self.seg_vocab = make_vocab(seg_vocab)
+        self.event_vocab = make_vocab(event_vocab)
+        self.action_vocab = make_vocab(action_vocab)
+        self.part_vocab = make_vocab(part_vocab)
+        self.transition_vocab = make_vocab(transition_vocab)
+        self.edge_vocab = make_vocab(edge_vocab)
+        self.connection_vocab = make_vocab(connection_vocab)
+
+        def convert_vocab_to_seg(vocab):
+            return tuple(
+                (x, s)
+                for x in vocab.as_raw()
                 for s in self.seg_vocab.as_raw()
             )
-        )
-        self.action_seg_vocab = make_vocab(
-            tuple(
-                (a, s)
-                for a in self.action_vocab.as_raw()
-                for s in self.seg_vocab.as_raw()
-            )
-        )
-        self.connection_seg_vocab = make_vocab(
-            tuple(
-                (c, s)
-                for c in self.connection_vocab.as_raw()
-                for s in self.seg_vocab.as_raw()
-            )
-        )
+        self.event_seg_vocab = make_vocab(convert_vocab_to_seg(self.event_vocab))
+        self.action_seg_vocab = make_vocab(convert_vocab_to_seg(self.action_vocab))
+        self.connection_seg_vocab = make_vocab(convert_vocab_to_seg(self.connection_vocab))
 
         def get_parts(class_seg_key, class_vocab, class_seg_vocab):
             c, s = class_seg_vocab.to_obj(class_seg_key)
             c_str = class_vocab.to_str(c)
             s_str = self.seg_vocab.to_str(s)
             return c_str, s_str
-
         self.event_seg_to_str = {
             get_parts(name, self.event_vocab, self.event_seg_vocab): name
             for name in self.event_seg_vocab.as_str()
@@ -770,14 +769,6 @@ class AttributeClassifier(object):
             arc_type='standard'
         ).arcsort(sort_type='ilabel')
 
-        # event index --> all data
-        event_action_weights = events_to_actions(
-            self.event_attrs,
-            self.action_vocab.as_raw(), self.event_vocab.as_raw(),
-            self.edge_vocab.as_raw(),
-            self.part_categories
-        )
-
         connection_seg_to_connection_scores = [
             [0 if c == c_other else np.inf for c_other in self.connection_vocab.as_raw()]
             for c, s in self.connection_seg_vocab.as_raw()
@@ -812,6 +803,36 @@ class AttributeClassifier(object):
 
             self.event_to_action.append(event_to_action)
             self.seq_models.append(seq_model)
+
+    def viz_params(self, fig_dir):
+        if not os.path.exists(fig_dir):
+            os.makedirs(fig_dir)
+
+        draw_fst(
+            os.path.join(fig_dir, 'event-duration'),
+            self.event_duration_fst,
+            vertical=True, width=50, height=50, portrait=True
+        )
+
+        for i, fst in enumerate(self.event_to_action):
+            draw_fst(
+                os.path.join(fig_dir, f'event-to-action_edge={i}'),
+                fst,
+                vertical=True, width=50, height=50, portrait=True
+            )
+
+        draw_fst(
+            os.path.join(fig_dir, 'action-to-connection'),
+            self.action_to_connection,
+            vertical=True, width=50, height=50, portrait=True
+        )
+
+        for i, fst in enumerate(self.seq_models):
+            draw_fst(
+                os.path.join(fig_dir, f'seq-model_edge={i}'),
+                fst,
+                vertical=True, width=50, height=50, portrait=True
+            )
 
     @property
     def num_events(self):
@@ -1187,6 +1208,8 @@ def main(
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
 
+        cv_str = 'cvfold={cv_index}'
+
         event_duration_weights = np.ones((event_attrs.shape[0], 10), dtype=float)
         model = AttributeClassifier(
             event_attrs, connection_attrs, event_vocab,
@@ -1194,30 +1217,7 @@ def main(
             event_duration_weights=event_duration_weights
         )
 
-        draw_fst(
-            os.path.join(fig_dir, f'cvfold={cv_index}_event-duration'),
-            model.event_duration_fst,
-            vertical=True, width=50, height=50, portrait=True
-        )
-
-        for i, fst in enumerate(model.event_to_action):
-            draw_fst(
-                os.path.join(fig_dir, f'cvfold={cv_index}_event-to-action_edge={i}'),
-                fst,
-                vertical=True, width=50, height=50, portrait=True
-            )
-
-        draw_fst(
-            os.path.join(fig_dir, f'cvfold={cv_index}_action-to-connection'),
-            model.action_to_connection,
-            vertical=True, width=50, height=50, portrait=True
-        )
-
-        # draw_fst(
-        #     os.path.join(fig_dir, f'cvfold={cv_index}_seq-model'),
-        #     model.seq_model,
-        #     vertical=True, width=50, height=50, portrait=True
-        # )
+        model.viz_params(os.path.join(fig_dir, f'{cv_str}_model-params'))
 
         for i in test_indices:
             seq_id = seq_ids[i]
@@ -1244,10 +1244,12 @@ def main(
             # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
             if plot_io:
+                pred_event_seq = event_score_seq.argmax(axis=1)
                 for i in range(connection_score_seq.shape[-1]):
                     utils.plot_array(
-                        connection_score_seq[..., -1].T,
-                        (pred_connection_seq[..., -1],), ('pred',),
+                        connection_score_seq[..., i].T,
+                        (pred_connection_seq[..., i], pred_event_seq),
+                        ('pred_connection', 'pred_event'),
                         fn=os.path.join(fig_dir, f"seq={seq_id:03d}_edge={i:02d}.png")
                     )
 
