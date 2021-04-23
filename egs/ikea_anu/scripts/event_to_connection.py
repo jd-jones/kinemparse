@@ -781,6 +781,19 @@ class AttributeClassifier(object):
             arc_type='standard'
         ).arcsort(sort_type='ilabel')
 
+        action_seg_to_action_scores = [
+            [0 if c == c_other else np.inf for c_other in self.action_vocab.as_raw()]
+            for c, s in self.action_seg_vocab.as_raw()
+        ]
+        self.action_seg_to_action = single_state_transducer(
+            np.array(action_seg_to_action_scores, dtype=float),
+            self.action_seg_vocab.as_str(), self.action_vocab.as_str(),
+            input_symbols=self.action_seg_vocab.symbol_table,
+            output_symbols=self.action_vocab.symbol_table,
+            arc_type='standard'
+        ).arcsort(sort_type='ilabel')
+        self.action_seg_to_action = add_endpoints(self.action_seg_to_action)
+
         self.event_to_action = []
         self.seq_models = []
         for i, edge_event_action_weights in enumerate(event_action_weights):
@@ -796,7 +809,8 @@ class AttributeClassifier(object):
             ).arcsort(sort_type='ilabel')
 
             seq_model = libfst.easyCompose(
-                *[self.event_duration_fst, event_to_action, self.action_to_connection],
+                # *[self.event_duration_fst, event_to_action, self.action_to_connection],
+                *[self.event_duration_fst, event_to_action],
                 determinize=False,
                 minimize=False
             ).arcsort(sort_type='ilabel')
@@ -890,14 +904,15 @@ class AttributeClassifier(object):
             arc_score_lattice = libfst.fstArcGradient(decode_lattice)
             state_score_lattice = openfst.compose(
                 arc_score_lattice,
-                openfst.arcmap(self.connection_seg_to_connection, map_type='to_log')
+                # openfst.arcmap(self.connection_seg_to_connection, map_type='to_log')
+                openfst.arcmap(self.action_seg_to_action, map_type='to_log')
             )
 
             connection_scores, weight_type = toArray(
                 state_score_lattice,
                 sample_vocab.str_integerizer,
-                self.connection_vocab.str_integerizer
-                # self.connection_seg_vocab.str_integerizer
+                # self.connection_vocab.str_integerizer
+                self.action_vocab.str_integerizer
             )
             return connection_scores
 
@@ -1177,9 +1192,6 @@ def main(
     if not os.path.exists(out_data_dir):
         os.makedirs(out_data_dir)
 
-    # __test(fig_dir)
-    # return
-
     seq_ids = utils.getUniqueIds(
         data_dir, prefix=prefix, suffix='labels.*',
         to_array=True
@@ -1208,7 +1220,7 @@ def main(
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
 
-        cv_str = f'cvfold={cv_index}'
+        # cv_str = f'cvfold={cv_index}'
 
         event_duration_weights = np.ones((event_attrs.shape[0], 10), dtype=float)
         model = AttributeClassifier(
@@ -1217,7 +1229,7 @@ def main(
             event_duration_weights=event_duration_weights
         )
 
-        model.viz_params(os.path.join(fig_dir, f'{cv_str}_model-params'))
+        # model.viz_params(os.path.join(fig_dir, f'{cv_str}_model-params'))
 
         for i in test_indices:
             seq_id = seq_ids[i]
@@ -1239,7 +1251,7 @@ def main(
             #     logger.info(f"    {name}: {value * 100:.2f}%")
 
             # utils.saveVariable(connection_score_seq, f'{trial_prefix}_score-seq', out_data_dir)
-            utils.saveVariable(pred_connection_seq, f'{trial_prefix}_pred-label-seq', out_data_dir)
+            # utils.saveVariable(pred_connection_seq, f'{trial_prefix}_pred-label-seq', out_data_dir)
             # utils.saveVariable(true_event_seq, f'{seq_id_str}_true-label-seq', out_data_dir)
             # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
