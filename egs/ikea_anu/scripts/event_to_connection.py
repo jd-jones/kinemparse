@@ -794,9 +794,23 @@ class AttributeClassifier(object):
         ).arcsort(sort_type='ilabel')
         self.action_seg_to_action = add_endpoints(self.action_seg_to_action)
 
+        event_seg_to_event_scores = [
+            [0 if c == c_other else np.inf for c_other in self.event_vocab.as_raw()]
+            for c, s in self.event_seg_vocab.as_raw()
+        ]
+        self.event_seg_to_event = single_state_transducer(
+            np.array(event_seg_to_event_scores, dtype=float),
+            self.event_seg_vocab.as_str(), self.event_vocab.as_str(),
+            input_symbols=self.event_seg_vocab.symbol_table,
+            output_symbols=self.event_vocab.symbol_table,
+            arc_type='standard'
+        ).arcsort(sort_type='ilabel')
+        self.event_seg_to_event = add_endpoints(self.event_seg_to_event)
+
         self.event_to_action = []
         self.seq_models = []
-        for i, edge_event_action_weights in enumerate(event_action_weights):
+        # for i, edge_event_action_weights in enumerate(event_action_weights):
+        for i, edge_event_action_weights in enumerate(event_action_weights[:1]):
             event_to_action = add_endpoints(
                 single_seg_transducer(
                     -np.log(edge_event_action_weights),
@@ -810,7 +824,8 @@ class AttributeClassifier(object):
 
             seq_model = libfst.easyCompose(
                 # *[self.event_duration_fst, event_to_action, self.action_to_connection],
-                *[self.event_duration_fst, event_to_action],
+                # *[self.event_duration_fst, event_to_action],
+                *[self.event_duration_fst],
                 determinize=False,
                 minimize=False
             ).arcsort(sort_type='ilabel')
@@ -905,14 +920,16 @@ class AttributeClassifier(object):
             state_score_lattice = openfst.compose(
                 arc_score_lattice,
                 # openfst.arcmap(self.connection_seg_to_connection, map_type='to_log')
-                openfst.arcmap(self.action_seg_to_action, map_type='to_log')
+                # openfst.arcmap(self.action_seg_to_action, map_type='to_log')
+                openfst.arcmap(self.event_seg_to_event, map_type='to_log')
             )
 
             connection_scores, weight_type = toArray(
                 state_score_lattice,
                 sample_vocab.str_integerizer,
                 # self.connection_vocab.str_integerizer
-                self.action_vocab.str_integerizer
+                # self.action_vocab.str_integerizer
+                self.event_vocab.str_integerizer
             )
             return connection_scores
 
