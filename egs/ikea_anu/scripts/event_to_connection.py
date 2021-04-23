@@ -705,8 +705,8 @@ class AttributeClassifier(object):
         # FIXME: ONLY USED TO DEBUG
         def make_dummy(vocab, prefix):
             return tuple(f"{prefix}{i}" for i, _ in enumerate(vocab))
-        event_vocab = make_dummy(event_vocab, 'e')
-        action_vocab = make_dummy(action_vocab, 'a')
+        # event_vocab = make_dummy(event_vocab, 'e')
+        # action_vocab = make_dummy(action_vocab, 'a')
 
         def make_vocab(vocab):
             return Vocabulary(vocab, aux_symbols=self.aux_symbols)
@@ -1179,6 +1179,21 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
     )
 
 
+def write_labels(fn, label_seq, vocab):
+    seg_label_idxs, seg_durs = utils.computeSegments(label_seq)
+
+    seg_durs = np.array(seg_durs)
+    seg_ends = np.cumsum(seg_durs) - 1
+    seg_starts = np.array([0] + (seg_ends + 1)[:-1].tolist())
+    seg_labels = tuple(vocab[i] for i in seg_label_idxs)
+    d = {
+        'start': seg_starts,
+        'end': seg_ends,
+        'label': seg_labels
+    }
+    pd.DataFrame(d).to_csv(fn, index=False)
+
+
 def main(
         out_dir=None, data_dir=None, scores_dir=None,
         event_attr_fn=None, connection_attr_fn=None, part_info_fn=None,
@@ -1204,6 +1219,10 @@ def main(
     fig_dir = os.path.join(out_dir, 'figures')
     if not os.path.exists(fig_dir):
         os.makedirs(fig_dir)
+
+    misc_dir = os.path.join(out_dir, 'misc')
+    if not os.path.exists(misc_dir):
+        os.makedirs(misc_dir)
 
     out_data_dir = os.path.join(out_dir, 'data')
     if not os.path.exists(out_data_dir):
@@ -1262,6 +1281,7 @@ def main(
 
             connection_score_seq = model.forward(event_score_seq)
             pred_connection_seq = model.predict(connection_score_seq)
+            pred_event_seq = event_score_seq.argmax(axis=1)
 
             # metric_dict = eval_metrics(pred_seq, true_seq)
             # for name, value in metric_dict.items():
@@ -1272,8 +1292,19 @@ def main(
             # utils.saveVariable(true_event_seq, f'{seq_id_str}_true-label-seq', out_data_dir)
             # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
+            write_labels(
+                os.path.join(misc_dir, f"{trial_prefix}_pred-seq-smoothed.txt"),
+                pred_connection_seq.squeeze(),
+                model.event_vocab.as_raw()
+            )
+
+            write_labels(
+                os.path.join(misc_dir, f"{trial_prefix}_pred-seq.txt"),
+                pred_event_seq,
+                model.event_vocab.as_raw()
+            )
+
             if plot_io:
-                pred_event_seq = event_score_seq.argmax(axis=1)
                 for i in range(connection_score_seq.shape[-1]):
                     utils.plot_array(
                         connection_score_seq[..., i].T,
