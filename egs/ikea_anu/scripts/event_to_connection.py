@@ -7,7 +7,7 @@ import yaml
 import numpy as np
 import scipy
 import pandas as pd
-# from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt
 import graphviz as gv
 
 import LCTM.metrics
@@ -748,7 +748,7 @@ class AttributeClassifier(object):
 
         self.event_duration_fst = add_endpoints(
             make_duration_fst(
-                -np.log(event_duration_weights),
+                event_duration_weights,
                 self.event_vocab.as_str(), self.event_seg_to_str,
                 seg_internal_str=seg_internal_str, seg_final_str=seg_final_str,
                 input_symbols=self.event_vocab.symbol_table,
@@ -961,6 +961,42 @@ class AttributeClassifier(object):
         # edge_preds = np.stack(preds, axis=-1)
         edge_preds = outputs.argmax(axis=1)
         return edge_preds
+
+
+def count_priors(label_seqs, num_classes, stride=None, approx_upto=None):
+    dur_counts = {}
+    class_counts = {}
+    for label_seq in label_seqs:
+        for label, dur in zip(*utils.computeSegments(label_seq[::stride])):
+            class_counts[label] = class_counts.get(label, 0) + 1
+            dur_counts[label, dur] = dur_counts.get((label, dur), 0) + 1
+
+    class_priors = np.zeros((num_classes))
+    for label, count in class_counts.items():
+        class_priors[label] = count
+    class_priors /= class_priors.sum()
+
+    max_dur = max(dur for label, dur in dur_counts.keys())
+    dur_priors = np.zeros((num_classes, max_dur))
+    for (label, dur), count in dur_counts.items():
+        assert dur
+        dur_priors[label, dur - 1] = count
+    dur_priors /= dur_priors.sum(axis=1, keepdims=True)
+
+    if approx_upto is not None:
+        cdf = dur_priors.cumsum(axis=1)
+        approx_bounds = (cdf >= approx_upto).argmax(axis=1)
+        dur_priors = dur_priors[:, :approx_bounds.max()]
+
+    return class_priors, dur_priors
+
+
+def viz_priors(fn, class_priors, dur_priors):
+    fig, axes = plt.subplots(2)
+    axes[0].matshow(dur_priors)
+    axes[1].stem(class_priors)
+    plt.tight_layout()
+    plt.savefig(fn)
 
 
 def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
@@ -1233,9 +1269,13 @@ def main(
         to_array=True
     )
 
-    logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
+    dataset = utils.FeaturelessCvDataset(
+        seq_ids, data_dir,
+        prefix=prefix,
+        label_fn_format='labels'
+    )
 
-    event_vocab = utils.loadVariable('vocab', data_dir)
+    logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
 
     # Define cross-validation folds
     cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
@@ -1256,31 +1296,37 @@ def main(
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
 
-        # cv_str = f'cvfold={cv_index}'
+        train_data, val_data, test_data = dataset.getFold(cv_fold)
 
-        event_duration_weights = np.ones((event_attrs.shape[0], 10), dtype=float)
+        cv_str = f'cvfold={cv_index}'
+        class_priors, dur_priors = count_priors(
+            train_data[0], len(dataset.vocab),
+            stride=10, approx_upto=0.95
+        )
         model = AttributeClassifier(
-            event_attrs, connection_attrs, event_vocab,
+            event_attrs, connection_attrs, dataset.vocab,
             part_vocab, part_categories, part_connections,
-            event_duration_weights=event_duration_weights
+            event_duration_weights=-np.log(dur_priors)
         )
 
         # model.viz_params(os.path.join(fig_dir, f'{cv_str}_model-params'))
+        viz_priors(
+            os.path.join(fig_dir, f'{cv_str}_priors'),
+            class_priors, dur_priors
+        )
 
-        for i in test_indices:
-            seq_id = seq_ids[i]
+        for _, seq_id in zip(*test_data):
             logger.info(f"  Processing sequence {seq_id}...")
 
             trial_prefix = f"{prefix}{seq_id}"
             event_score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
+            true_event_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
+
             # FIXME: the serialized variables are probs, not log-probs
             event_score_seq = np.log(event_score_seq)
-            # true_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
 
-            logger.info(f"    event scores shape: {event_score_seq.shape}")
-
-            connection_score_seq = model.forward(event_score_seq)
-            pred_connection_seq = model.predict(connection_score_seq)
+            # connection_score_seq = model.forward(event_score_seq)
+            # pred_connection_seq = model.predict(connection_score_seq)
             pred_event_seq = event_score_seq.argmax(axis=1)
 
             # metric_dict = eval_metrics(pred_seq, true_seq)
@@ -1292,11 +1338,11 @@ def main(
             # utils.saveVariable(true_event_seq, f'{seq_id_str}_true-label-seq', out_data_dir)
             # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
-            write_labels(
-                os.path.join(misc_dir, f"{trial_prefix}_pred-seq-smoothed.txt"),
-                pred_connection_seq.squeeze(),
-                model.event_vocab.as_raw()
-            )
+            # write_labels(
+            #     os.path.join(misc_dir, f"{trial_prefix}_pred-seq-smoothed.txt"),
+            #     pred_connection_seq.squeeze(),
+            #     model.event_vocab.as_raw()
+            # )
 
             write_labels(
                 os.path.join(misc_dir, f"{trial_prefix}_pred-seq.txt"),
@@ -1305,13 +1351,18 @@ def main(
             )
 
             if plot_io:
-                for i in range(connection_score_seq.shape[-1]):
-                    utils.plot_array(
-                        connection_score_seq[..., i].T,
-                        (pred_connection_seq[..., i], pred_event_seq),
-                        ('pred_connection', 'pred_event'),
-                        fn=os.path.join(fig_dir, f"seq={seq_id:03d}_edge={i:02d}.png")
-                    )
+                utils.plot_array(
+                    event_score_seq.T,
+                    (pred_event_seq, true_event_seq),
+                    ('pred', 'true'),
+                    fn=os.path.join(fig_dir, f"seq={seq_id:03d}.png")
+                )
+                # for i in range(connection_score_seq.shape[-1]):
+                #     utils.plot_array(
+                #         connection_score_seq[..., i].T,
+                #         (pred_connection_seq[..., i], pred_event_seq),
+                #         ('pred_connection', 'pred_event'),
+                #     )
 
 
 if __name__ == "__main__":
