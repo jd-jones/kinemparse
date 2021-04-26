@@ -13,7 +13,7 @@ import graphviz as gv
 import LCTM.metrics
 import pywrapfst as openfst
 
-from mathtools import utils
+from mathtools import utils, metrics
 from seqtools import fstutils_openfst as libfst
 
 
@@ -190,8 +190,8 @@ def durationFst_BACKUP(
 
 
 def durationFst(
-        label_str, seg_internal_str, seg_final_str, max_dur,
-        final_weights=None, input_symbols=None, output_symbols=None,
+        label_str, seg_internal_str, seg_final_str, final_weights,
+        input_symbols=None, output_symbols=None,
         arc_type='standard'):
     """ Construct a left-to-right WFST from an input sequence.
 
@@ -208,15 +208,14 @@ def durationFst(
     output_label_int = output_symbols.find(seg_internal_str)
     output_label_ext = output_symbols.find(seg_final_str)
 
-    if max_dur < 1:
-        raise AssertionError(f"max_dur = {max_dur}, but should be >= 1)")
-
     fst = openfst.VectorFst(arc_type=arc_type)
     one = openfst.Weight.one(fst.weight_type())
     zero = openfst.Weight.zero(fst.weight_type())
 
-    if final_weights is None:
-        final_weights = [one for __ in range(max_dur)]
+    max_dur = np.nonzero(final_weights != float(zero))[0].max()
+    logger.info(f"Label {label_str}: max_dur={max_dur}")
+    if max_dur < 1:
+        raise AssertionError(f"max_dur = {max_dur}, but should be >= 1)")
 
     fst.set_input_symbols(input_symbols)
     fst.set_output_symbols(output_symbols)
@@ -257,7 +256,7 @@ def make_duration_fst(
             class_vocab[i],
             class_seg_to_str[class_vocab[i], seg_internal_str],
             class_seg_to_str[class_vocab[i], seg_final_str],
-            num_states, final_weights=final_weights[i],
+            final_weights[i],
             arc_type=arc_type,
             input_symbols=input_symbols,
             output_symbols=output_symbols
@@ -656,7 +655,8 @@ class AttributeClassifier(object):
             part_vocab, part_categories, part_connections,
             event_duration_weights=None,
             eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
-            seg_internal_str='I', seg_final_str='F'):
+            seg_internal_str='I', seg_final_str='F',
+            decode_type='marginal'):
         """
         Parameters
         ----------
@@ -664,6 +664,8 @@ class AttributeClassifier(object):
         connection_attrs : pd.DataFrame
         vocab : list( string )
         """
+
+        self.decode_type = decode_type
 
         self.eps_str = eps_str
         self.bos_str = bos_str
@@ -703,8 +705,8 @@ class AttributeClassifier(object):
         )
 
         # FIXME: ONLY USED TO DEBUG
-        def make_dummy(vocab, prefix):
-            return tuple(f"{prefix}{i}" for i, _ in enumerate(vocab))
+        # def make_dummy(vocab, prefix):
+        #     return tuple(f"{prefix}{i}" for i, _ in enumerate(vocab))
         # event_vocab = make_dummy(event_vocab, 'e')
         # action_vocab = make_dummy(action_vocab, 'a')
 
@@ -916,21 +918,32 @@ class AttributeClassifier(object):
             # Compose event scores with event --> connection map
             # Compute edge posterior marginals
             decode_lattice = openfst.compose(lattice, seq_model)
-            arc_score_lattice = libfst.fstArcGradient(decode_lattice)
-            state_score_lattice = openfst.compose(
-                arc_score_lattice,
-                # openfst.arcmap(self.connection_seg_to_connection, map_type='to_log')
-                # openfst.arcmap(self.action_seg_to_action, map_type='to_log')
-                openfst.arcmap(self.event_seg_to_event, map_type='to_log')
-            )
+
+            # self.connection_seg_to_connection
+            # self.action_seg_to_action
+            output_arcs_to_states = self.event_seg_to_event.copy()
+
+            # self.connection_vocab
+            # self.action_vocab
+            output_state_vocab = self.event_vocab
+
+            if self.decode_type == 'marginal':
+                arc_score_lattice = libfst.fstArcGradient(decode_lattice)
+                output_arcs_to_states = openfst.arcmap(output_arcs_to_states, map_type='to_log')
+            elif self.decode_type == 'joint':
+                arc_score_lattice = libfst.viterbi(decode_lattice)
+            else:
+                err_str = f"Unrecognized value: self.decode_type={self.decode_type}"
+                raise AssertionError(err_str)
+
+            state_score_lattice = openfst.compose(arc_score_lattice, output_arcs_to_states)
 
             connection_scores, weight_type = toArray(
                 state_score_lattice,
                 sample_vocab.str_integerizer,
-                # self.connection_vocab.str_integerizer
-                # self.action_vocab.str_integerizer
-                self.event_vocab.str_integerizer
+                output_state_vocab.str_integerizer
             )
+
             return connection_scores
 
         connection_neglogprobs = np.stack(
@@ -938,11 +951,6 @@ class AttributeClassifier(object):
             axis=-1
         )
 
-        # lattices = tuple(
-        #     openfst.compose(lattice, seq_model)
-        #     for seq_model in self.seq_models
-        # )
-        # return lattices
         return -connection_neglogprobs
 
     def predict(self, outputs):
@@ -957,10 +965,7 @@ class AttributeClassifier(object):
         preds : np.ndarray of int with shape (NUM_SAMPLES, ...)
         """
 
-        # preds = tuple(np.array(libfst.viterbi(lattice)) for lattice in outputs),
-        # edge_preds = np.stack(preds, axis=-1)
-        edge_preds = outputs.argmax(axis=1)
-        return edge_preds
+        return outputs.argmax(axis=1)
 
 
 def count_priors(label_seqs, num_classes, stride=None, approx_upto=None):
@@ -997,6 +1002,7 @@ def viz_priors(fn, class_priors, dur_priors):
     axes[1].stem(class_priors)
     plt.tight_layout()
     plt.savefig(fn)
+    plt.close()
 
 
 def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
@@ -1306,7 +1312,8 @@ def main(
         model = AttributeClassifier(
             event_attrs, connection_attrs, dataset.vocab,
             part_vocab, part_categories, part_connections,
-            event_duration_weights=-np.log(dur_priors)
+            event_duration_weights=-np.log(dur_priors),
+            **model_params
         )
 
         # model.viz_params(os.path.join(fig_dir, f'{cv_str}_model-params'))
@@ -1314,6 +1321,8 @@ def main(
             os.path.join(fig_dir, f'{cv_str}_priors'),
             class_priors, dur_priors
         )
+
+        score_confusions = metrics.scoreConfusionMatrix([], [], len(dataset.vocab))
 
         for _, seq_id in zip(*test_data):
             logger.info(f"  Processing sequence {seq_id}...")
@@ -1325,36 +1334,53 @@ def main(
             # FIXME: the serialized variables are probs, not log-probs
             event_score_seq = np.log(event_score_seq)
 
-            # connection_score_seq = model.forward(event_score_seq)
-            # pred_connection_seq = model.predict(connection_score_seq)
-            pred_event_seq = event_score_seq.argmax(axis=1)
+            decode_score_seq = model.forward(event_score_seq)
+            pred_event_seq = model.predict(decode_score_seq).squeeze()
+            raw_pred_event_seq = event_score_seq.argmax(axis=1)
 
-            # metric_dict = eval_metrics(pred_seq, true_seq)
-            # for name, value in metric_dict.items():
-            #     logger.info(f"    {name}: {value * 100:.2f}%")
+            metric_dict = eval_metrics(raw_pred_event_seq, true_event_seq)
+            for name, value in metric_dict.items():
+                logger.info(f"    [BEFORE] {name}: {value * 100:.2f}%")
+
+            metric_dict = eval_metrics(pred_event_seq, true_event_seq)
+            for name, value in metric_dict.items():
+                logger.info(f"    [AFTER]  {name}: {value * 100:.2f}%")
 
             # utils.saveVariable(connection_score_seq, f'{trial_prefix}_score-seq', out_data_dir)
-            # utils.saveVariable(pred_connection_seq, f'{trial_prefix}_pred-label-seq', out_data_dir)
+            # utils.saveVariable(
+            #     pred_connection_seq,
+            #     f'{trial_prefix}_pred-label-seq', out_data_dir
+            # )
             # utils.saveVariable(true_event_seq, f'{seq_id_str}_true-label-seq', out_data_dir)
             # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
-            # write_labels(
-            #     os.path.join(misc_dir, f"{trial_prefix}_pred-seq-smoothed.txt"),
-            #     pred_connection_seq.squeeze(),
-            #     model.event_vocab.as_raw()
-            # )
+            write_labels(
+                os.path.join(misc_dir, f"{trial_prefix}_pred-seq-decode.txt"),
+                pred_event_seq,
+                model.event_vocab.as_raw()
+            )
 
             write_labels(
                 os.path.join(misc_dir, f"{trial_prefix}_pred-seq.txt"),
-                pred_event_seq,
+                raw_pred_event_seq,
                 model.event_vocab.as_raw()
+            )
+
+            seq_score_confusions = metrics.scoreConfusionMatrix(
+                [event_score_seq],
+                [true_event_seq],
+                len(dataset.vocab)
+            )
+            score_confusions = scipy.special.logsumexp(
+                np.stack((score_confusions, seq_score_confusions), axis=0),
+                axis=0
             )
 
             if plot_io:
                 utils.plot_array(
                     event_score_seq.T,
-                    (pred_event_seq, true_event_seq),
-                    ('pred', 'true'),
+                    (raw_pred_event_seq, pred_event_seq, true_event_seq),
+                    ('raw', 'decode', 'true'),
                     fn=os.path.join(fig_dir, f"seq={seq_id:03d}.png")
                 )
                 # for i in range(connection_score_seq.shape[-1]):
@@ -1363,6 +1389,11 @@ def main(
                 #         (pred_connection_seq[..., i], pred_event_seq),
                 #         ('pred_connection', 'pred_event'),
                 #     )
+
+        metrics.plotConfusions(
+            os.path.join(fig_dir, 'score-confusions.png'),
+            score_confusions, dataset.vocab, size=24
+        )
 
 
 if __name__ == "__main__":

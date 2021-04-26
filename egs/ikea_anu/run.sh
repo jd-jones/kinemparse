@@ -188,7 +188,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
         --only_fold 1 \
-        --prefix "seq="
+        --prefix "seq=" \
+        --model_params "{'decode_type': 'joint'}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
