@@ -56,7 +56,7 @@ phase_dir="${output_dir}/${label_type}s-from-video"
 viz_dir="${phase_dir}/visualize"
 cv_folds_dir="${phase_dir}/cv-folds"
 scores_dir="${phase_dir}/scores"
-connections_dir="${phase_dir}/connection-scores"
+connections_dir="${phase_dir}/event-to-connection"
 
 slowfast_scores_dir="${phase_dir}/run-slowfast"
 scores_eval_dir="${scores_dir}/eval"
@@ -189,7 +189,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --plot_io "True" \
         --only_fold 1 \
         --prefix "seq=" \
-        --model_params "{'decode_type': 'joint'}"
+        --model_params "{'decode_type': 'joint', 'output_stage': 3, 'return_label': 'input'}" \
+        --stop_after 5
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
