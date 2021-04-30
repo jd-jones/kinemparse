@@ -189,7 +189,13 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --plot_io "True" \
         --only_fold 1 \
         --prefix "seq=" \
-        --model_params "{'decode_type': 'joint', 'output_stage': 3, 'return_label': 'input'}" \
+        --model_params "{ \
+            'decode_type': 'joint', \
+            'output_stage': 3, \
+            'return_label': 'input', \
+            'reduce_order': 'post', \
+            'background_action': 'NA' \
+        }" \
         --stop_after 5
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
