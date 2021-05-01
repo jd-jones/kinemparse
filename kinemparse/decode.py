@@ -71,15 +71,7 @@ def find_matching_keys(query, parts_to_str):
 
 # -=( FST MODELS FOR ACTION -> ASSEMBLY PARSING )==----------------------------
 class AttributeClassifier(object):
-    def __init__(
-            self, event_attrs, connection_attrs, assembly_attrs,
-            event_vocab, joint_vocab,
-            part_vocab, part_categories, part_connections,
-            event_duration_scores=None,
-            eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
-            seg_internal_str='I', seg_final_str='F',
-            arc_type='log', decode_type='marginal', return_label='output',
-            reduce_order='pre', background_action='', output_stage=3):
+    def __init__(self, vocabs, scores, params):
         """
         Parameters
         ----------
@@ -88,54 +80,37 @@ class AttributeClassifier(object):
         vocab : list( string )
         """
 
-        self.reduce_order = reduce_order
-        self.return_label = return_label
-        self.arc_type = arc_type
-        self.output_stage = output_stage
-        self.decode_type = decode_type
-        self.event_duration_weights = -event_duration_scores
+        self.vocabs = vocabs
+        self.scores = scores
+        self.params = params
 
+        self._init_vocabs(**vocabs)
+        self._init_models(**scores, **params)
+
+    def _init_vocabs(
+            self, event_vocab=None, action_vocab=None, part_vocab=None,
+            joint_vocab=None, connection_vocab=None, assembly_vocab=None,
+            eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
+            dur_internal_str='I', dur_final_str='F'):
+
+        # VOCABULARIES: OBJECT VERSIONS
         self.eps_str = eps_str
         self.bos_str = bos_str
         self.eos_str = eos_str
-        self.seg_internal_str = seg_internal_str
-        self.seg_final_str = seg_final_str
-        self.background_action = background_action
-
-        self.event_attrs = event_attrs
-        self.connection_attrs = connection_attrs
-        self.assembly_attrs = assembly_attrs
-
-        self.part_categories = part_categories
-        self.part_connections = part_connections
-
-        # VOCABULARIES: OBJECT VERSIONS
+        self.dur_internal_str = dur_internal_str
+        self.dur_final_str = dur_final_str
         self.aux_symbols = (eps_str, bos_str, eos_str)
-        seg_vocab = (seg_internal_str, seg_final_str)
-        action_vocab = connection_attrs['action'].to_list()
-        transition_vocab = tuple(
-            tuple(int(x) for x in col_name.split('->'))
-            for col_name in connection_attrs.columns if col_name != 'action'
-        )
-        connection_vocab = tuple(
-            sorted(frozenset().union(*[frozenset(t) for t in transition_vocab]))
-        )
-        assembly_vocab = tuple(i for i, _ in enumerate(assembly_attrs))
+        dur_vocab = (dur_internal_str, dur_final_str)
 
-        event_action_weights = events_to_actions(
-            self.event_attrs,
-            action_vocab, event_vocab, joint_vocab,
-            self.part_categories,
-            background_action=self.background_action
-        )
+        self.vocab['aux_symbols'] = self.aux_symbols
+        self.vocab['dur_vocab'] = dur_vocab
 
         def make_vocab(vocab):
             return Vocabulary(vocab, aux_symbols=self.aux_symbols)
-        self.seg_vocab = make_vocab(seg_vocab)
+        self.dur_vocab = make_vocab(dur_vocab)
         self.event_vocab = make_vocab(event_vocab)
         self.action_vocab = make_vocab(action_vocab)
         self.part_vocab = make_vocab(part_vocab)
-        self.transition_vocab = make_vocab(transition_vocab)
         self.joint_vocab = make_vocab(joint_vocab)
         self.connection_vocab = make_vocab(connection_vocab)
         self.assembly_vocab = make_vocab(assembly_vocab)
@@ -149,22 +124,14 @@ class AttributeClassifier(object):
                     for prod_item in product
                 )
             return make_vocab(product)
-        self.event_seg_vocab = product_vocab(self.event_vocab, self.seg_vocab)
-        self.action_seg_vocab = product_vocab(self.action_vocab, self.seg_vocab)
-        self.connection_seg_vocab = product_vocab(self.connection_vocab, self.seg_vocab)
-        self.event_action_seg_vocab = product_vocab(
-            self.event_vocab, self.action_vocab, self.seg_vocab
-        )
-        self.event_connection_seg_vocab = product_vocab(
-            self.event_vocab, self.connection_vocab, self.seg_vocab
-        )
-        self.event_assembly_seg_vocab = product_vocab(
-            self.event_vocab, self.assembly_vocab, self.seg_vocab
+        self.event_dur_vocab = product_vocab(self.event_vocab, self.dur_vocab)
+        self.event_assembly_dur_vocab = product_vocab(
+            self.event_vocab, self.assembly_vocab, self.dur_vocab
         )
 
         def map_parts_to_str(product_vocab, *part_vocabs):
-            def get_parts(class_seg_key):
-                parts = product_vocab.to_obj(class_seg_key)
+            def get_parts(class_dur_key):
+                parts = product_vocab.to_obj(class_dur_key)
                 parts_as_str = tuple(
                     part_vocabs[i].to_str(part)
                     for i, part in enumerate(parts)
@@ -177,70 +144,86 @@ class AttributeClassifier(object):
             }
 
             return parts_to_str
-        self.event_seg_to_str = map_parts_to_str(
-            self.event_seg_vocab,
-            self.event_vocab, self.seg_vocab
-        )
-        self.action_seg_to_str = map_parts_to_str(
-            self.action_seg_vocab,
-            self.action_vocab, self.seg_vocab
-        )
-        self.connection_seg_to_str = map_parts_to_str(
-            self.connection_seg_vocab,
-            self.connection_vocab, self.seg_vocab
-        )
-        self.event_action_seg_to_str = map_parts_to_str(
-            self.event_action_seg_vocab,
-            self.event_vocab, self.action_vocab, self.seg_vocab
-        )
-        self.event_connection_seg_to_str = map_parts_to_str(
-            self.event_connection_seg_vocab,
-            self.event_vocab, self.connection_vocab, self.seg_vocab
+        self.event_dur_to_str = map_parts_to_str(
+            self.event_dur_vocab,
+            self.event_vocab, self.dur_vocab
         )
 
-        def attrs_to_vec(joints):
-            vec = np.zeros((self.num_joints,), dtype=bool)
-            for joint in joints:
-                i = self.joint_vocab.integerizer[joint]
-                vec[i] = True
-            return vec
-        self.assembly_attrs = np.row_stack(tuple(attrs_to_vec(x) for x in self.assembly_attrs))
+    def _init_models(
+            self, event_to_assembly_scores=None, duration_scores=None,
+            arc_type='log', decode_type='marginal', return_label='output',
+            reduce_order='pre', output_stage=3):
+
+        self.event_to_assembly_scores = event_to_assembly_scores
+
+        self.reduce_order = reduce_order
+        self.return_label = return_label
+        self.arc_type = arc_type
+        self.output_stage = output_stage
+        self.decode_type = decode_type
 
         self.event_duration_fst = add_endpoints(
             make_duration_fst(
-                self.event_duration_weights,
-                self.event_vocab.as_str(), self.event_seg_to_str,
-                seg_internal_str=seg_internal_str, seg_final_str=seg_final_str,
+                -self.duration_scores,
+                self.event_vocab.as_str(), self.event_dur_to_str,
+                dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
                 input_symbols=self.event_vocab.symbol_table,
-                output_symbols=self.event_seg_vocab.symbol_table,
+                output_symbols=self.event_dur_vocab.symbol_table,
                 arc_type=self.arc_type,
             ),
-            bos_str=bos_str, eos_str=eos_str
+            bos_str=self.bos_str, eos_str=self.eos_str
         ).arcsort(sort_type='ilabel')
 
+        self.event_to_assembly_fst = add_endpoints(
+            make_event_to_assembly_fst(
+                -self.event_to_assembly_scores,
+                input_symbols=self.event_dur_vocab.symbol_table,
+                output_symbols=self.assembly_dur_vocab.symbol_table,
+                arc_type=self.arc_type
+            ),
+            bos_str=self.bos_str, eos_str=self.eos_str
+        ).arcsort(sort_type='ilabel')
+
+        # TODO
+        self.assembly_transition_fst = None
+
+        sub_models = [
+            self.event_duration_fst,
+            self.event_to_assembly_fst,
+            self.assembly_transition_fst
+        ]
+        self.seq_model = libfst.easyCompose(
+            *sub_models[:self.output_stage],
+            determinize=False, minimize=False
+        ).arcsort(sort_type='ilabel')
+        if self.reduce_order == 'pre':
+            self.seq_model = openfst.compose(self.seq_model, self.reduce_output_labels)
+
+    def deprecated(self):
+        """ FIXME: DELETE """
         self.action_to_connection = transducer_from_connection_attrs(
             -np.log(self.connection_attrs.drop(['action'], axis=1).to_numpy()),
             self.transition_vocab.as_raw(), len(self.connection_vocab.as_raw()),
             self.action_vocab.as_str(), self.connection_vocab.as_str(),
-            self.event_action_seg_to_str, self.event_connection_seg_to_str,
+            self.event_action_dur_to_str, self.event_connection_dur_to_str,
             init_weights=-np.log(np.array([1, 0])),
-            input_table=self.event_action_seg_vocab.symbol_table,
-            output_table=self.event_connection_seg_vocab.symbol_table,
+            input_table=self.event_action_dur_vocab.symbol_table,
+            output_table=self.event_connection_dur_vocab.symbol_table,
             arc_type=self.arc_type,
             axis=1
         ).arcsort(sort_type='ilabel')
 
         self.event_to_action = []
         self.seq_models = []
-        for i, joint_event_action_weights in enumerate(event_action_weights):
+        for i, joint_event_action_weights in enumerate(self.event_action_weights):
             event_to_action = add_endpoints(
-                single_seg_transducer(
+                single_dur_transducer(
                     -np.log(joint_event_action_weights),
                     self.event_vocab.as_str(), self.action_vocab.as_str(),
-                    self.event_seg_to_str,
-                    self.event_action_seg_to_str,
-                    input_symbols=self.event_seg_vocab.symbol_table,
-                    output_symbols=self.event_action_seg_vocab.symbol_table,
+                    self.event_dur_to_str,
+                    self.event_action_dur_to_str,
+                    input_symbols=self.event_dur_vocab.symbol_table,
+                    output_symbols=self.event_action_dur_vocab.symbol_table,
                     arc_type=self.arc_type,
                     pass_input=True
                 )
@@ -282,7 +265,7 @@ class AttributeClassifier(object):
             raise NotImplementedError()
 
         if self.output_stage == 2:
-            input_vocab = self.event_action_seg_vocab
+            input_vocab = self.event_action_dur_vocab
             if self.return_label == 'input':
                 output_vocab = self.event_vocab
                 keep_dim = 0
@@ -296,7 +279,7 @@ class AttributeClassifier(object):
             return self._reduce_fst
 
         if self.output_stage == 3:
-            input_vocab = self.event_connection_seg_vocab
+            input_vocab = self.event_connection_dur_vocab
             if self.return_label == 'input':
                 output_vocab = self.event_vocab
                 keep_dim = 0
@@ -336,13 +319,8 @@ class AttributeClassifier(object):
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
 
-        utils.saveVariable(self.aux_symbols, 'aux-symbols', out_dir)
-        utils.saveVariable(self.seg_vocab.as_raw(), 'seg-vocab', out_dir)
-        utils.saveVariable(self.action_vocab.as_raw(), 'action-vocab', out_dir)
-        utils.saveVariable(self.transition_vocab.as_raw(), 'transition-vocab', out_dir)
-        utils.saveVariable(self.joint_vocab.as_raw(), 'joint-vocab', out_dir)
-        utils.saveVariable(self.connection_vocab.as_raw(), 'connection-vocab', out_dir)
-        utils.saveVariable(self.assembly_vocab.as_raw(), 'assembly-vocab', out_dir)
+        for name, vocab in self.vocabs.items():
+            utils.saveVariable(vocab, name.replace('_', '-'), out_dir)
 
     def draw_fsts(self, fig_dir):
         if not os.path.exists(fig_dir):
@@ -506,7 +484,7 @@ def transducer_from_connection_attrs(
         init_weights=None, final_weights=None,
         input_table=None, output_table=None,
         eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
-        seg_internal_str='I', seg_final_str='F',
+        dur_internal_str='I', dur_final_str='F',
         arc_type='standard', axis=1):
 
     fst = openfst.VectorFst(arc_type=arc_type)
@@ -541,7 +519,7 @@ def transducer_from_connection_attrs(
 
         final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
         if final_weight != zero:
-            query = (None, output_vocab[i], seg_final_str)
+            query = (None, output_vocab[i], dur_final_str)
             for output_parts in find_matching_keys(query, output_parts_to_str):
                 output_str = output_parts_to_str[output_parts]
                 arc = openfst.Arc(
@@ -570,7 +548,7 @@ def transducer_from_connection_attrs(
             # CASE 1: (a, I) : (c_cur, I), self-loop, weight one
             if weight != zero and not (i_cur in state_has_action_segment_internal_loop):
                 state_has_action_segment_internal_loop.add(i_cur)
-                query = (None, input_str, seg_internal_str)
+                query = (None, input_str, dur_internal_str)
                 for input_parts in find_matching_keys(query, input_parts_to_str):
                     output_parts = replace(input_parts, output_str, i=axis)
                     arc_input_str = input_parts_to_str[input_parts]
@@ -584,7 +562,7 @@ def transducer_from_connection_attrs(
                     fst.add_arc(cur_state, arc)
 
             # CASE 2: (a, F) : (c_cur, F), transition arc, weight tx_weight
-            query = (None, input_str, seg_final_str)
+            query = (None, input_str, dur_final_str)
             for input_parts in find_matching_keys(query, input_parts_to_str):
                 output_parts = replace(input_parts, output_str, i=axis)
                 arc_input_str = input_parts_to_str[input_parts]
@@ -612,7 +590,7 @@ def event_to_assembly(
         init_weights=None, final_weights=None,
         input_table=None, output_table=None,
         eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
-        seg_internal_str='I', seg_final_str='F',
+        dur_internal_str='I', dur_final_str='F',
         arc_type='standard', axis=1,
         background_action=''):
 
@@ -691,7 +669,7 @@ def event_to_assembly(
 
         final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
         if final_weight != zero:
-            query = (None, output_vocab[i], seg_final_str)
+            query = (None, output_vocab[i], dur_final_str)
             for output_parts in find_matching_keys(query, output_parts_to_str):
                 output_str = output_parts_to_str[output_parts]
                 arc = openfst.Arc(
@@ -720,7 +698,7 @@ def event_to_assembly(
             # CASE 1: (a, I) : (c_cur, I), self-loop, weight one
             if weight != zero and not (i_cur in state_has_action_segment_internal_loop):
                 state_has_action_segment_internal_loop.add(i_cur)
-                query = (None, input_str, seg_internal_str)
+                query = (None, input_str, dur_internal_str)
                 for input_parts in find_matching_keys(query, input_parts_to_str):
                     output_parts = replace(input_parts, output_str, i=axis)
                     arc_input_str = input_parts_to_str[input_parts]
@@ -734,7 +712,7 @@ def event_to_assembly(
                     fst.add_arc(cur_state, arc)
 
             # CASE 2: (a, F) : (c_cur, F), transition arc, weight tx_weight
-            query = (None, input_str, seg_final_str)
+            query = (None, input_str, dur_final_str)
             for input_parts in find_matching_keys(query, input_parts_to_str):
                 output_parts = replace(input_parts, output_str, i=axis)
                 arc_input_str = input_parts_to_str[input_parts]
@@ -845,12 +823,12 @@ def single_state_transducer(
     return fst
 
 
-def single_seg_transducer(
+def single_dur_transducer(
         weights, input_vocab, output_vocab,
         input_parts_to_str, output_parts_to_str,
         input_symbols=None, output_symbols=None,
         eps_str='ε', bos_str='<BOS>', eos_str='<EOS>',
-        seg_internal_str='I', seg_final_str='F',
+        dur_internal_str='I', dur_final_str='F',
         arc_type='standard', pass_input=False):
 
     fst = openfst.VectorFst(arc_type=arc_type)
@@ -871,11 +849,11 @@ def single_seg_transducer(
         state_ostr = output_vocab[i_output]
 
         # CASE 1: (in, I) : (out, I), weight one, transition into io state
-        arc_istr = input_parts_to_str[state_istr, seg_internal_str]
+        arc_istr = input_parts_to_str[state_istr, dur_internal_str]
         if pass_input:
-            arc_ostr = output_parts_to_str[state_istr, state_ostr, seg_internal_str]
+            arc_ostr = output_parts_to_str[state_istr, state_ostr, dur_internal_str]
         else:
-            arc_ostr = output_parts_to_str[state_ostr, seg_internal_str]
+            arc_ostr = output_parts_to_str[state_ostr, dur_internal_str]
         arc = openfst.Arc(
             fst.input_symbols().find(arc_istr),
             fst.output_symbols().find(arc_ostr),
@@ -886,11 +864,11 @@ def single_seg_transducer(
         fst.add_arc(io_state, arc.copy())
 
         # CASE 2: (in, F) : (out, F), weight tx_weight
-        arc_istr = input_parts_to_str[state_istr, seg_final_str]
+        arc_istr = input_parts_to_str[state_istr, dur_final_str]
         if pass_input:
-            arc_ostr = output_parts_to_str[state_istr, state_ostr, seg_final_str]
+            arc_ostr = output_parts_to_str[state_istr, state_ostr, dur_final_str]
         else:
-            arc_ostr = output_parts_to_str[state_ostr, seg_final_str]
+            arc_ostr = output_parts_to_str[state_ostr, dur_final_str]
         arc = openfst.Arc(
             fst.input_symbols().find(arc_istr),
             fst.output_symbols().find(arc_ostr),
@@ -1089,15 +1067,25 @@ def toArray(lattice, row_integerizer, col_integerizer):
     return weights, lattice.weight_type()
 
 
+def make_event_to_assembly_fst(
+        event_weights, connection_weights, assembly_weights,
+        input_symbols=None, output_symbols=None,
+        arc_type='standard'):
+
+    fst = None
+
+    return fst
+
+
 def make_duration_fst(
-        final_weights, class_vocab, class_seg_to_str,
-        seg_internal_str='I', seg_final_str='F',
+        final_weights, class_vocab, class_dur_to_str,
+        dur_internal_str='I', dur_final_str='F',
         input_symbols=None, output_symbols=None,
         arc_type='standard'):
     num_classes, num_states = final_weights.shape
 
     def durationFst(
-            label_str, seg_internal_str, seg_final_str, final_weights,
+            label_str, dur_internal_str, dur_final_str, final_weights,
             input_symbols=None, output_symbols=None,
             arc_type='standard'):
         """ Construct a left-to-right WFST from an input sequence.
@@ -1112,8 +1100,8 @@ def make_duration_fst(
         """
 
         input_label = input_symbols.find(label_str)
-        output_label_int = output_symbols.find(seg_internal_str)
-        output_label_ext = output_symbols.find(seg_final_str)
+        output_label_int = output_symbols.find(dur_internal_str)
+        output_label_ext = output_symbols.find(dur_final_str)
 
         fst = openfst.VectorFst(arc_type=arc_type)
         one = openfst.Weight.one(fst.weight_type())
@@ -1153,8 +1141,8 @@ def make_duration_fst(
     dur_fsts = [
         durationFst(
             class_vocab[i],
-            class_seg_to_str[class_vocab[i], seg_internal_str],
-            class_seg_to_str[class_vocab[i], seg_final_str],
+            class_dur_to_str[class_vocab[i], dur_internal_str],
+            class_dur_to_str[class_vocab[i], dur_final_str],
             final_weights[i],
             arc_type=arc_type,
             input_symbols=input_symbols,
@@ -1202,15 +1190,15 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
     eps_str = 'ε'
     bos_str = '<BOS>'
     eos_str = '<EOS>'
-    seg_internal_str = 'I'
-    seg_final_str = 'F'
+    dur_internal_str = 'I'
+    dur_final_str = 'F'
 
     aux_symbols = (eps_str, bos_str, eos_str)
-    seg_vocab = (seg_internal_str, seg_final_str)
+    dur_vocab = (dur_internal_str, dur_final_str)
     sample_vocab = tuple(i for i in range(num_samples))
     dur_vocab = tuple(i for i in range(1, max_dur + 1))
     class_vocab = tuple(i for i in range(num_classes))
-    class_seg_vocab = tuple((c, s) for c in class_vocab for s in seg_vocab)
+    class_dur_vocab = tuple((c, s) for c in class_vocab for s in dur_vocab)
 
     def to_strings(vocab):
         return tuple(map(str, vocab))
@@ -1219,32 +1207,32 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
         return {item: i for i, item in enumerate(vocab)}
 
     sample_vocab_str = to_strings(sample_vocab)
-    seg_vocab_str = to_strings(seg_vocab)
+    dur_vocab_str = to_strings(dur_vocab)
     class_vocab_str = to_strings(class_vocab)
-    class_seg_vocab_str = to_strings(class_seg_vocab)
+    class_dur_vocab_str = to_strings(class_dur_vocab)
 
     # sample_integerizer = to_integerizer(sample_vocab)
-    seg_integerizer = to_integerizer(seg_vocab)
+    dur_integerizer = to_integerizer(dur_vocab)
     class_integerizer = to_integerizer(class_vocab)
-    # class_seg_integerizer = to_integerizer(class_seg_vocab)
+    # class_dur_integerizer = to_integerizer(class_dur_vocab)
 
     sample_str_integerizer = to_integerizer(sample_vocab_str)
     class_str_integerizer = to_integerizer(class_vocab_str)
-    class_seg_str_integerizer = to_integerizer(class_seg_vocab_str)
+    class_dur_str_integerizer = to_integerizer(class_dur_vocab_str)
 
-    def get_parts(class_seg_key):
-        c, s = class_seg_vocab[class_seg_str_integerizer[class_seg_key]]
+    def get_parts(class_dur_key):
+        c, s = class_dur_vocab[class_dur_str_integerizer[class_dur_key]]
         c_str = class_vocab_str[class_integerizer[c]]
-        s_str = seg_vocab_str[seg_integerizer[s]]
+        s_str = dur_vocab_str[dur_integerizer[s]]
         return c_str, s_str
 
-    class_seg_to_str = {get_parts(name): name for name in class_seg_vocab_str}
+    class_dur_to_str = {get_parts(name): name for name in class_dur_vocab_str}
 
     sample_symbols = libfst.makeSymbolTable(aux_symbols + sample_vocab, prepend_epsilon=False)
     # dur_symbols = libfst.makeSymbolTable(aux_symbols + dur_vocab, prepend_epsilon=False)
     class_symbols = libfst.makeSymbolTable(aux_symbols + class_vocab, prepend_epsilon=False)
-    # seg_symbols = libfst.makeSymbolTable(aux_symbols + seg_vocab, prepend_epsilon=False)
-    class_seg_symbols = libfst.makeSymbolTable(aux_symbols + class_seg_vocab, prepend_epsilon=False)
+    # dur_symbols = libfst.makeSymbolTable(aux_symbols + dur_vocab, prepend_epsilon=False)
+    class_dur_symbols = libfst.makeSymbolTable(aux_symbols + class_dur_vocab, prepend_epsilon=False)
 
     obs_scores = np.zeros((num_samples, num_classes))
 
@@ -1255,14 +1243,14 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
 
     def score_transition(c_prev, s_prev, c_cur, s_cur):
         if c_prev != c_cur:
-            if s_prev == seg_final_str and s_cur == seg_internal_str:
+            if s_prev == dur_final_str and s_cur == dur_internal_str:
                 score = 0
             else:
                 score = np.inf
         else:
-            if s_prev == seg_internal_str and s_cur == seg_final_str:
+            if s_prev == dur_internal_str and s_cur == dur_final_str:
                 score = 0
-            elif s_prev == seg_internal_str and s_cur == seg_internal_str:
+            elif s_prev == dur_internal_str and s_cur == dur_internal_str:
                 score = 0
             else:
                 score = np.inf
@@ -1272,23 +1260,23 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
         [
             [
                 score_transition(c_prev, s_prev, c_cur, s_cur)
-                for (c_cur, s_cur) in class_seg_vocab
+                for (c_cur, s_cur) in class_dur_vocab
             ]
-            for (c_prev, s_prev) in class_seg_vocab
+            for (c_prev, s_prev) in class_dur_vocab
         ],
         dtype=float
     )
     init_scores = np.array(
-        [0 if c == 0 and s == seg_internal_str else np.inf for (c, s) in class_seg_vocab],
+        [0 if c == 0 and s == dur_internal_str else np.inf for (c, s) in class_dur_vocab],
         dtype=float
     )
     final_scores = np.array(
-        [0 if c == 1 and s == seg_final_str else np.inf for (c, s) in class_seg_vocab],
+        [0 if c == 1 and s == dur_final_str else np.inf for (c, s) in class_dur_vocab],
         dtype=float
     )
 
-    def score_arc_state(class_seg_key, class_key):
-        c, s = class_seg_vocab[class_seg_str_integerizer[class_seg_key]]
+    def score_arc_state(class_dur_key, class_key):
+        c, s = class_dur_vocab[class_dur_str_integerizer[class_dur_key]]
         c_prime = class_str_integerizer[class_key]
 
         if c == c_prime:
@@ -1298,13 +1286,13 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
 
         return score
 
-    class_seg_to_class_scores = np.array(
+    class_dur_to_class_scores = np.array(
         [
             [
-                score_arc_state(class_seg_key, class_key)
+                score_arc_state(class_dur_key, class_key)
                 for class_key in class_vocab_str
             ]
-            for class_seg_key in class_seg_vocab_str
+            for class_dur_key in class_dur_vocab_str
         ],
         dtype=float
     )
@@ -1331,26 +1319,26 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
 
     dur_fst = add_endpoints(
         make_duration_fst(
-            dur_scores, class_vocab_str, class_seg_to_str,
-            seg_internal_str=seg_internal_str, seg_final_str=seg_final_str,
+            dur_scores, class_vocab_str, class_dur_to_str,
+            dur_internal_str=dur_internal_str, dur_final_str=dur_final_str,
             input_symbols=class_symbols,
-            output_symbols=class_seg_symbols,
+            output_symbols=class_dur_symbols,
             arc_type='standard',
         ),
         bos_str=bos_str, eos_str=eos_str
     ).arcsort(sort_type='ilabel')
 
     transition_fst = fromTransitions(
-        transition_scores, class_seg_vocab_str, class_seg_vocab_str,
+        transition_scores, class_dur_vocab_str, class_dur_vocab_str,
         init_weights=init_scores,
         final_weights=final_scores,
-        input_symbols=class_seg_symbols,
-        output_symbols=class_seg_symbols
+        input_symbols=class_dur_symbols,
+        output_symbols=class_dur_symbols
     ).arcsort(sort_type='ilabel')
 
-    class_seg_to_class_fst = single_state_transducer(
-        class_seg_to_class_scores, class_seg_vocab_str, class_vocab_str,
-        input_symbols=class_seg_symbols, output_symbols=class_symbols,
+    class_dur_to_class_fst = single_state_transducer(
+        class_dur_to_class_scores, class_dur_vocab_str, class_vocab_str,
+        input_symbols=class_dur_symbols, output_symbols=class_symbols,
         arc_type='standard'
     ).arcsort(sort_type='ilabel')
 
@@ -1363,9 +1351,9 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
 
     state_scores = openfst.compose(
         arc_scores,
-        openfst.arcmap(class_seg_to_class_fst, map_type='to_log')
+        openfst.arcmap(class_dur_to_class_fst, map_type='to_log')
     )
-    best_states = openfst.compose(best_arcs, class_seg_to_class_fst)
+    best_states = openfst.compose(best_arcs, class_dur_to_class_fst)
 
     state_scores_arr, weight_type = toArray(
         state_scores,

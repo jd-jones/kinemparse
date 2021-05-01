@@ -180,21 +180,21 @@ if [ "$start_at" -le "${STAGE}" ]; then
     part_info_fn="${HOME}/data/assembly_structures/ikea-anu.json"
     python ${debug_str} event_to_connection.py \
         --out_dir "${connections_dir}" \
-        --scores_dir "${scores_dir}/data" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --scores_dir "${scores_dir}/data" \
         --event_attr_fn "${event_attr_fn}" \
         --connection_attr_fn "${connection_attr_fn}" \
-        --part_info_fn "${part_info_fn}" \
+        --assembly_attr_fn "${part_info_fn}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
         --only_fold 1 \
         --prefix "seq=" \
+        --background_action "NA" \
         --model_params "{ \
             'decode_type': 'joint', \
             'output_stage': 3, \
             'return_label': 'input', \
-            'reduce_order': 'post', \
-            'background_action': 'NA' \
+            'reduce_order': 'post' \
         }" \
         --stop_after 5
 fi

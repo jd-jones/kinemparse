@@ -17,25 +17,87 @@ from mathtools import utils  # , metrics
 logger = logging.getLogger(__name__)
 
 
-def loadPartInfo(fn):
-    with open(fn, 'rt') as file_:
+def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background_action=''):
+    with open(assembly_attr_fn, 'rt') as file_:
         data = json.load(file_)
-
     part_vocab = tuple(data['part_vocab'])
     part_categories = data['part_categories']
-    part_connections = data['part_connections']
-
     joint_vocab = tuple(tuple(sorted(joint)) for joint in data['joint_vocab'])
-    assembly_vocab = tuple(
+    assembly_attrs = tuple(
         tuple(tuple(sorted(joint)) for joint in joints)
         for joints in data['assembly_vocab']
     )
 
-    return part_vocab, part_categories, part_connections, joint_vocab, assembly_vocab
+    connection_scores, action_vocab, connection_vocab = connection_attrs_to_scores(
+        pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False)
+    )
+
+    event_scores, event_vocab = event_attrs_to_scores(
+        pd.read_csv(event_attr_fn, index_col=False, keep_default_na=False),
+        part_categories, action_vocab, joint_vocab,
+        background_action=background_action
+    )
+
+    assembly_scores, assembly_vocab = assembly_attrs_to_scores(
+        assembly_attrs, joint_vocab, connection_vocab
+    )
+
+    scores = (event_scores, connection_scores, assembly_scores)
+    vocabs = {
+        'event_vocab': event_vocab,
+        'part_vocab': part_vocab,
+        'action_vocab': action_vocab,
+        'joint_vocab': joint_vocab,
+        'connection_vocab': connection_vocab,
+        'assembly_vocab': assembly_vocab
+    }
+    return scores, vocabs
+
+
+def connection_attrs_to_scores(action_attrs):
+    """
+    Parameters
+    ----------
+    action_attrs :
+
+    Returns
+    -------
+    scores :
+    action_vocab :
+    connecion_vocab :
+    """
+
+    # Log-domain values for zero and one
+    zero = -np.inf
+    one = 0
+
+    tx_sep = '->'
+    tx_cols = [name for name in action_attrs.columns if tx_sep in name]
+    tx_vocab = tuple(
+        tuple(int(x) for x in col_name.split(tx_sep))
+        for col_name in tx_cols
+    )
+    connection_vocab = tuple(
+        sorted(frozenset().union(*[frozenset(t) for t in tx_vocab]))
+    )
+    action_vocab = tuple(action_attrs['action'].to_list())
+
+    num_actions = len(action_vocab)
+    num_connections = len(connection_vocab)
+    scores = np.full((num_actions, num_connections, num_connections), zero, dtype=float)
+
+    action_attrs = action_attrs.set_index('action')
+    for i_action, action_name in enumerate(action_vocab):
+        tx_weights = tuple(action_attrs.loc[action_name][c] for c in tx_cols)
+        for i_edge, tx_weight in enumerate(tx_weights):
+            i_conn_cur, i_conn_next = tx_vocab[i_edge]
+            scores[i_action, i_conn_cur, i_conn_next] = one
+
+    return scores, action_vocab, connection_vocab
 
 
 def event_attrs_to_scores(
-        event_attrs, part_categories, event_vocab, action_vocab, joint_vocab,
+        event_attrs, part_categories, action_vocab, joint_vocab,
         background_action=''):
     """
 
@@ -63,16 +125,20 @@ def event_attrs_to_scores(
     zero = -np.inf
     one = 0
 
-    num_events = len(event_vocab.as_raw())
-    num_actions = len(action_vocab.as_raw())
-    num_joints = len(joint_vocab.as_raw())
-
     # event index --> all data
-    event_attrs = event_attrs.set_index('event')
+    event_vocab = tuple(event_attrs['event'].to_list())
     part_suffix = '_active'
     part_cols = [name for name in event_attrs.columns if name.endswith(part_suffix)]
 
+    joint_integerizer = {x: i for i, x in enumerate(joint_vocab)}
+    action_integerizer = {x: i for i, x in enumerate(action_vocab)}
+
+    num_events = len(event_vocab)
+    num_actions = len(action_vocab)
+    num_joints = len(joint_vocab)
     scores = np.full((num_events, num_actions, num_joints), zero, dtype=float)
+
+    event_attrs = event_attrs.set_index('event')
     for i_event, event_name in enumerate(event_vocab):
         row = event_attrs.loc[event_name]
         action_name = row['action']
@@ -84,58 +150,42 @@ def event_attrs_to_scores(
         all_active_parts = makeActiveParts(active_part_categories)
         for i_joint, _ in enumerate(joint_vocab):
             for active_parts in all_active_parts:
-                active_joint_index = joint_vocab.integerizer.get(active_parts, None)
+                active_joint_index = joint_integerizer.get(active_parts, None)
                 if active_joint_index == i_joint:
-                    i_action = action_vocab.integerizer[action_name]
+                    i_action = action_integerizer[action_name]
                     break
             else:
-                i_action = action_vocab.integerizer[background_action]
+                i_action = action_integerizer[background_action]
             scores[i_event, i_action, i_joint] = one
 
-    return scores
+    return scores, event_vocab
 
 
-def action_attrs_to_scores(action_attrs):
-    """
-    Parameters
-    ----------
-    action_attrs :
+def event_to_assembly_scores(event_scores, connection_scores, assembly_scores):
+    num_assemblies, num_joints, num_connections = assembly_scores.shape
+    num_events, num_actions, _ = event_scores.shape
 
-    Returns
-    -------
-    scores :
-    action_vocab :
-    connecion_vocab :
-    """
+    event_probs = np.exp(event_scores)
+    connection_probs = np.exp(connection_scores)
+    assembly_probs = np.exp(assembly_scores)
 
     # Log-domain values for zero and one
     zero = -np.inf
-    one = 0
+    # one = 0
 
-    action_attrs = action_attrs.set_index('action')
+    scores = np.full((num_events, num_assemblies, num_assemblies), zero, dtype=float)
+    for i_event in range(num_events):
+        for i_cur in range(num_assemblies):
+            for i_next in range(num_assemblies):
+                joint_probs = np.einsum(
+                    'aij,ik,jk,ak->k',
+                    connection_probs,
+                    assembly_probs[i_cur].T, assembly_probs[i_next].T,
+                    event_probs[i_event]
+                )
+                scores[i_event, i_cur, i_next] = np.log(joint_probs).sum()
 
-    tx_sep = '->'
-    tx_cols = [name for name in action_attrs.columns if name.contains(tx_sep)]
-    tx_vocab = tuple(
-        tuple(int(x) for x in col_name.split(tx_sep))
-        for col_name in tx_cols
-    )
-    connection_vocab = tuple(
-        sorted(frozenset().union(*[frozenset(t) for t in tx_vocab]))
-    )
-    action_vocab = tuple(action_attrs['action'].to_list())
-
-    num_actions = len(action_vocab)
-    num_connections = len(action_vocab)
-    scores = np.full((num_actions, num_connections, num_connections), zero, dtype=float)
-    for i_action, action_name in enumerate(action_vocab):
-        row = action_attrs.loc[action_name]
-        action_name = row['action']
-        for i_edge, tx_weight in enumerate([row[c] for c in tx_cols]):
-            i_conn_cur, i_conn_next = tx_vocab[i_edge]
-            scores[i_action, i_conn_cur, i_conn_next] = one
-
-    return scores, action_vocab, connection_vocab
+    return scores
 
 
 def assembly_attrs_to_scores(assembly_attrs, joint_vocab, connection_vocab):
@@ -159,15 +209,18 @@ def assembly_attrs_to_scores(assembly_attrs, joint_vocab, connection_vocab):
     assembly_vocab = tuple(i for i, _ in enumerate(assembly_attrs))
 
     num_assemblies = len(assembly_vocab)
-    num_joints = len(joint_vocab.as_raw())
-    num_connections = len(connection_vocab.as_raw())
+    num_joints = len(joint_vocab)
+    num_connections = len(connection_vocab)
+
+    joint_integerizer = {x: i for i, x in enumerate(joint_vocab)}
+    connection_integerizer = {x: i for i, x in enumerate(connection_vocab)}
 
     scores = np.full((num_assemblies, num_joints, num_connections), zero, dtype=float)
     for i_assembly, _ in enumerate(assembly_vocab):
         joints = assembly_attrs[i_assembly]
         for joint in joints:
-            i_joint = joint_vocab.integerizer[joint]
-            i_connection = connection_vocab.integerizer[1]
+            i_joint = joint_integerizer[joint]
+            i_connection = connection_integerizer[1]
             scores[i_assembly, i_joint, i_connection] = one
 
     return scores, assembly_vocab
@@ -247,15 +300,16 @@ def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
 
 def main(
         out_dir=None, data_dir=None, scores_dir=None,
-        event_attr_fn=None, connection_attr_fn=None, part_info_fn=None,
+        event_attr_fn=None, connection_attr_fn=None, assembly_attr_fn=None,
         only_fold=None, plot_io=None, prefix='seq=', stop_after=None,
-        results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
+        background_action='', model_params={}, cv_params={},
+        results_file=None, sweep_param_name=None):
 
     data_dir = os.path.expanduser(data_dir)
     scores_dir = os.path.expanduser(scores_dir)
     event_attr_fn = os.path.expanduser(event_attr_fn)
     connection_attr_fn = os.path.expanduser(connection_attr_fn)
-    part_info_fn = os.path.expanduser(part_info_fn)
+    assembly_attr_fn = os.path.expanduser(assembly_attr_fn)
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -297,11 +351,11 @@ def main(
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     # Load event, connection attributes
-    event_attrs = pd.read_csv(event_attr_fn, index_col=False, keep_default_na=False)
-    connection_attrs = pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False)
-    part_vocab, part_categories, part_connections, joint_vocab, assembly_attrs = loadPartInfo(
-        part_info_fn
+    scores, vocabs = loadPartInfo(
+        event_attr_fn, connection_attr_fn, assembly_attr_fn,
+        background_action=background_action
     )
+    event_assembly_scores = event_to_assembly_scores(*scores)
 
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
@@ -316,17 +370,17 @@ def main(
         train_data, val_data, test_data = dataset.getFold(cv_fold)
 
         cv_str = f'cvfold={cv_index}'
+
         class_priors, dur_priors = count_priors(
             train_data[0], len(dataset.vocab),
             stride=10, approx_upto=0.95
         )
-        model = decode.AttributeClassifier(
-            event_attrs, connection_attrs, assembly_attrs,
-            dataset.vocab, joint_vocab,
-            part_vocab, part_categories, part_connections,
-            event_duration_scores=np.log(dur_priors),
-            **model_params
-        )
+        scores = {
+            'event_to_assembly_scores': event_assembly_scores,
+            'duration_scores': np.log(dur_priors)
+        }
+
+        model = decode.AttributeClassifier(vocabs, scores, model_params)
 
         viz_priors(os.path.join(fig_dir, f'{cv_str}_priors'), class_priors, dur_priors)
         model.write_fsts(os.path.join(misc_dir, f'{cv_str}_fsts'))
