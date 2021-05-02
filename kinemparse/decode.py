@@ -102,8 +102,8 @@ class AttributeClassifier(object):
         self.aux_symbols = (eps_str, bos_str, eos_str)
         dur_vocab = (dur_internal_str, dur_final_str)
 
-        self.vocab['aux_symbols'] = self.aux_symbols
-        self.vocab['dur_vocab'] = dur_vocab
+        self.vocabs['aux_symbols'] = self.aux_symbols
+        self.vocabs['dur_vocab'] = dur_vocab
 
         def make_vocab(vocab):
             return Vocabulary(vocab, aux_symbols=self.aux_symbols)
@@ -148,6 +148,10 @@ class AttributeClassifier(object):
             self.event_dur_vocab,
             self.event_vocab, self.dur_vocab
         )
+        self.event_assembly_dur_to_str = map_parts_to_str(
+            self.event_assembly_dur_vocab,
+            self.event_vocab, self.assembly_vocab, self.dur_vocab
+        )
 
     def _init_models(
             self, event_to_assembly_scores=None, duration_scores=None,
@@ -155,6 +159,7 @@ class AttributeClassifier(object):
             reduce_order='pre', output_stage=3):
 
         self.event_to_assembly_scores = event_to_assembly_scores
+        self.duration_scores = duration_scores
 
         self.reduce_order = reduce_order
         self.return_label = return_label
@@ -177,8 +182,12 @@ class AttributeClassifier(object):
         self.event_to_assembly_fst = add_endpoints(
             make_event_to_assembly_fst(
                 -self.event_to_assembly_scores,
+                self.event_vocab.as_str(), self.assembly_vocab.as_str(),
+                self.event_dur_to_str, self.event_assembly_dur_to_str,
                 input_symbols=self.event_dur_vocab.symbol_table,
-                output_symbols=self.assembly_dur_vocab.symbol_table,
+                output_symbols=self.event_assembly_dur_vocab.symbol_table,
+                eps_str=self.eps_str,
+                dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
                 arc_type=self.arc_type
             ),
             bos_str=self.bos_str, eos_str=self.eos_str
@@ -190,10 +199,11 @@ class AttributeClassifier(object):
         sub_models = [
             self.event_duration_fst,
             self.event_to_assembly_fst,
-            self.assembly_transition_fst
+            # self.assembly_transition_fst
         ]
         self.seq_model = libfst.easyCompose(
-            *sub_models[:self.output_stage],
+            # *sub_models[:self.output_stage],
+            *sub_models,
             determinize=False, minimize=False
         ).arcsort(sort_type='ilabel')
         if self.reduce_order == 'pre':
@@ -217,7 +227,7 @@ class AttributeClassifier(object):
         self.seq_models = []
         for i, joint_event_action_weights in enumerate(self.event_action_weights):
             event_to_action = add_endpoints(
-                single_dur_transducer(
+                single_seg_transducer(
                     -np.log(joint_event_action_weights),
                     self.event_vocab.as_str(), self.action_vocab.as_str(),
                     self.event_dur_to_str,
@@ -625,11 +635,6 @@ def event_to_assembly(
         for i_joint, _ in enumerate(joint_vocab):
             for active_parts in all_active_parts:
                 active_joint_index = joint_integerizer.get(active_parts, None)
-                logger.info(
-                    f"action: {action_name}  "
-                    f"joint: {active_parts}  "
-                    f"index: {active_joint_index}"
-                )
                 if active_joint_index == i_joint:
                     i_action = action_integerizer[action_name]
                     break
@@ -823,7 +828,7 @@ def single_state_transducer(
     return fst
 
 
-def single_dur_transducer(
+def single_seg_transducer(
         weights, input_vocab, output_vocab,
         input_parts_to_str, output_parts_to_str,
         input_symbols=None, output_symbols=None,
@@ -1068,11 +1073,104 @@ def toArray(lattice, row_integerizer, col_integerizer):
 
 
 def make_event_to_assembly_fst(
-        event_weights, connection_weights, assembly_weights,
+        weights,
+        input_vocab, output_vocab,
+        input_parts_to_str, output_parts_to_str,
         input_symbols=None, output_symbols=None,
+        eps_str='ε', dur_internal_str='I', dur_final_str='F',
         arc_type='standard'):
 
-    fst = None
+    fst = openfst.VectorFst(arc_type=arc_type)
+    fst.set_input_symbols(input_symbols)
+    fst.set_output_symbols(output_symbols)
+
+    zero = openfst.Weight.zero(fst.weight_type())
+    one = openfst.Weight.one(fst.weight_type())
+
+    init_state = fst.add_state()
+    final_state = fst.add_state()
+    fst.set_start(init_state)
+    fst.set_final(final_state, one)
+
+    def make_states(i_input, i_output):
+        seg_internal_state = fst.add_state()
+        seg_final_state = fst.add_state()
+
+        state_istr = input_vocab[i_input]
+        state_ostr = output_vocab[i_output]
+
+        # Initial state -> seg internal state
+        arc = openfst.Arc(
+            fst.input_symbols().find(eps_str),
+            fst.output_symbols().find(eps_str),
+            one,
+            seg_internal_state
+        )
+        fst.add_arc(init_state, arc)
+
+        # (in, I) : (out, I), weight one, self transition
+        arc_istr = input_parts_to_str[state_istr, dur_internal_str]
+        arc_ostr = output_parts_to_str[state_istr, state_ostr, dur_internal_str]
+        arc = openfst.Arc(
+            fst.input_symbols().find(arc_istr),
+            fst.output_symbols().find(arc_ostr),
+            one,
+            seg_internal_state
+        )
+        fst.add_arc(seg_internal_state, arc)
+
+        # (in, F) : (out, F), weight one, transition into final state
+        arc_istr = input_parts_to_str[state_istr, dur_final_str]
+        arc_ostr = output_parts_to_str[state_istr, state_ostr, dur_final_str]
+        arc = openfst.Arc(
+            fst.input_symbols().find(arc_istr),
+            fst.output_symbols().find(arc_ostr),
+            one,
+            seg_final_state
+        )
+        fst.add_arc(seg_internal_state, arc)
+
+        # seg final state -> final_state
+        arc = openfst.Arc(
+            fst.input_symbols().find(eps_str),
+            fst.output_symbols().find(eps_str),
+            one,
+            seg_final_state
+        )
+        fst.add_arc(final_state, arc)
+
+        return [seg_internal_state, seg_final_state]
+
+    # Build segmental backbone
+    states = [
+        [make_states(i_input, i_output) for i_output, _ in enumerate(output_vocab)]
+        for i_input, _ in enumerate(input_vocab)
+    ]
+
+    # Add transitions from final (action, assembly) to initial (action, assembly)
+    for i_input, arr in enumerate(weights):
+        for i_cur, row in enumerate(arr):
+            for i_next, tx_weight in enumerate(row):
+                weight = openfst.Weight(fst.weight_type(), tx_weight)
+                if weight != zero:
+                    from_state = states[i_input][i_cur][1]
+                    to_state = states[i_input][i_next][0]
+
+                    state_istr = input_vocab[i_input]
+                    state_ostr = output_vocab[i_next]
+                    arc_istr = input_parts_to_str[state_istr, dur_final_str]
+                    arc_ostr = output_parts_to_str[state_istr, state_ostr, dur_internal_str]
+
+                    arc = openfst.Arc(
+                        fst.input_symbols().find(arc_istr),
+                        fst.output_symbols().find(arc_ostr),
+                        one,
+                        to_state
+                    )
+                    fst.add_arc(from_state, arc)
+
+    if not fst.verify():
+        raise openfst.FstError("fst.verify() returned False")
 
     return fst
 
@@ -1108,7 +1206,6 @@ def make_duration_fst(
         zero = openfst.Weight.zero(fst.weight_type())
 
         max_dur = np.nonzero(final_weights != float(zero))[0].max()
-        logger.info(f"Label {label_str}: max_dur={max_dur}")
         if max_dur < 1:
             raise AssertionError(f"max_dur = {max_dur}, but should be >= 1)")
 

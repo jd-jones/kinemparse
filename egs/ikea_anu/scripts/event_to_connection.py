@@ -28,21 +28,24 @@ def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background
         for joints in data['assembly_vocab']
     )
 
-    connection_scores, action_vocab, connection_vocab = connection_attrs_to_scores(
-        pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False)
+    connection_probs, action_vocab, connection_vocab = connection_attrs_to_probs(
+        pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False),
+        # normalize=True
     )
 
-    event_scores, event_vocab = event_attrs_to_scores(
+    event_probs, event_vocab = event_attrs_to_probs(
         pd.read_csv(event_attr_fn, index_col=False, keep_default_na=False),
         part_categories, action_vocab, joint_vocab,
-        background_action=background_action
+        background_action=background_action,
+        # normalize=True
     )
 
-    assembly_scores, assembly_vocab = assembly_attrs_to_scores(
-        assembly_attrs, joint_vocab, connection_vocab
+    assembly_probs, assembly_vocab = assembly_attrs_to_probs(
+        assembly_attrs, joint_vocab, connection_vocab,
+        # normalize=True
     )
 
-    scores = (event_scores, connection_scores, assembly_scores)
+    probs = (event_probs, connection_probs, assembly_probs)
     vocabs = {
         'event_vocab': event_vocab,
         'part_vocab': part_vocab,
@@ -51,10 +54,10 @@ def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background
         'connection_vocab': connection_vocab,
         'assembly_vocab': assembly_vocab
     }
-    return scores, vocabs
+    return probs, vocabs
 
 
-def connection_attrs_to_scores(action_attrs):
+def connection_attrs_to_probs(action_attrs, normalize=False):
     """
     Parameters
     ----------
@@ -68,8 +71,9 @@ def connection_attrs_to_scores(action_attrs):
     """
 
     # Log-domain values for zero and one
-    zero = -np.inf
-    one = 0
+    # zero = -np.inf
+    # one = 0
+    zero = 0
 
     tx_sep = '->'
     tx_cols = [name for name in action_attrs.columns if tx_sep in name]
@@ -91,14 +95,17 @@ def connection_attrs_to_scores(action_attrs):
         tx_weights = tuple(action_attrs.loc[action_name][c] for c in tx_cols)
         for i_edge, tx_weight in enumerate(tx_weights):
             i_conn_cur, i_conn_next = tx_vocab[i_edge]
-            scores[i_action, i_conn_cur, i_conn_next] = one
+            scores[i_action, i_conn_cur, i_conn_next] = tx_weight
+
+    if normalize:
+        raise NotImplementedError()
 
     return scores, action_vocab, connection_vocab
 
 
-def event_attrs_to_scores(
+def event_attrs_to_probs(
         event_attrs, part_categories, action_vocab, joint_vocab,
-        background_action=''):
+        background_action='', normalize=False):
     """
 
     Parameters
@@ -122,8 +129,10 @@ def event_attrs_to_scores(
         return parts_tup
 
     # Log-domain values for zero and one
-    zero = -np.inf
-    one = 0
+    # zero = -np.inf
+    # one = 0
+    zero = 0
+    one = 1
 
     # event index --> all data
     event_vocab = tuple(event_attrs['event'].to_list())
@@ -158,16 +167,69 @@ def event_attrs_to_scores(
                 i_action = action_integerizer[background_action]
             scores[i_event, i_action, i_joint] = one
 
+    if normalize:
+        raise NotImplementedError()
+
     return scores, event_vocab
 
 
-def event_to_assembly_scores(event_scores, connection_scores, assembly_scores):
-    num_assemblies, num_joints, num_connections = assembly_scores.shape
-    num_events, num_actions, _ = event_scores.shape
+def assembly_attrs_to_probs(
+        assembly_attrs, joint_vocab, connection_vocab,
+        disconnected_val=0, connected_val=1, normalize=False):
+    """
+    Parameters
+    ----------
+    assembly_attrs :
+    joint_vocab :
+    connection_vocab :
 
-    event_probs = np.exp(event_scores)
-    connection_probs = np.exp(connection_scores)
-    assembly_probs = np.exp(assembly_scores)
+    Returns
+    -------
+    scores :
+    assembly_vocab :
+    """
+
+    # Log-domain values for zero and one
+    # zero = -np.inf
+    # one = 0
+    zero = 0
+    one = 1
+
+    assembly_vocab = tuple(i for i, _ in enumerate(assembly_attrs))
+
+    num_assemblies = len(assembly_vocab)
+    num_joints = len(joint_vocab)
+    num_connections = len(connection_vocab)
+
+    joint_integerizer = {x: i for i, x in enumerate(joint_vocab)}
+    connection_integerizer = {x: i for i, x in enumerate(connection_vocab)}
+
+    disconnected_index = connection_integerizer[disconnected_val]
+    connected_index = connection_integerizer[connected_val]
+
+    scores = np.full((num_assemblies, num_joints, num_connections), zero, dtype=float)
+    for i_assembly, _ in enumerate(assembly_vocab):
+        joints = assembly_attrs[i_assembly]
+        connection_indices = np.full((num_joints,), disconnected_index, dtype=int)
+        for joint in joints:
+            i_joint = joint_integerizer[joint]
+            connection_indices[i_joint] = connected_index
+        for i_joint, i_connection in enumerate(connection_indices):
+            scores[i_assembly, i_joint, i_connection] = one
+
+    if normalize:
+        raise NotImplementedError()
+
+    return scores, assembly_vocab
+
+
+def event_to_assembly_scores(event_probs, connection_probs, assembly_probs):
+    num_assemblies, num_joints, num_connections = assembly_probs.shape
+    num_events, num_actions, _ = event_probs.shape
+
+    # event_probs = np.exp(event_scores)
+    # connection_probs = np.exp(connection_scores)
+    # assembly_probs = np.exp(assembly_scores)
 
     # Log-domain values for zero and one
     zero = -np.inf
@@ -186,44 +248,6 @@ def event_to_assembly_scores(event_scores, connection_scores, assembly_scores):
                 scores[i_event, i_cur, i_next] = np.log(joint_probs).sum()
 
     return scores
-
-
-def assembly_attrs_to_scores(assembly_attrs, joint_vocab, connection_vocab):
-    """
-    Parameters
-    ----------
-    assembly_attrs :
-    joint_vocab :
-    connection_vocab :
-
-    Returns
-    -------
-    scores :
-    assembly_vocab :
-    """
-
-    # Log-domain values for zero and one
-    zero = -np.inf
-    one = 0
-
-    assembly_vocab = tuple(i for i, _ in enumerate(assembly_attrs))
-
-    num_assemblies = len(assembly_vocab)
-    num_joints = len(joint_vocab)
-    num_connections = len(connection_vocab)
-
-    joint_integerizer = {x: i for i, x in enumerate(joint_vocab)}
-    connection_integerizer = {x: i for i, x in enumerate(connection_vocab)}
-
-    scores = np.full((num_assemblies, num_joints, num_connections), zero, dtype=float)
-    for i_assembly, _ in enumerate(assembly_vocab):
-        joints = assembly_attrs[i_assembly]
-        for joint in joints:
-            i_joint = joint_integerizer[joint]
-            i_connection = connection_integerizer[1]
-            scores[i_assembly, i_joint, i_connection] = one
-
-    return scores, assembly_vocab
 
 
 def count_priors(label_seqs, num_classes, stride=None, approx_upto=None):
@@ -351,11 +375,11 @@ def main(
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     # Load event, connection attributes
-    scores, vocabs = loadPartInfo(
+    probs, vocabs = loadPartInfo(
         event_attr_fn, connection_attr_fn, assembly_attr_fn,
         background_action=background_action
     )
-    event_assembly_scores = event_to_assembly_scores(*scores)
+    event_assembly_scores = event_to_assembly_scores(*probs)
 
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
@@ -381,6 +405,7 @@ def main(
         }
 
         model = decode.AttributeClassifier(vocabs, scores, model_params)
+        import pdb; pdb.set_trace()
 
         viz_priors(os.path.join(fig_dir, f'{cv_str}_priors'), class_priors, dur_priors)
         model.write_fsts(os.path.join(misc_dir, f'{cv_str}_fsts'))
