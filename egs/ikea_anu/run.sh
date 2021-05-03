@@ -193,7 +193,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --model_params "{ \
             'decode_type': 'joint', \
             'output_stage': 3, \
-            'return_label': 'input', \
+            'return_label': 'output', \
             'reduce_order': 'post' \
         }" \
         --stop_after 5

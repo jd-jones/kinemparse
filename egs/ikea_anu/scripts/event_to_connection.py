@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import itertools
+import collections
 
 import yaml
 import numpy as np
@@ -18,15 +19,86 @@ logger = logging.getLogger(__name__)
 
 
 def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background_action=''):
+    def gen_assembly_vocab(final_assemblies, part_categories):
+        def get_parts(joints):
+            return frozenset(p for joint in joints for p in joint)
+
+        def remove_part(assembly, part):
+            removed = frozenset(joint for joint in assembly if part not in joint)
+            # Renumber identical parts using part_to_class
+            part_names = tuple(sorted(get_parts(removed)))
+            part_classes = tuple(part_to_class.get(p, p) for p in part_names)
+            rename = {}
+            class_to_parts = collections.defaultdict(list)
+            for part_name, part_class in zip(part_names, part_classes):
+                class_to_parts[part_class].append(part_name)
+                if part_class in part_categories:
+                    i = len(class_to_parts[part_class]) - 1
+                    new_part_name = part_categories[part_class][i]
+                else:
+                    new_part_name = part_name
+                rename[part_name] = new_part_name
+            removed = frozenset(
+                frozenset(rename[part] for part in joint)
+                for joint in removed
+            )
+            return removed
+
+        def is_possible(assembly):
+            def shelf_with_tabletop(assembly):
+                def replace(joint, replacee, replacer):
+                    replaced = set(joint)
+                    replaced.remove(replacee)
+                    replaced.add(replacer)
+                    return frozenset(replaced)
+
+                for joint in assembly:
+                    if 'shelf' in joint and replace(joint, 'shelf', 'table') not in joint:
+                        return False
+                return True
+
+            predicates = (shelf_with_tabletop,)
+            return all(x(assembly) for x in predicates)
+
+        part_to_class = {
+            part: class_name
+            for class_name, parts in part_categories.items()
+            for part in parts
+        }
+
+        final_assemblies = tuple(
+            frozenset(frozenset(j) for j in joints)
+            for joints in final_assemblies
+        )
+
+        stack = list(final_assemblies)
+        assembly_vocab = set(final_assemblies)
+        while stack:
+            assembly = stack.pop()
+            for part in get_parts(assembly):
+                child = remove_part(assembly, part)
+                if is_possible(child) and child not in assembly_vocab:
+                    assembly_vocab.add(child)
+                    stack.append(child)
+
+        assembly_vocab = tuple(
+            tuple(sorted(tuple(sorted(j)) for j in joints))
+            for joints in sorted(assembly_vocab, key=len)
+        )
+        return assembly_vocab
+
     with open(assembly_attr_fn, 'rt') as file_:
         data = json.load(file_)
     part_vocab = tuple(data['part_vocab'])
     part_categories = data['part_categories']
     joint_vocab = tuple(tuple(sorted(joint)) for joint in data['joint_vocab'])
-    assembly_attrs = tuple(
-        tuple(tuple(sorted(joint)) for joint in joints)
-        for joints in data['assembly_vocab']
+
+    final_assembly_attrs = tuple(
+        tuple(sorted(tuple(sorted(joint)) for joint in joints))
+        for joints in data['final_assemblies']
     )
+
+    assembly_attrs = gen_assembly_vocab(final_assembly_attrs, part_categories)
 
     connection_probs, action_vocab, connection_vocab = connection_attrs_to_probs(
         pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False),
@@ -45,7 +117,13 @@ def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background
         # normalize=True
     )
 
-    probs = (event_probs, connection_probs, assembly_probs)
+    num_assemblies = len(assembly_attrs)
+    transition_probs = np.zeros((num_assemblies + 1, num_assemblies + 1), dtype=float)
+    transition_probs[0, :-1] = prior_probs(assembly_attrs)
+    transition_probs[1:, -1] = final_probs(assembly_attrs, final_assembly_attrs)
+    transition_probs[1:, :-1] = assembly_transition_probs(assembly_attrs)
+
+    probs = (event_probs, connection_probs, assembly_probs, transition_probs)
     vocabs = {
         'event_vocab': event_vocab,
         'part_vocab': part_vocab,
@@ -173,6 +251,74 @@ def event_attrs_to_probs(
     return scores, event_vocab
 
 
+def prior_probs(assembly_attrs):
+    zero = 0
+    one = 1
+
+    def score(joints):
+        if joints:
+            return zero
+        return one
+
+    num_assemblies = len(assembly_attrs)
+    scores = np.full((num_assemblies,), zero, dtype=float)
+    for i, joints in enumerate(assembly_attrs):
+        scores[i] = score(joints)
+    return scores
+
+
+def final_probs(assembly_attrs, final_assembly_attrs):
+    zero = 0
+    one = 1
+
+    def score(joints):
+        if joints in final_assembly_attrs:
+            return one
+        return zero
+
+    num_assemblies = len(assembly_attrs)
+    scores = np.full((num_assemblies,), zero, dtype=float)
+    for i, joints in enumerate(assembly_attrs):
+        scores[i] = score(joints)
+    return scores
+
+
+def assembly_transition_probs(assembly_attrs):
+    """
+    """
+
+    zero = 0
+    one = 1
+
+    def score(cur_joints, next_joints):
+        def num_diff(lhs, rhs):
+            return sum(x not in rhs for x in lhs)
+
+        def get_parts(joints):
+            return frozenset(p for joint in joints for p in joint)
+
+        if num_diff(cur_joints, next_joints) != 0:
+            return zero
+
+        if not cur_joints and len(next_joints) == 1:
+            return one
+
+        cur_parts = get_parts(cur_joints)
+        next_parts = get_parts(next_joints)
+        if num_diff(next_parts, cur_parts) != 1:
+            return zero
+        return one
+
+    num_assemblies = len(assembly_attrs)
+    scores = np.full((num_assemblies, num_assemblies), zero, dtype=float)
+    for i_cur, cur_joints in enumerate(assembly_attrs):
+        for i_next, next_joints in enumerate(assembly_attrs):
+            if i_cur != i_next:
+                scores[i_cur, i_next] = score(cur_joints, next_joints)
+
+    return scores
+
+
 def assembly_attrs_to_probs(
         assembly_attrs, joint_vocab, connection_vocab,
         disconnected_val=0, connected_val=1, normalize=False):
@@ -195,7 +341,10 @@ def assembly_attrs_to_probs(
     zero = 0
     one = 1
 
-    assembly_vocab = tuple(i for i, _ in enumerate(assembly_attrs))
+    assembly_vocab = tuple(
+        tuple(sorted(set(part for joint in a for part in joint)))
+        for a in assembly_attrs
+    )
 
     num_assemblies = len(assembly_vocab)
     num_joints = len(joint_vocab)
@@ -375,11 +524,12 @@ def main(
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     # Load event, connection attributes
-    probs, vocabs = loadPartInfo(
+    (*probs, assembly_transition_probs), vocabs = loadPartInfo(
         event_attr_fn, connection_attr_fn, assembly_attr_fn,
         background_action=background_action
     )
     event_assembly_scores = event_to_assembly_scores(*probs)
+    assembly_transition_scores = np.log(assembly_transition_probs)
 
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
@@ -395,19 +545,17 @@ def main(
 
         cv_str = f'cvfold={cv_index}'
 
-        class_priors, dur_priors = count_priors(
+        class_priors, event_dur_probs = count_priors(
             train_data[0], len(dataset.vocab),
             stride=10, approx_upto=0.95
         )
-        scores = {
-            'event_to_assembly_scores': event_assembly_scores,
-            'duration_scores': np.log(dur_priors)
-        }
+        event_dur_scores = np.log(event_dur_probs)
+        scores = (event_dur_scores, event_assembly_scores, assembly_transition_scores)
 
-        model = decode.AttributeClassifier(vocabs, scores, model_params)
-        import pdb; pdb.set_trace()
+        model = decode.AssemblyActionRecognizer(scores, vocabs, model_params)
+        # import pdb; pdb.set_trace()
 
-        viz_priors(os.path.join(fig_dir, f'{cv_str}_priors'), class_priors, dur_priors)
+        viz_priors(os.path.join(fig_dir, f'{cv_str}_priors'), class_priors, event_dur_probs)
         model.write_fsts(os.path.join(misc_dir, f'{cv_str}_fsts'))
         model.save_vocabs(os.path.join(out_data_dir, f'{cv_str}_model-vocabs'))
 
@@ -438,29 +586,13 @@ def main(
 
             if plot_io:
                 utils.plot_array(
-                    event_score_seq.T, (pred_seq.T,), ('pred',),
+                    decode_score_seq.T, (pred_seq.T,), ('pred',),
                     fn=os.path.join(fig_dir, f"seq={seq_id:03d}.png")
                 )
-
-                joint_fig_dir = os.path.join(fig_dir, f"seq={seq_id:03d}_joint-scores")
-                if not os.path.exists(joint_fig_dir):
-                    os.makedirs(joint_fig_dir)
-                joint_misc_dir = os.path.join(misc_dir, f"seq={seq_id:03d}_joint-preds")
-                if not os.path.exists(joint_misc_dir):
-                    os.makedirs(joint_misc_dir)
-                for i in range(decode_score_seq.shape[-1]):
-                    scores = decode_score_seq[..., i]
-                    preds = pred_seq[..., i]
-                    joint = tuple(model.joint_vocab.as_raw()[i])
-                    utils.plot_array(
-                        scores.T, (preds,), ('pred',),
-                        fn=os.path.join(joint_fig_dir, f"joint={i:02d}_{joint}.png"),
-                        title=f"joint {i}: {joint}"
-                    )
-                    write_labels(
-                        os.path.join(joint_misc_dir, f"joint={i:02d}_{joint}.txt"),
-                        preds, model.output_vocab.as_raw()
-                    )
+                write_labels(
+                    os.path.join(misc_dir, f"seq={seq_id:03d}_pred-seq.txt"),
+                    pred_seq, model.output_vocab.as_raw()
+                )
 
 
 if __name__ == "__main__":
