@@ -56,16 +56,11 @@ phase_dir="${output_dir}/${label_type}s-from-video"
 viz_dir="${phase_dir}/visualize"
 cv_folds_dir="${phase_dir}/cv-folds"
 scores_dir="${phase_dir}/scores"
-connections_dir="${phase_dir}/event-to-connection"
+connections_dir="${phase_dir}/assembly-from-event"
 
 slowfast_scores_dir="${phase_dir}/run-slowfast"
 scores_eval_dir="${scores_dir}/eval"
 
-# Figure out how many classes there are by counting commas in the vocab file.
-# (This won't work if the vocab contains non-alphanumeric objects or if
-# something in the vocab contains a comma)
-vocab_file="${dataset_dir}/${label_type}-dataset/vocab.json"
-num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -121,6 +116,11 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Train action recognition model"
+    # Figure out how many classes there are by counting commas in the vocab file.
+    # (This won't work if the vocab contains non-alphanumeric objects or if
+    # something in the vocab contains a comma)
+    vocab_file="${dataset_dir}/${label_type}-dataset/vocab.json"
+    num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
     qsub run_slowfast_sge.sh \
         --config_dir="${config_dir}" \
         --data_dir="${frames_dir}" \
