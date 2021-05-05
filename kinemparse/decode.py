@@ -900,8 +900,6 @@ def make_event_to_assembly_fst(
     if not fst.verify():
         raise openfst.FstError("fst.verify() returned False")
 
-    import pdb; pdb.set_trace()
-
     return fst
 
 
