@@ -124,13 +124,14 @@ class AssemblyActionRecognizer(object):
     def _init_models(
             self, *stage_scores,
             arc_type='log', decode_type='marginal', return_label='output',
-            reduce_order='pre', output_stage=3):
+            reduce_order='pre', output_stage=3, allow_self_transitions=True):
 
         self.reduce_order = reduce_order
         self.return_label = return_label
         self.arc_type = arc_type
         self.output_stage = output_stage
         self.decode_type = decode_type
+        self.allow_self_transitions = allow_self_transitions
 
         model_builders = [
             self.make_event_dur_model,
@@ -165,6 +166,7 @@ class AssemblyActionRecognizer(object):
                 dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
                 input_symbols=self.event_vocab.symbol_table,
                 output_symbols=self.event_dur_vocab.symbol_table,
+                allow_self_transitions=self.allow_self_transitions,
                 arc_type=self.arc_type,
             ),
             bos_str=self.bos_str, eos_str=self.eos_str
@@ -313,9 +315,9 @@ class AssemblyActionRecognizer(object):
             os.makedirs(out_dir)
 
         for i, fst in enumerate(self.submodels):
-            write_fst(os.path.join(out_dir, f'seq-model_stage={i}'), fst)
+            write_fst(os.path.join(out_dir, f'seq-model_stage={i + 1}.txt'), fst)
 
-        write_fst(os.path.join(out_dir, 'seq-model'), self.seq_model)
+        write_fst(os.path.join(out_dir, 'seq-model.txt'), self.seq_model)
 
     def forward(self, input_scores):
         """ Combine action and part scores into event scores.
@@ -348,6 +350,10 @@ class AssemblyActionRecognizer(object):
 
         # Compose event scores with event --> connection map
         decode_lattice = openfst.compose(input_lattice, self.seq_model)
+        if not decode_lattice.num_states():
+            warn_str = "Empty decode lattice: Input scores aren't compatible with seq model"
+            logger.warning(warn_str)
+            import pdb; pdb.set_trace()
         output_lattice = self._decode(decode_lattice)
         output_weights, weight_type = toArray(
             output_lattice,
@@ -364,6 +370,7 @@ class AssemblyActionRecognizer(object):
                 fst = openfst.arcmap(fst, map_type='to_std')
         elif self.decode_type == 'joint':
             fst = libfst.viterbi(lattice)
+            import pdb; pdb.set_trace()
             if self.arc_type == 'log':
                 fst = openfst.arcmap(fst, map_type='to_log')
         else:
@@ -697,13 +704,23 @@ def make_duration_fst(
         final_weights, class_vocab, class_dur_to_str,
         dur_internal_str='I', dur_final_str='F',
         input_symbols=None, output_symbols=None,
+        allow_self_transitions=True,
         arc_type='standard'):
     num_classes, num_states = final_weights.shape
 
-    def durationFst(
-            label_str, dur_internal_str, dur_final_str, final_weights,
-            input_symbols=None, output_symbols=None,
-            arc_type='standard'):
+    fst = openfst.VectorFst(arc_type=arc_type)
+    fst.set_input_symbols(input_symbols)
+    fst.set_output_symbols(output_symbols)
+
+    one = openfst.Weight.one(fst.weight_type())
+    zero = openfst.Weight.zero(fst.weight_type())
+
+    init_state = fst.add_state()
+    final_state = fst.add_state()
+    fst.set_start(init_state)
+    fst.set_final(final_state, one)
+
+    def durationFst(label_str, dur_internal_str, dur_final_str, final_weights):
         """ Construct a left-to-right WFST from an input sequence.
 
         Parameters
@@ -715,32 +732,25 @@ def make_duration_fst(
         fst : openfst.Fst
         """
 
-        input_label = input_symbols.find(label_str)
-        output_label_int = output_symbols.find(dur_internal_str)
-        output_label_ext = output_symbols.find(dur_final_str)
-
-        fst = openfst.VectorFst(arc_type=arc_type)
-        one = openfst.Weight.one(fst.weight_type())
-        zero = openfst.Weight.zero(fst.weight_type())
+        input_label = fst.input_symbols().find(label_str)
+        output_label_int = fst.output_symbols().find(dur_internal_str)
+        output_label_ext = fst.output_symbols().find(dur_final_str)
 
         max_dur = np.nonzero(final_weights != float(zero))[0].max()
         if max_dur < 1:
             raise AssertionError(f"max_dur = {max_dur}, but should be >= 1)")
 
-        fst.set_input_symbols(input_symbols)
-        fst.set_output_symbols(output_symbols)
-
         states = tuple(fst.add_state() for __ in range(max_dur))
-        final_state = fst.add_state()
-        fst.set_start(states[0])
-        fst.set_final(final_state, one)
+        seg_final_state = fst.add_state()
+        fst.add_arc(init_state, openfst.Arc(0, 0, one, states[0]))
+        fst.add_arc(seg_final_state, openfst.Arc(0, 0, one, final_state))
 
         for i, cur_state in enumerate(states):
             cur_state = states[i]
 
             final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
             if final_weight != zero:
-                arc = openfst.Arc(input_label, output_label_ext, one, final_state)
+                arc = openfst.Arc(input_label, output_label_ext, one, seg_final_state)
                 fst.add_arc(cur_state, arc)
 
             if i + 1 < len(states):
@@ -748,28 +758,28 @@ def make_duration_fst(
                 arc = openfst.Arc(input_label, output_label_int, one, next_state)
                 fst.add_arc(cur_state, arc)
 
-        if not fst.verify():
-            raise openfst.FstError("fst.verify() returned False")
+        return states[0], seg_final_state
 
-        return fst
-
-    dur_fsts = [
+    endpoints = tuple(
         durationFst(
             class_vocab[i],
             class_dur_to_str[class_vocab[i], dur_internal_str],
             class_dur_to_str[class_vocab[i], dur_final_str],
             final_weights[i],
-            arc_type=arc_type,
-            input_symbols=input_symbols,
-            output_symbols=output_symbols
         )
         for i in range(num_classes)
-    ]
+    )
 
-    empty = openfst.VectorFst(arc_type=arc_type)
-    empty.set_input_symbols(input_symbols)
-    empty.set_output_symbols(output_symbols)
-    fst = empty.union(*dur_fsts).closure(closure_plus=True)
+    for i, (s_cur_first, s_cur_last) in enumerate(endpoints):
+        for j, (s_next_first, s_next_last) in enumerate(endpoints):
+            if not allow_self_transitions and i == j:
+                continue
+            arc = openfst.Arc(0, 0, one, s_next_first)
+            fst.add_arc(s_cur_last, arc)
+
+    if not fst.verify():
+        raise openfst.FstError("fst.verify() returned False")
+
     return fst
 
 
@@ -871,6 +881,36 @@ def make_event_to_assembly_fst(
         for i_input, _ in enumerate(input_vocab)
     ]
 
+    # Add transitions between all states representing the same output,
+    # but which have different inputs
+    for i_output, _ in enumerate(output_vocab):
+        for i_input, _ in enumerate(input_vocab):
+            for j_input, _ in enumerate(input_vocab):
+                if i_input == j_input:
+                    continue
+
+                weight = one
+                if weight != zero:
+                    from_state = states[i_input][i_output][1]
+                    to_state = states[j_input][i_output][0]
+
+                    istr = input_vocab[i_input]  # FIXME: SHOULD BE j_input ?
+                    cur_ostr = output_vocab[i_output]
+                    next_ostr = output_vocab[i_output]
+                    if state_tx_in_input:
+                        arc_istr = input_parts_to_str[istr, cur_ostr, next_ostr, dur_internal_str]
+                    else:
+                        arc_istr = input_parts_to_str[istr, dur_internal_str]
+                    arc_ostr = output_parts_to_str[istr, cur_ostr, next_ostr, dur_internal_str]
+
+                    arc = openfst.Arc(
+                        fst.input_symbols().find(arc_istr),
+                        fst.output_symbols().find(arc_ostr),
+                        weight,
+                        to_state
+                    )
+                    fst.add_arc(from_state, arc)
+
     # Add transitions from final (action, assembly) to initial (action, assembly)
     for i_input, arr in enumerate(weights):
         for i_cur, row in enumerate(arr):
@@ -892,7 +932,7 @@ def make_event_to_assembly_fst(
                     arc = openfst.Arc(
                         fst.input_symbols().find(arc_istr),
                         fst.output_symbols().find(arc_ostr),
-                        one,
+                        weight,
                         to_state
                     )
                     fst.add_arc(from_state, arc)
@@ -1068,6 +1108,7 @@ def __test(fig_dir, num_classes=2, num_samples=10, min_dur=2, max_dur=4):
             dur_internal_str=dur_internal_str, dur_final_str=dur_final_str,
             input_symbols=class_symbols,
             output_symbols=class_dur_symbols,
+            allow_self_transitions=False,
             arc_type='standard',
         ),
         bos_str=bos_str, eos_str=eos_str

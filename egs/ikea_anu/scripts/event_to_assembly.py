@@ -459,7 +459,7 @@ def viz_transition_probs(fig_dir, transitions, vocab):
     for i, transition_arr in enumerate(transitions):
         plt.matshow(transition_arr)
         plt.title(vocab[i])
-        plt.savefig(os.path.join(fig_dir, f"action={i:02d}_{vocab[i]}"))
+        plt.savefig(os.path.join(fig_dir, f"action={i:02d}_{vocab[i].replace(' ', '-')}"))
         plt.close()
 
 
@@ -468,10 +468,10 @@ def write_transition_probs(fig_dir, transitions, event_vocab, assembly_vocab):
         os.makedirs(fig_dir)
 
     for i, transition_arr in enumerate(transitions):
-        fn = os.path.join(fig_dir, f"action={i:02d}_{event_vocab[i]}")
+        fn = os.path.join(fig_dir, f"action={i:02d}_{event_vocab[i].replace(' ', '-')}.txt")
         rows, cols = transition_arr.nonzero()
         strs = tuple(
-            '{assembly_vocab[r]} -> {assembly_vocab[c]}: {transition_arr[r, c]:.2f}'
+            f'{assembly_vocab[r]} -> {assembly_vocab[c]}: {transition_arr[r, c]:.2f}'
             for r, c in zip(rows, cols)
         )
         with open(fn, 'wt') as file_:
@@ -633,7 +633,7 @@ def main(
             # true_event_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
 
             # FIXME: the serialized variables are probs, not log-probs
-            # event_score_seq = suppress_nonmax(event_score_seq)
+            event_score_seq = suppress_nonmax(event_score_seq)
             event_score_seq = np.log(event_score_seq)
 
             decode_score_seq = model.forward(event_score_seq)

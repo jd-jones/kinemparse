@@ -78,9 +78,10 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --background_action "NA" \
         --model_params "{ \
             'decode_type': 'joint', \
-            'output_stage': 2, \
+            'output_stage': 1, \
             'return_label': 'output', \
-            'reduce_order': 'post' \
+            'reduce_order': 'post', \
+            'allow_self_transitions': False \
         }" \
         --stop_after 5
 fi
