@@ -353,7 +353,6 @@ class AssemblyActionRecognizer(object):
         if not decode_lattice.num_states():
             warn_str = "Empty decode lattice: Input scores aren't compatible with seq model"
             logger.warning(warn_str)
-            import pdb; pdb.set_trace()
         output_lattice = self._decode(decode_lattice)
         output_weights, weight_type = toArray(
             output_lattice,
@@ -370,7 +369,6 @@ class AssemblyActionRecognizer(object):
                 fst = openfst.arcmap(fst, map_type='to_std')
         elif self.decode_type == 'joint':
             fst = libfst.viterbi(lattice)
-            import pdb; pdb.set_trace()
             if self.arc_type == 'log':
                 fst = openfst.arcmap(fst, map_type='to_log')
         else:
@@ -884,58 +882,61 @@ def make_event_to_assembly_fst(
     # Add transitions between all states representing the same output,
     # but which have different inputs
     for i_output, _ in enumerate(output_vocab):
-        for i_input, _ in enumerate(input_vocab):
-            for j_input, _ in enumerate(input_vocab):
-                if i_input == j_input:
+        for i_input_prev, _ in enumerate(input_vocab):
+            for i_input_cur, _ in enumerate(input_vocab):
+                if i_input_prev == i_input_cur:
                     continue
 
                 weight = one
-                if weight != zero:
-                    from_state = states[i_input][i_output][1]
-                    to_state = states[j_input][i_output][0]
+                for i_dur, dur_str in enumerate((dur_internal_str, dur_final_str)):
+                    from_state = states[i_input_prev][i_output][1]
+                    to_state = states[i_input_cur][i_output][i_dur]
 
-                    istr = input_vocab[i_input]  # FIXME: SHOULD BE j_input ?
+                    istr = input_vocab[i_input_cur]
                     cur_ostr = output_vocab[i_output]
                     next_ostr = output_vocab[i_output]
                     if state_tx_in_input:
-                        arc_istr = input_parts_to_str[istr, cur_ostr, next_ostr, dur_internal_str]
+                        arc_istr = input_parts_to_str[istr, cur_ostr, next_ostr, dur_str]
                     else:
-                        arc_istr = input_parts_to_str[istr, dur_internal_str]
-                    arc_ostr = output_parts_to_str[istr, cur_ostr, next_ostr, dur_internal_str]
+                        arc_istr = input_parts_to_str[istr, dur_str]
+                    arc_ostr = output_parts_to_str[istr, cur_ostr, next_ostr, dur_str]
 
-                    arc = openfst.Arc(
-                        fst.input_symbols().find(arc_istr),
-                        fst.output_symbols().find(arc_ostr),
-                        weight,
-                        to_state
-                    )
-                    fst.add_arc(from_state, arc)
+                    if weight != zero:
+                        arc = openfst.Arc(
+                            fst.input_symbols().find(arc_istr),
+                            fst.output_symbols().find(arc_ostr),
+                            weight,
+                            to_state
+                        )
+                        fst.add_arc(from_state, arc)
 
     # Add transitions from final (action, assembly) to initial (action, assembly)
-    for i_input, arr in enumerate(weights):
+    for i_input_cur, arr in enumerate(weights):
         for i_cur, row in enumerate(arr):
             for i_next, tx_weight in enumerate(row):
-                weight = openfst.Weight(fst.weight_type(), tx_weight)
-                if weight != zero:
-                    from_state = states[i_input][i_cur][1]
-                    to_state = states[i_input][i_next][0]
+                for i_input_prev, __, in enumerate(weights):
+                    weight = openfst.Weight(fst.weight_type(), tx_weight)
+                    for i_dur, dur_str in enumerate((dur_internal_str, dur_final_str)):
+                        from_state = states[i_input_prev][i_cur][1]
+                        to_state = states[i_input_cur][i_next][i_dur]
 
-                    istr = input_vocab[i_input]
-                    cur_ostr = output_vocab[i_cur]
-                    next_ostr = output_vocab[i_next]
-                    if state_tx_in_input:
-                        arc_istr = input_parts_to_str[istr, cur_ostr, next_ostr, dur_internal_str]
-                    else:
-                        arc_istr = input_parts_to_str[istr, dur_internal_str]
-                    arc_ostr = output_parts_to_str[istr, cur_ostr, next_ostr, dur_internal_str]
+                        istr = input_vocab[i_input_cur]
+                        cur_ostr = output_vocab[i_cur]
+                        next_ostr = output_vocab[i_next]
+                        if state_tx_in_input:
+                            arc_istr = input_parts_to_str[istr, cur_ostr, next_ostr, dur_str]
+                        else:
+                            arc_istr = input_parts_to_str[istr, dur_str]
+                        arc_ostr = output_parts_to_str[istr, cur_ostr, next_ostr, dur_str]
 
-                    arc = openfst.Arc(
-                        fst.input_symbols().find(arc_istr),
-                        fst.output_symbols().find(arc_ostr),
-                        weight,
-                        to_state
-                    )
-                    fst.add_arc(from_state, arc)
+                        if weight != zero:
+                            arc = openfst.Arc(
+                                fst.input_symbols().find(arc_istr),
+                                fst.output_symbols().find(arc_ostr),
+                                weight,
+                                to_state
+                            )
+                            fst.add_arc(from_state, arc)
 
     if not fst.verify():
         raise openfst.FstError("fst.verify() returned False")

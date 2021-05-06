@@ -51,7 +51,7 @@ assembly_attr_fn="${HOME}/data/assembly_structures/ikea-anu.json"
 
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-events"
-assembly_scores_dir="${phase_dir}/scores_no-transitions"
+assembly_scores_dir="${phase_dir}/event-scores_dur-only"
 assembly_scores_eval_dir="${assembly_scores_dir}/eval"
 
 
@@ -79,11 +79,14 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --model_params "{ \
             'decode_type': 'joint', \
             'output_stage': 1, \
-            'return_label': 'output', \
+            'return_label': 'input', \
             'reduce_order': 'post', \
             'allow_self_transitions': False \
         }" \
         --stop_after 5
+    python ${debug_str} analysis.py \
+        --out_dir "${assembly_scores_dir}/aggregate-results" \
+        --results_file "${assembly_scores_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0

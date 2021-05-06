@@ -630,23 +630,27 @@ def main(
 
             trial_prefix = f"{prefix}{seq_id}"
             event_score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
-            # true_event_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
+            true_event_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
 
             # FIXME: the serialized variables are probs, not log-probs
-            event_score_seq = suppress_nonmax(event_score_seq)
+            # event_score_seq = suppress_nonmax(event_score_seq)
             event_score_seq = np.log(event_score_seq)
 
             decode_score_seq = model.forward(event_score_seq)
             pred_seq = model.predict(decode_score_seq)
 
-            # metric_dict = eval_metrics(pred_event_seq, true_event_seq)
-            # for name, value in metric_dict.items():
-            #     logger.info(f"    {name}: {value * 100:.2f}%")
+            if model_params['return_label'] == 'input':
+                metric_dict = eval_metrics(pred_seq, true_event_seq)
+                for name, value in metric_dict.items():
+                    logger.info(f"    {name}: {value * 100:.2f}%")
+                utils.saveVariable(
+                    true_event_seq, f'{trial_prefix}_true-label-seq',
+                    out_data_dir
+                )
+                utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
             utils.saveVariable(decode_score_seq, f'{trial_prefix}_score-seq', out_data_dir)
             utils.saveVariable(pred_seq, f'{trial_prefix}_pred-label-seq', out_data_dir)
-            # utils.saveVariable(true_event_seq, f'{seq_id_str}_true-label-seq', out_data_dir)
-            # utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
             if plot_io:
                 utils.plot_array(
