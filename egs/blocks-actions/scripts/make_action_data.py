@@ -68,13 +68,12 @@ def actions_to_events(actions_arr, use_coarse_actions=False):
     return events_df
 
 
-def fixStartEndIndices(action_seq, rgb_frame_timestamp_seq, selected_frame_indices):
-    new_times = rgb_frame_timestamp_seq[selected_frame_indices]
+def fixStartEndIndices(action_seq, rgb_frame_timestamp_seq, new_timestamps):
     start_times = rgb_frame_timestamp_seq[action_seq['start']]
     end_times = rgb_frame_timestamp_seq[action_seq['end']]
 
-    action_seq['start'] = utils.nearestIndices(new_times, start_times)
-    action_seq['end'] = utils.nearestIndices(new_times, end_times)
+    action_seq['start'] = utils.nearestIndices(new_timestamps, start_times)
+    action_seq['end'] = utils.nearestIndices(new_timestamps, end_times)
 
     return action_seq
 
@@ -127,14 +126,18 @@ def load_all_labels(
             raise AssertionError("Actions longer than rgb frames")
 
         rgb_frame_idx_seq = np.arange(len(rgb_frame_fn_seq))
+        new_timestamps = rgb_frame_timestamp_seq[selected_frame_indices]
 
-        assembly_seq = labels.parseLabelSeq(
+        assembly_seq, _ = labels.parseLabelSeq(
             fixStartEndIndices(
                 action_seq.copy(),
-                rgb_frame_timestamp_seq, selected_frame_indices
+                rgb_frame_timestamp_seq, new_timestamps
             ),
-            timestamps=rgb_frame_timestamp_seq
+            timestamps=new_timestamps
         )
+        if not assembly_seq:
+            raise AssertionError("Couldn't parse actions into assemblies")
+        assembly_seq[-1].end_idx = len(new_timestamps)
 
         action_seq = actions_to_events(action_seq, use_coarse_actions=use_coarse_actions)
 
@@ -196,6 +199,19 @@ def load_all_labels(
         all_vocabs, metadata
     )
     return ret
+
+
+def plot_assembly_labels(fn, assembly_index_seq, event_index_seq, event_vocab):
+    f, axes = plt.subplots(2, sharex=True, figsize=(12, 24))
+
+    axes[0].plot(assembly_index_seq)
+    axes[1].plot(event_index_seq)
+    axes[1].set_yticks(range(len(event_vocab)))
+    axes[1].set_yticklabels(event_vocab)
+
+    plt.tight_layout()
+    plt.savefig(fn)
+    plt.close()
 
 
 def plot_event_labels(
@@ -344,26 +360,14 @@ def loadMetadata(metadata_file, metadata_criteria={}):
     return metadata
 
 
-def save_assembly_data(out_dir, seq_ids, assembly_seqs):
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
+def make_assembly_labels(assembly_seq, assembly_idx_seq, stride=1, win_size=1):
+    assembly_labels = np.zeros((assembly_seq[-1].end_idx,), dtype=int)
+    for assembly, i in zip(assembly_seq, assembly_idx_seq):
+        assembly_labels[assembly.start_idx:assembly.end_idx + 1] = i
 
-    assembly_vocab = []
-    assembly_idx_seqs = tuple(
-        tuple(labels.gen_eq_classes(state_seq, assembly_vocab))
-        for state_seq in assembly_seqs
-    )
+    # assembly_labels = assembly_labels[::stride]
 
-    assembly_label_seqs = []
-    for assembly_seq, assembly_idx_seq in zip(assembly_seqs, assembly_idx_seqs):
-        assembly_labels = np.zeros((assembly_seq[-1].end_idx,), dtype=int)
-        for assembly, i in zip(assembly_seq, assembly_idx_seq):
-            assembly_labels[assembly.start_idx:assembly.end_idx + 1] = i
-        assembly_label_seqs.append(assembly_labels)
-
-    for seq_id, assembly_labels in zip(seq_ids, assembly_label_seqs):
-        utils.saveVariable(assembly_labels, f'seq={seq_id}_label-seq', out_dir)
-    utils.saveVariable(assembly_vocab, 'vocab', out_dir)
+    return assembly_labels
 
 
 def main(
@@ -387,6 +391,9 @@ def main(
     for name, dir_ in data_dirs.items():
         if not os.path.exists(dir_):
             os.makedirs(dir_)
+    assembly_data_dir = os.path.join(out_dir, 'assembly-dataset')
+    if not os.path.exists(assembly_data_dir):
+        os.makedirs(assembly_data_dir)
 
     (
         seq_ids, event_labels, assembly_seqs,
@@ -396,6 +403,13 @@ def main(
         start_video_from_first_touch=True, subsample_period=None,
         use_coarse_actions=True
     )
+
+    assembly_vocab = []
+    assembly_idx_seqs = tuple(
+        tuple(labels.gen_eq_classes(state_seq, assembly_vocab))
+        for state_seq in assembly_seqs
+    )
+    utils.saveVariable(assembly_vocab, 'vocab', assembly_data_dir)
     vocabs = {label_name: vocabs[label_name] for label_name in label_types}
     for name, vocab in vocabs.items():
         utils.saveVariable(vocab, 'vocab', data_dirs[name])
@@ -404,13 +418,12 @@ def main(
     for name, dir_ in data_dirs.items():
         utils.saveMetadata(metadata, dir_)
 
-    logger.info(f"Loaded {len(seq_ids)} sequence labels from {corpus_name} dataset")
+    assembly_attrs = labels.blockConnectionsSeq(assembly_vocab)
+    utils.saveVariable(assembly_attrs, 'assembly-attrs', assembly_data_dir)
+    plt.matshow(assembly_attrs.T)
+    plt.savefig(os.path.join(fig_dir, 'assembly-attrs.png'))
 
-    # SAVE ASSEMBLY INFORMATION IN ITS OWN SUBDIRECTORY
-    save_assembly_data(
-        os.path.join(out_dir, 'assembly-dataset'),
-        seq_ids, assembly_seqs
-    )
+    logger.info(f"Loaded {len(seq_ids)} sequence labels from {corpus_name} dataset")
 
     part_names = [name for name in vocabs['part'] if name != '']
     col_names = [f"{name}_active" for name in part_names]
@@ -430,6 +443,11 @@ def main(
         event_segs = event_labels[i]
         frame_fns = frame_fn_seqs[i]
         frame_fn_idxs = frame_fn_idx_seqs[i]
+        assembly_seq = assembly_seqs[i]
+        assembly_label_seq = make_assembly_labels(
+            assembly_seq, assembly_idx_seqs[i],
+            **win_params
+        )
 
         # video_dir = os.path.dirname(frame_fns[0]).split('/')[-1]
         video_dir = f"{seq_id}"
@@ -458,6 +476,8 @@ def main(
         event_data.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_data.csv"), index=False)
         event_segs.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_segs.csv"), index=False)
         event_wins.to_csv(os.path.join(out_labels_dir, f"{seq_id_str}_wins.csv"), index=False)
+
+        utils.saveVariable(assembly_label_seq, f'seq={seq_id}_label-seq', assembly_data_dir)
 
         filenames = event_data['fn'].to_list()
         label_indices = {}
@@ -498,19 +518,24 @@ def main(
             label_indices['event'], label_indices['action'], label_indices['part'],
             vocabs['event'], vocabs['action'], part_names
         )
+        plot_assembly_labels(
+            os.path.join(fig_dir, f"{seq_id_str}_assembly.png"),
+            assembly_label_seq,
+            label_indices['event'], vocabs['event']
+        )
 
         for part_activity_row, action_index in zip(label_indices['part'], label_indices['action']):
             for i, is_active in enumerate(part_activity_row):
                 part_index = integerizers['part'][part_names[i]]
                 counts[action_index, part_index] += int(is_active)
 
-    for name, labels in all_slowfast_labels_seg.items():
-        pd.concat(labels, axis=0).to_csv(
+    for name, sf_labels in all_slowfast_labels_seg.items():
+        pd.concat(sf_labels, axis=0).to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_seg.csv'),
             **slowfast_csv_params
         )
-    for name, labels in all_slowfast_labels_win.items():
-        pd.concat(labels, axis=0).to_csv(
+    for name, sf_labels in all_slowfast_labels_win.items():
+        pd.concat(sf_labels, axis=0).to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_win.csv'),
             **slowfast_csv_params
         )

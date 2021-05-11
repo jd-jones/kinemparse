@@ -49,7 +49,7 @@ input_dir="${HOME}/data/blocks"
 frames_dir="${HOME}/data/blocks-videos-as-jpg/child"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-dataset_dir="${output_dir}/dataset"
+dataset_dir="${output_dir}/dataset_TEST"
 phase_dir="${output_dir}/${label_type}s-from-video"
 cv_folds_dir="${phase_dir}/cv-folds"
 scores_dir="${phase_dir}/scores"
@@ -140,7 +140,8 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Train action recognition model"
-    qsub run_slowfast_sge.sh \
+    # qsub run_slowfast_sge.sh
+    sbatch run_slowfast_slurm.sh \
         --config_dir="${config_dir}" \
         --data_dir="${frames_dir}" \
         --base_dir="${output_dir}" \
