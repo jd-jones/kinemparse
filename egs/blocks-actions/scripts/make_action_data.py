@@ -8,7 +8,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from mathtools import utils
-from blocks.core import duplocorpus, definitions
+from blocks.core import duplocorpus, definitions, labels
 
 # Disable chained assignment warnings: see https://stackoverflow.com/a/20627316/3829959
 pd.options.mode.chained_assignment = None
@@ -128,9 +128,14 @@ def load_all_labels(
 
         rgb_frame_idx_seq = np.arange(len(rgb_frame_fn_seq))
 
-        # action_seq = fixStartEndIndices(
-        #     action_seq, rgb_frame_timestamp_seq, selected_frame_indices
-        # )
+        assembly_seq = labels.parseLabelSeq(
+            fixStartEndIndices(
+                action_seq.copy(),
+                rgb_frame_timestamp_seq, selected_frame_indices
+            ),
+            timestamps=rgb_frame_timestamp_seq
+        )
+
         action_seq = actions_to_events(action_seq, use_coarse_actions=use_coarse_actions)
 
         # rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
@@ -139,13 +144,14 @@ def load_all_labels(
         # depth_frame_timestamp_seq = depth_frame_timestamp_seq[selected_frame_indices]
         # depth_frame_fn_seq = depth_frame_fn_seq[selected_frame_indices]
 
-        return action_seq, rgb_frame_fn_seq, rgb_frame_idx_seq, annotator_name
+        return action_seq, assembly_seq, rgb_frame_fn_seq, rgb_frame_idx_seq, annotator_name
 
     metadata = loadMetadata(metadata_file, metadata_criteria=metadata_criteria)
     corpus = duplocorpus.DuploCorpus(corpus_name)
     seq_ids = metadata.index.to_numpy()
 
     event_labels = []
+    assembly_seqs = []
     frame_fn_seqs = []
     frame_fn_idx_seqs = []
     annotator_names = []
@@ -154,16 +160,19 @@ def load_all_labels(
     processed_seq_ids = []
     for i, seq_id in enumerate(seq_ids):
         try:
-            event_df, rgb_frame_fn_seq, rgb_frame_fn_idx_seq, annotator_name = load_one(seq_id)
+            event_df, assembly_seq, rgb_frame_fn_seq, rgb_frame_fn_idx_seq, ann_name = load_one(
+                seq_id
+            )
         except AssertionError as e:
             warn_str = f"Skipping video {seq_id}: {e}"
             logger.warning(warn_str)
             continue
 
         event_labels.append(event_df)
+        assembly_seqs.append(assembly_seq)
         frame_fn_seqs.append(rgb_frame_fn_seq)
         frame_fn_idx_seqs.append(rgb_frame_fn_idx_seq)
-        annotator_names.append(annotator_name)
+        annotator_names.append(ann_name)
         unique_events |= frozenset(event_df['event'].to_list())
         unique_actions |= frozenset(event_df['action'].to_list())
         processed_seq_ids.append(seq_id)
@@ -181,7 +190,12 @@ def load_all_labels(
         'action': action_vocab,
         'part': part_vocab
     }
-    return seq_ids, event_labels, frame_fn_seqs, frame_fn_idx_seqs, all_vocabs, metadata
+    ret = (
+        seq_ids, event_labels, assembly_seqs,
+        frame_fn_seqs, frame_fn_idx_seqs,
+        all_vocabs, metadata
+    )
+    return ret
 
 
 def plot_event_labels(
@@ -330,6 +344,28 @@ def loadMetadata(metadata_file, metadata_criteria={}):
     return metadata
 
 
+def save_assembly_data(out_dir, seq_ids, assembly_seqs):
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    assembly_vocab = []
+    assembly_idx_seqs = tuple(
+        tuple(labels.gen_eq_classes(state_seq, assembly_vocab))
+        for state_seq in assembly_seqs
+    )
+
+    assembly_label_seqs = []
+    for assembly_seq, assembly_idx_seq in zip(assembly_seqs, assembly_idx_seqs):
+        assembly_labels = np.zeros((assembly_seq[-1].end_idx,), dtype=int)
+        for assembly, i in zip(assembly_seq, assembly_idx_seq):
+            assembly_labels[assembly.start_idx:assembly.end_idx + 1] = i
+        assembly_label_seqs.append(assembly_labels)
+
+    for seq_id, assembly_labels in zip(seq_ids, assembly_label_seqs):
+        utils.saveVariable(assembly_labels, f'seq={seq_id}_label-seq', out_dir)
+    utils.saveVariable(assembly_vocab, 'vocab', out_dir)
+
+
 def main(
         out_dir=None, metadata_file=None, corpus_name=None, default_annotator=None,
         metadata_criteria={}, win_params={}, slowfast_csv_params={},
@@ -352,7 +388,10 @@ def main(
         if not os.path.exists(dir_):
             os.makedirs(dir_)
 
-    seq_ids, event_labels, frame_fn_seqs, frame_fn_idx_seqs, vocabs, metadata = load_all_labels(
+    (
+        seq_ids, event_labels, assembly_seqs,
+        frame_fn_seqs, frame_fn_idx_seqs, vocabs, metadata
+    ) = load_all_labels(
         corpus_name, default_annotator, metadata_file, metadata_criteria,
         start_video_from_first_touch=True, subsample_period=None,
         use_coarse_actions=True
@@ -366,6 +405,12 @@ def main(
         utils.saveMetadata(metadata, dir_)
 
     logger.info(f"Loaded {len(seq_ids)} sequence labels from {corpus_name} dataset")
+
+    # SAVE ASSEMBLY INFORMATION IN ITS OWN SUBDIRECTORY
+    save_assembly_data(
+        os.path.join(out_dir, 'assembly-dataset'),
+        seq_ids, assembly_seqs
+    )
 
     part_names = [name for name in vocabs['part'] if name != '']
     col_names = [f"{name}_active" for name in part_names]
