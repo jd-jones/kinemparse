@@ -49,7 +49,7 @@ input_dir="${HOME}/data/blocks"
 frames_dir="${HOME}/data/blocks-videos-as-jpg/child"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
-dataset_dir="${output_dir}/dataset_TEST"
+dataset_dir="${output_dir}/dataset"
 phase_dir="${output_dir}/${label_type}s-from-video"
 cv_folds_dir="${phase_dir}/cv-folds"
 scores_dir="${phase_dir}/scores"

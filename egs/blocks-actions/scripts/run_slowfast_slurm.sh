@@ -1,7 +1,6 @@
-#!/usr/bin/env bash
-#SBATCH --chdir=/home/jdjones/data/output/grid_logs
+#!/usr/bin/zsh
 #SBATCH --job-name="run_slowfast"
-#SBATCH --output=$SBATCH_JOB_NAME-$SLURM_JOB_ID.out
+#SBATCH --output=%x-%j.out
 #SBATCH --mail-user=jdjones@jhu.edu
 #SBATCH --mail-type=ALL
 #SBATCH --mem=15000
@@ -11,18 +10,27 @@ set -ue
 
 # -=( SET DEFAULTS )==---------------------------------------------------------
 label_type='event'
+out_dir_name="run-slowfast"
 config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
 data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
-num_classes=33
+num_classes=''
 loss_func='cross_entropy'
 eval_crit='topk_accuracy'
 eval_crit_params='["k", 1]'
 eval_crit_name='top1_acc'
+train_fold_fn='cvfold=0_train_slowfast-labels_seg.csv'
+val_fold_fn='cvfold=0_val_slowfast-labels_win.csv'
+test_fold_fn='cvfold=0_test_slowfast-labels_win.csv'
+copy_to=''
 
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
 for arg in "$@"; do
     case $arg in
+        --out_dir_name=*)
+            out_dir_name="${arg#*=}"
+            shift
+            ;;
         --config_dir=*)
             config_dir="${arg#*=}"
             shift
@@ -59,6 +67,22 @@ for arg in "$@"; do
             eval_crit_name="${arg#*=}"
             shift
             ;;
+        --train_fold_fn=*)
+            train_fold_fn="${arg#*=}"
+            shift
+            ;;
+        --val_fold_fn=*)
+            val_fold_fn="${arg#*=}"
+            shift
+            ;;
+        --test_fold_fn=*)
+            test_fold_fn="${arg#*=}"
+            shift
+            ;;
+        --copy_to=*)
+            copy_to="${arg#*=}"
+            shift
+            ;;
         *) # Unknown option: print error and exit
             echo "Error: Unrecognized argument ${arg}" >&2
             exit 1
@@ -68,17 +92,21 @@ done
 
 # -=( SET I/O PATHS )==--------------------------------------------------------
 phase_dir="${base_dir}/${label_type}s-from-video"
+dataset_dir="${base_dir}/${label_type}-dataset"
 folds_dir="${phase_dir}/cv-folds/data"
-out_dir="${phase_dir}/run-slowfast"
+out_dir="${phase_dir}/${out_dir_name}"
 
 pretrained_checkpoint_file="${base_dir}/I3D_8x8_R50.pkl"
 trained_checkpoint_file=''
 
 
 # -=( PREPARE ENVIRONMENT )==--------------------------------------------------
-conda activate kinemparse
-export CUDA_VISIBLE_DEVICES=$(free-gpu -n 2)
-cd "/home/jdjones/repo/CompositionalActions/slowfast"
+if [ ${num_classes} == '' ]; then
+    vocab_file="${dataset_dir}/vocab.json"
+    num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
+fi
+
+cd "/home/map6/jon/CompositionalActions/slowfast"
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -89,8 +117,16 @@ srun python tools/run_net.py \
     MODEL.LOSS_FUNC "${loss_func}" \
     DATA.PATH_TO_DATA_DIR "${folds_dir}" \
     DATA.PATH_PREFIX "${data_dir}" \
+    DATA.TRAIN_CSV "${train_fold_fn}" \
+    DATA.VAL_CSV "${val_fold_fn}" \
+    DATA.TEST_CSV "${test_fold_fn}" \
     TRAIN.CHECKPOINT_FILE_PATH "${pretrained_checkpoint_file}" \
     TRAIN.EVAL_CRIT "${eval_crit}" \
     TRAIN.EVAL_CRIT_PARAMS "${eval_crit_params}" \
     TRAIN.EVAL_CRIT_NAME "${eval_crit_name}" \
     TEST.CHECKPOINT_FILE_PATH "${trained_checkpoint_file}"
+
+if [ ${copy_to} != '' ]; then
+    dest_dir="${copy_to}/${label_type}s-from_video"
+    rsync -a "${out_dir}" "${dest_dir}"
+fi

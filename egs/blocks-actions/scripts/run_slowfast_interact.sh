@@ -4,10 +4,9 @@ set -ue
 
 # -=( SET DEFAULTS )==---------------------------------------------------------
 label_type='event'
-config_dir="/home/map6/jon/kinemparse/egs/ikea_anu/config"
+config_dir="/home/map6/jon/kinemparse/egs/blocks-actions/config"
 data_dir='/wrk/map6/blocks_data/blocks-videos-as-jpg/child'
 base_dir="/wrk/map6/blocks_output/blocks-actions"
-num_classes=33
 loss_func='cross_entropy'
 eval_crit='topk_accuracy'
 eval_crit_params='["k", 1]'
@@ -37,6 +36,9 @@ python tools/run_net.py \
     MODEL.LOSS_FUNC "${loss_func}" \
     DATA.PATH_TO_DATA_DIR "${folds_dir}" \
     DATA.PATH_PREFIX "${data_dir}" \
+    DATA.TRAIN_CSV "${train_fold_fn}" \
+    DATA.VAL_CSV "${val_fold_fn}" \
+    DATA.TEST_CSV "${test_fold_fn}" \
     TRAIN.CHECKPOINT_FILE_PATH "${pretrained_checkpoint_file}" \
     TRAIN.EVAL_CRIT "${eval_crit}" \
     TRAIN.EVAL_CRIT_PARAMS "${eval_crit_params}" \
