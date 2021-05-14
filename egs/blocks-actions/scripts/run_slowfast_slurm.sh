@@ -3,8 +3,8 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --mail-user=jdjones@jhu.edu
 #SBATCH --mail-type=ALL
-#SBATCH --mem=20000
-#SBATCH --cpus-per-task=20
+#SBATCH --mem-per-gpu=15000
+#SBATCH -c 20
 #SBATCH --gres=gpu:2
 #SBATCH --time=24:00:00
 
