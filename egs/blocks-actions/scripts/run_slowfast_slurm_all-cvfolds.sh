@@ -66,12 +66,12 @@ done
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
-cv_fold_indices = (0 1 2 3 4)
+cv_fold_indices=(0 1 2 3 4)
 
 for i in ${cv_fold_indices[@]}; do
     sbatch run_slowfast_slurm.sh \
-        --copy_to="mpeven1@thin6.lcsr.jhu.edu:/home/jdjones/data/output/blocks-actions" \
-        --out_dir_name="run-slowfast_cvfold=${i}" \
+        --copy_to="mpeven1@thin6:/home/jdjones/data/files-from-mike" \
+        --out_dir_name="run-slowfast_labels=${label_type}_cvfold=${i}" \
         --train_fold_fn="cvfold=${i}_train_slowfast-labels_seg.csv" \
         --val_fold_fn="cvfold=${i}_val_slowfast-labels_win.csv" \
         --test_fold_fn="cvfold=${i}_test_slowfast-labels_win.csv" \
