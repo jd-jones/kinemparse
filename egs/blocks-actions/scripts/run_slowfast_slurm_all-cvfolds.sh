@@ -69,8 +69,8 @@ done
 cv_fold_indices=(0 1 2 3 4)
 
 for i in ${cv_fold_indices[@]}; do
-    sbatch run_slowfast_slurm.sh \
-        --copy_to="mpeven1@thin6:/home/jdjones/data/files-from-mike" \
+	sbatch --begin="now+$(( i * 12 ))hour" run_slowfast_slurm.sh \
+        --copy_to="thin6:/home/jdjones/data/files-from-mike" \
         --out_dir_name="run-slowfast_labels=${label_type}_cvfold=${i}" \
         --train_fold_fn="cvfold=${i}_train_slowfast-labels_seg.csv" \
         --val_fold_fn="cvfold=${i}_val_slowfast-labels_win.csv" \
