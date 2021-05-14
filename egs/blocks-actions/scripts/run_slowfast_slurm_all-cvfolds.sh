@@ -8,6 +8,7 @@ config_dir="/home/map6/jon/kinemparse/egs/blocks-actions/config"
 data_dir='/wrk/map6/blocks_data/blocks-videos-as-jpg/child'
 base_dir="/wrk/map6/blocks_output/blocks-actions"
 loss_func='cross_entropy'
+head_act='softmax'
 eval_crit='topk_accuracy'
 eval_crit_params='["k", 1]'
 eval_crit_name='top1_acc'
@@ -38,6 +39,10 @@ for arg in "$@"; do
             ;;
         --loss_func=*)
             loss_func="${arg#*=}"
+            shift
+            ;;
+        --head_act=*)
+            head_act="${arg#*=}"
             shift
             ;;
         --eval_crit=*)
@@ -76,6 +81,7 @@ for i in ${cv_fold_indices[@]}; do
         --label_type="${label_type}" \
         --num_classes="${num_classes}" \
         --loss_func="${loss_func}" \
+        --head_act="${head_act}" \
         --eval_crit="${eval_crit}" \
         --eval_crit_params="${eval_crit_params}" \
         --eval_crit_name="${eval_crit_name}"

@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 def save_cv_folds(cv_folds, fn):
     cv_folds = [
-        [[indices.tolist() for indices in split] for split in splits]
-        for splits in cv_folds
+        [list(indices) for indices in split]
+        for split in cv_folds
     ]
     with open(fn, 'wt') as file_:
         json.dump(cv_folds, file_)

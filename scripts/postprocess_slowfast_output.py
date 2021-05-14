@@ -32,7 +32,7 @@ def main(
     vocab = utils.loadVariable('vocab', data_dir)
     metadata = utils.loadMetadata(data_dir)
     slowfast_labels = pd.read_csv(
-        cv_file, keep_default_na=False,
+        cv_file, keep_default_na=False, index_col=0,
         **slowfast_csv_params
     )
     seg_ids = slowfast_labels.index.to_numpy()
@@ -43,6 +43,8 @@ def main(
 
     with open(results_file, 'rb') as file_:
         model_scores, gt_labels = pickle.load(file_)
+        model_scores = model_scores.numpy()
+        gt_labels = gt_labels.numpy()
 
     if len(model_scores) != len(seg_ids):
         err_str = f"{len(model_scores)} segment scores != {slowfast_labels.shape[0]} CSV rows"
@@ -52,8 +54,8 @@ def main(
 
     for vid_id, vid_name in zip(vid_ids, vid_names):
         matches_video = (slowfast_labels['video_name'] == vid_name).to_numpy()
-        win_labels = gt_labels[matches_video].numpy()
-        win_scores = model_scores[matches_video, :].numpy()
+        win_labels = gt_labels[matches_video]
+        win_scores = model_scores[matches_video, :]
 
         if win_labels.shape == win_scores.shape:
             win_preds = (win_scores > 0.5).astype(int)

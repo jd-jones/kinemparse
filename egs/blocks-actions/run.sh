@@ -50,8 +50,9 @@ frames_dir="${HOME}/data/blocks-videos-as-jpg/child"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 dataset_dir="${output_dir}/dataset"
+cv_folds_dir="${output_dir}/cv-folds"
 phase_dir="${output_dir}/${label_type}s-from-video"
-cv_folds_dir="${phase_dir}/cv-folds"
+slowfast_cv_folds_dir="${phase_dir}/cv-folds"
 scores_dir="${phase_dir}/scores"
 
 slowfast_scores_dir="${phase_dir}/run-slowfast"
@@ -69,6 +70,7 @@ case $label_type in
         eval_crit_params='["k", 1]'
         eval_crit_name='top1_acc'
         loss_func='cross_entropy'
+        head_act='softmax'
         ;;
     'part')
         eval_crit='F1'
@@ -77,6 +79,7 @@ case $label_type in
         loss_func='bce_logit'
         # Decrease num_classes by one to ignore background class
         num_classes=$((num_classes-1))
+        head_act='sigmoid'
         ;;
     *)
         echo "Error: Unrecognized label_type ${label_type}" >&2
@@ -125,11 +128,28 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Make cross-validation folds"
     python ${debug_str} make_cv_folds.py \
         --out_dir "${cv_folds_dir}" \
-        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --data_dir "${dataset_dir}/event-dataset" \
         --prefix "seq=" \
         --feature_fn_format "frame-fns.json" \
         --label_fn_format "labels.npy" \
         --cv_params "{'val_ratio': 0.25, 'n_splits': 5}" \
+        --slowfast_csv_params "{'sep': ',',}"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Split slowfast label files"
+    python ${debug_str} make_cv_folds.py \
+        --out_dir "${slowfast_cv_folds_dir}" \
+        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --prefix "seq=" \
+        --feature_fn_format "frame-fns.json" \
+        --label_fn_format "labels.npy" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --slowfast_csv_params "{'sep': ',',}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
@@ -148,6 +168,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --label_type="${label_type}" \
         --num_classes="${num_classes}" \
         --loss_func="${loss_func}" \
+        --head_act="${head_act}" \
         --eval_crit="${eval_crit}" \
         --eval_crit_params="${eval_crit_params}" \
         --eval_crit_name="${eval_crit_name}"
@@ -164,7 +185,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --out_dir "${scores_dir}" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --results_file "${slowfast_scores_dir}/results_test.pkl" \
-        --cv_file "${cv_folds_dir}/data/cvfold=0_test_slowfast-labels_win.csv" \
+        --cv_file "${slowfast_cv_folds_dir}/data/cvfold=0_test_slowfast-labels_win.csv" \
         --slowfast_csv_params "{'sep': ','}" \
         --win_params "{'win_size': 100, 'stride': 10}"
 fi

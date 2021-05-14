@@ -18,6 +18,7 @@ data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
 num_classes=''
 loss_func='cross_entropy'
+head_act='softmax'
 eval_crit='topk_accuracy'
 eval_crit_params='["k", 1]'
 eval_crit_name='top1_acc'
@@ -55,6 +56,10 @@ for arg in "$@"; do
             ;;
         --loss_func=*)
             loss_func="${arg#*=}"
+            shift
+            ;;
+        --head_act=*)
+            head_act="${arg#*=}"
             shift
             ;;
         --eval_crit=*)
@@ -117,6 +122,7 @@ srun python tools/run_net.py \
     OUTPUT_DIR "${out_dir}" \
     MODEL.NUM_CLASSES "${num_classes}" \
     MODEL.LOSS_FUNC "${loss_func}" \
+    MODEL.HEAD_ACT "${head_act}" \
     DATA.PATH_TO_DATA_DIR "${folds_dir}" \
     DATA.PATH_PREFIX "${data_dir}" \
     DATA.TRAIN_CSV "${train_fold_fn}" \

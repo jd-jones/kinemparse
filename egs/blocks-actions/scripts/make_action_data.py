@@ -530,12 +530,12 @@ def main(
                 counts[action_index, part_index] += int(is_active)
 
     for name, sf_labels in all_slowfast_labels_seg.items():
-        pd.concat(sf_labels, axis=0).to_csv(
+        pd.concat(sf_labels, axis=0).reset_index().to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_seg.csv'),
             **slowfast_csv_params
         )
     for name, sf_labels in all_slowfast_labels_win.items():
-        pd.concat(sf_labels, axis=0).to_csv(
+        pd.concat(sf_labels, axis=0).reset_index().to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_win.csv'),
             **slowfast_csv_params
         )
