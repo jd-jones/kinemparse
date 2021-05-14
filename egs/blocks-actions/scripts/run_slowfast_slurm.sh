@@ -3,8 +3,10 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --mail-user=jdjones@jhu.edu
 #SBATCH --mail-type=ALL
-#SBATCH --mem=15000
+#SBATCH --mem=20000
+#SBATCH --cpus-per-task=20
 #SBATCH --gres=gpu:2
+#SBATCH --time=24:00:00
 
 set -ue
 
@@ -92,7 +94,7 @@ done
 
 # -=( SET I/O PATHS )==--------------------------------------------------------
 phase_dir="${base_dir}/${label_type}s-from-video"
-dataset_dir="${base_dir}/${label_type}-dataset"
+dataset_dir="${base_dir}/dataset/${label_type}-dataset"
 folds_dir="${phase_dir}/cv-folds/data"
 out_dir="${phase_dir}/${out_dir_name}"
 
@@ -101,7 +103,7 @@ trained_checkpoint_file=''
 
 
 # -=( PREPARE ENVIRONMENT )==--------------------------------------------------
-if [ ${num_classes} == '' ]; then
+if [[ ${num_classes} == '' ]]; then
     vocab_file="${dataset_dir}/vocab.json"
     num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
 fi
@@ -126,7 +128,7 @@ srun python tools/run_net.py \
     TRAIN.EVAL_CRIT_NAME "${eval_crit_name}" \
     TEST.CHECKPOINT_FILE_PATH "${trained_checkpoint_file}"
 
-if [ ${copy_to} != '' ]; then
+if [[ ${copy_to} != '' ]]; then
     dest_dir="${copy_to}/${label_type}s-from_video"
     rsync -a "${out_dir}" "${dest_dir}"
 fi
