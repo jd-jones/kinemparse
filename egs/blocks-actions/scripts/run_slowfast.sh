@@ -127,5 +127,5 @@ python tools/run_net.py \
     TEST.CHECKPOINT_FILE_PATH "${trained_checkpoint_file}"
 
 if [[ ${copy_to} != '' ]]; then
-    rsync -aog --chown='jjone229:lcsr-cirl' "${out_dir}" "${copy_to}"
+    rsync -a "${out_dir}" "${copy_to}"
 fi
