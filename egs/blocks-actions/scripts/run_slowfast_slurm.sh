@@ -27,7 +27,7 @@ num_classes=''
 # -=( MAIN SCRIPT )==----------------------------------------------------------
 # srun ./run_slowfast.sh
 srun ./run_slowfast_all-cvfolds.sh \
-    --copy_to="thin6:/home/jdjones/data/files-from-mike" \
+    --copy_to="thin6:/home/jjone229/data/files-from-mike" \
     --config_dir="${config_dir}" \
     --data_dir="${data_dir}" \
     --base_dir="${base_dir}" \
