@@ -32,6 +32,7 @@ class FusionDataset(object):
             self, trial_ids, rgb_attributes_dir, rgb_data_dir, imu_attributes_dir, imu_data_dir,
             device=None, modalities=None):
         self.trial_ids = trial_ids
+
         self.metadata = utils.loadMetadata(rgb_data_dir, rows=trial_ids)
         self.vocab = utils.loadVariable('vocab', rgb_attributes_dir)
 
@@ -43,6 +44,9 @@ class FusionDataset(object):
         self.modalities = modalities
 
     def loadInputs(self, seq_id):
+        if self.modalities == ['rgb']:
+            return self.loadInputsRgb(seq_id)
+
         trial_prefix = f"trial={seq_id}"
         rgb_attribute_seq = torch.tensor(
             utils.loadVariable(f"{trial_prefix}_score-seq", self.rgb_attributes_dir),
@@ -67,6 +71,21 @@ class FusionDataset(object):
             'imu': make_attribute_features(imu_attribute_seq)
         }
 
+        attribute_feats = torch.cat(
+            tuple(attribute_feats[name] for name in self.modalities),
+            dim=1
+        )
+
+        return attribute_feats
+
+    def loadInputsRgb(self, seq_id):
+        trial_prefix = f"trial={seq_id}"
+        rgb_attribute_seq = torch.tensor(
+            utils.loadVariable(f"{trial_prefix}_score-seq", self.rgb_attributes_dir),
+            dtype=torch.float, device=self.device
+        )
+
+        attribute_feats = {'rgb': make_attribute_features(rgb_attribute_seq)}
         attribute_feats = torch.cat(
             tuple(attribute_feats[name] for name in self.modalities),
             dim=1
@@ -104,18 +123,22 @@ def main(
         os.makedirs(out_data_dir)
 
     # Load data
-    rgb_trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
-    imu_trial_ids = utils.getUniqueIds(imu_data_dir, prefix='trial=', to_array=True)
-    trial_ids = np.array(sorted(set(rgb_trial_ids.tolist()) & set(imu_trial_ids.tolist())))
-    logger.info(
-        f"Processing {len(trial_ids)} videos common to "
-        f"RGB ({len(rgb_trial_ids)} total) and IMU ({len(imu_trial_ids)} total)"
-    )
+    if modalities == ['rgb']:
+        trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
+        logger.info(f"Processing {len(trial_ids)} videos")
+    else:
+        rgb_trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
+        imu_trial_ids = utils.getUniqueIds(imu_data_dir, prefix='trial=', to_array=True)
+        trial_ids = np.array(sorted(set(rgb_trial_ids.tolist()) & set(imu_trial_ids.tolist())))
+        logger.info(
+            f"Processing {len(trial_ids)} videos common to "
+            f"RGB ({len(rgb_trial_ids)} total) and IMU ({len(imu_trial_ids)} total)"
+        )
 
     device = torchutils.selectDevice(gpu_dev_id)
     dataset = FusionDataset(
         trial_ids, rgb_attributes_dir, rgb_data_dir, imu_attributes_dir, imu_data_dir,
-        device=device, modalities=modalities
+        device=device, modalities=modalities,
     )
     utils.saveMetadata(dataset.metadata, out_data_dir)
     utils.saveVariable(dataset.vocab, 'vocab', out_data_dir)

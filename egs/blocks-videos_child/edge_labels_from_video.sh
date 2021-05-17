@@ -6,7 +6,7 @@ set -ue
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
-output_dir="~/data/output/blocks/child-videos"
+output_dir="~/data/output/blocks-assemblies"
 
 # INPUT TO SCRIPT
 data_dir="${output_dir}/raw-data"
@@ -17,8 +17,8 @@ background_dir="${phase_dir}/background-detections"
 detections_dir="${phase_dir}/object-detections"
 seg_labels_dir="${phase_dir}/image-segment-labels"
 sim_pretrain_dir="${phase_dir}/pretrained-models-sim_test-single-edge"
-cv_folds_dir="${phase_dir}/cv-folds_LOMO"
-edge_label_dir="${phase_dir}/edge-label-preds_cv=LOMO_test-single-edge"
+cv_folds_dir="${phase_dir}/cv-folds"
+edge_label_dir="${phase_dir}/edge-label-preds"
 
 edge_label_batches_dir="${edge_label_dir}/batches"
 edge_label_eval_dir="${edge_label_dir}/eval"
@@ -60,6 +60,7 @@ done
 cd ${scripts_dir}
 STAGE=0
 
+
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Detect background"
     python ${debug_str} detect_background.py \
@@ -75,6 +76,7 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
 fi
 ((++STAGE))
 
+
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Detect objects"
     python ${debug_str} detect_objects.py \
@@ -88,6 +90,7 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
+
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Label foreground segments"
@@ -103,6 +106,7 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
+
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Pre-train assembly detector"
@@ -128,6 +132,7 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
+
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Make cross-validation folds"
@@ -172,6 +177,7 @@ if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
 fi
 ((++STAGE))
+
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate edge label predictions"

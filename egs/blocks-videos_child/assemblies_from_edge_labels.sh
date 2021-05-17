@@ -6,7 +6,7 @@ set -ue
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
 config_dir="${eg_root}/config"
-output_dir="~/data/output/blocks/child-videos"
+output_dir="~/data/output/blocks-assemblies"
 
 # INPUT TO SCRIPT
 rgb_data_dir="${output_dir}/raw-data"
@@ -17,11 +17,11 @@ rgb_edge_label_dir="${rgb_phase_dir}/edge-label-preds"
 
 imu_phase_dir="${output_dir}/edge-labels-from-imu"
 imu_data_dir="${imu_phase_dir}/connections-dataset"
-imu_edge_label_dir="${imu_phase_dir}/edge-label-preds_LOMO"
+imu_edge_label_dir="${imu_phase_dir}/edge-label-preds"
 
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-edge-labels"
-fused_data_dir="${phase_dir}/fusion-dataset"
+fused_data_dir="${phase_dir}/fusion-dataset_rgb-only"
 cv_folds_dir="${phase_dir}/cv-folds"
 fused_scores_dir="${phase_dir}/edge-label-preds"
 assembly_scores_dir="${phase_dir}/assembly-scores"
@@ -72,13 +72,15 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Make fusion dataset"
     python ${debug_str} make_fusion_dataset.py \
         --out_dir "${fused_data_dir}" \
-        --rgb_data_dir "${rgb_data_dir}/data" \
+        --rgb_data_dir "${rgb_edge_label_dir}/data" \
         --rgb_attributes_dir "${rgb_edge_label_dir}/data" \
         --imu_data_dir "${imu_data_dir}/data" \
         --imu_attributes_dir "${imu_edge_label_dir}/data" \
-        --modalities "['imu', 'rgb']" \
+        --modalities "['rgb']" \
         --gpu_dev_id "'2'" \
         --plot_io "True"
+        #--modalities "['imu', 'rgb']"
+        #--rgb_data_dir "${rgb_data_dir}/data"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 1
@@ -141,7 +143,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} score_assemblies.py \
         --out_dir "${assembly_scores_dir}" \
         --rgb_data_dir "${rgb_data_dir}/data" \
-        --rgb_attributes_dir "${fused_scores_dir}/data" \
+        --rgb_attributes_dir "${rgb_edge_label_dir}/data" \
         --rgb_vocab_dir "${rgb_vocab_dir}/data" \
         --imu_data_dir "${imu_data_dir}/data" \
         --imu_attributes_dir "${imu_edge_label_dir}/data" \

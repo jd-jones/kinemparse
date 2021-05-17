@@ -186,13 +186,17 @@ def main(
         utils.saveVariable(var, var_name, to_dir)
 
     # Load data
-    rgb_trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
-    imu_trial_ids = utils.getUniqueIds(imu_data_dir, prefix='trial=', to_array=True)
-    trial_ids = np.array(sorted(set(rgb_trial_ids.tolist()) & set(imu_trial_ids.tolist())))
-    logger.info(
-        f"Processing {len(trial_ids)} videos common to "
-        f"RGB ({len(rgb_trial_ids)} total) and IMU ({len(imu_trial_ids)} total)"
-    )
+    if modalities == ['rgb']:
+        trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
+        logger.info(f"Processing {len(trial_ids)} videos")
+    else:
+        rgb_trial_ids = utils.getUniqueIds(rgb_data_dir, prefix='trial=', to_array=True)
+        imu_trial_ids = utils.getUniqueIds(imu_data_dir, prefix='trial=', to_array=True)
+        trial_ids = np.array(sorted(set(rgb_trial_ids.tolist()) & set(imu_trial_ids.tolist())))
+        logger.info(
+            f"Processing {len(trial_ids)} videos common to "
+            f"RGB ({len(rgb_trial_ids)} total) and IMU ({len(imu_trial_ids)} total)"
+        )
 
     device = torchutils.selectDevice(gpu_dev_id)
     dataset = FusionDataset(

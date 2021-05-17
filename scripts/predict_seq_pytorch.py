@@ -159,10 +159,10 @@ class LstmClassifier(torch.nn.Module):
             device=input_seq.device
         )
         lstm_out, (hn, cn) = self.LSTM(input_seq, (h0, c0))
-        # import pdb; pdb.set_trace()
         linear_out = self.linear(lstm_out)
 
         if self.num_multiclass is not None:
+            # BATCH x TIME x VOCAB * EDGE -> BATCH x TIME x VOCAB x EDGE
             linear_out = linear_out.view(
                 *linear_out.shape[0:2], self.out_set_size, self.num_multiclass
             )
@@ -285,7 +285,7 @@ def main(
     )
     dataset = utils.CvDataset(
         trial_ids, data_dir,
-        feature_fn_format=feature_fn_format, label_fn_format=label_fn_format
+        feature_fn_format=feature_fn_format, label_fn_format=label_fn_format,
     )
     utils.saveMetadata(dataset.metadata, out_data_dir)
     utils.saveVariable(dataset.vocab, 'vocab', out_data_dir)
