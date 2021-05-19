@@ -4,7 +4,8 @@ set -ue
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
-cv_fold_indices=(0 1 2 3 4)
+# cv_fold_indices=(0 1 2 3 4)
+cv_fold_indices=(4)
 
 for i in ${cv_fold_indices[@]}; do
     datetime=$(date +"%Y-%m-%d-%H:%M")

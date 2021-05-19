@@ -422,10 +422,10 @@ def main(
 
         train_states = np.hstack(tuple(state_true_seqs[i] for i in (train_indices)))
         train_edges = part_labels[train_states]
-        state_train_vocab = np.unique(train_states)
-        edge_train_vocab = part_labels[state_train_vocab]
+        # state_train_vocab = np.unique(train_states)
+        # edge_train_vocab = part_labels[state_train_vocab]
         train_freq_bigram, train_freq_unigram = edge_joint_freqs(train_edges)
-        state_probs = utils.makeHistogram(len(vocab), train_states, normalize=True)
+        # state_probs = utils.makeHistogram(len(vocab), train_states, normalize=True)
 
         test_states = np.hstack(tuple(state_true_seqs[i] for i in (test_indices)))
         test_edges = part_labels[test_states]
@@ -455,12 +455,12 @@ def main(
             trial_prefix = f"trial={seq_id}"
             # I include the '.' to differentiate between 'rgb-frame-seq' and
             # 'rgb-frame-seq-before-first-touch'
-            rgb_seq = utils.loadVariable(f"{trial_prefix}_rgb-frame-seq.", data_dir)
-            seg_seq = utils.loadVariable(f"{trial_prefix}_seg-labels-seq", segs_dir)
+            # rgb_seq = utils.loadVariable(f"{trial_prefix}_rgb-frame-seq.", data_dir)
+            # seg_seq = utils.loadVariable(f"{trial_prefix}_seg-labels-seq", segs_dir)
             score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
-            if score_seq.shape[0] != rgb_seq.shape[0]:
-                err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
-                raise AssertionError(err_str)
+            # if score_seq.shape[0] != rgb_seq.shape[0]:
+            #     err_str = f"scores shape {score_seq.shape} != data shape {rgb_seq.shape}"
+            #     raise AssertionError(err_str)
 
             edge_pred_seq = edge_pred_seqs[i]
             edge_true_seq = edge_true_seqs[i]
@@ -475,14 +475,14 @@ def main(
                 f"{num_samples} samples"
             )
 
-            edge_freq_bigram, edge_freq_unigram = edge_joint_freqs(edge_true_seq)
-            dist_shift = np.linalg.norm(train_freq_unigram - edge_freq_unigram)
+            # edge_freq_bigram, edge_freq_unigram = edge_joint_freqs(edge_true_seq)
+            # dist_shift = np.linalg.norm(train_freq_unigram - edge_freq_unigram)
             metric_dict = {
-                'State OOV rate': oov_rate_state(state_true_seq, state_train_vocab),
-                'Edge OOV rate': oov_rate_edges(edge_true_seq, edge_train_vocab),
-                'State avg prob, true': state_probs[state_true_seq].mean(),
-                'State avg prob, pred': state_probs[state_pred_seq].mean(),
-                'Edge distribution shift': dist_shift
+                # 'State OOV rate': oov_rate_state(state_true_seq, state_train_vocab),
+                # 'Edge OOV rate': oov_rate_edges(edge_true_seq, edge_train_vocab),
+                # 'State avg prob, true': state_probs[state_true_seq].mean(),
+                # 'State avg prob, pred': state_probs[state_pred_seq].mean(),
+                # 'Edge distribution shift': dist_shift
             }
             metric_dict = eval_edge_metrics(edge_pred_seq, edge_true_seq, append_to=metric_dict)
             metric_dict = eval_state_metrics(state_pred_seq, state_true_seq, append_to=metric_dict)
@@ -517,70 +517,70 @@ def main(
                     fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
                 )
 
-                if False:  # FIXME
-                    if rgb_seq.shape[0] > num_disp_imgs:
-                        idxs = np.arange(rgb_seq.shape[0])
-                        np.random.shuffle(idxs)
-                        idxs = idxs[:num_disp_imgs]
-                        idxs = np.sort(idxs)
-                    else:
-                        idxs = slice(None, None, None)
-                    plot_io(
-                        rgb_seq[idxs], seg_seq[idxs], edge_pred_seq[idxs], edge_true_seq[idxs],
-                        dataset,
-                        file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}.png")
-                    )
+                # if False:  # FIXME
+                #     if rgb_seq.shape[0] > num_disp_imgs:
+                #         idxs = np.arange(rgb_seq.shape[0])
+                #         np.random.shuffle(idxs)
+                #         idxs = idxs[:num_disp_imgs]
+                #         idxs = np.sort(idxs)
+                #     else:
+                #         idxs = slice(None, None, None)
+                #     plot_io(
+                #         rgb_seq[idxs], seg_seq[idxs], edge_pred_seq[idxs], edge_true_seq[idxs],
+                #         dataset,
+                #         file_path=os.path.join(io_dir_images, f"seq={seq_id:03d}.png")
+                #     )
 
-    make_scatterplot(
-        os.path.join(fig_dir, "state-oov_vs_state-accuracy.png"),
-        all_metrics['State OOV rate'],
-        all_metrics['State Accuracy'],
-        'State OOV rate', 'State Accuracy',
-        classes=(np.array(all_metrics['Edge OOV rate']) < 0.05).astype(int)
-    )
-    make_scatterplot(
-        os.path.join(fig_dir, "state-prob_vs_state-accuracy.png"),
-        all_metrics['State avg prob, true'],
-        all_metrics['State Accuracy'],
-        'State avg prob, true', 'State Accuracy',
-    )
-    make_scatterplot(
-        os.path.join(fig_dir, "edge-oov_vs_state-accuracy.png"),
-        all_metrics['Edge OOV rate'],
-        all_metrics['State Accuracy'],
-        'Edge OOV rate', 'State Accuracy'
-    )
-    make_scatterplot(
-        os.path.join(fig_dir, "edge-oov_vs_edge-F1.png"),
-        all_metrics['Edge OOV rate'],
-        all_metrics['Edge F1'],
-        'Edge OOV rate', 'Edge F1'
-    )
-    make_scatterplot(
-        os.path.join(fig_dir, "edge-oov_vs_state-oov.png"),
-        all_metrics['Edge OOV rate'],
-        all_metrics['State OOV rate'],
-        'Edge OOV rate', 'State OOV rate'
-    )
-    make_scatterplot(
-        os.path.join(fig_dir, "edge-dist-shift_vs_state-accuracy.png"),
-        all_metrics['Edge distribution shift'],
-        all_metrics['State Accuracy'],
-        'Edge distribution shift', 'State Accuracy'
-    )
-    make_scatterplot(
-        os.path.join(fig_dir, "edge-dist-shift_vs_edge-F1.png"),
-        all_metrics['Edge distribution shift'],
-        all_metrics['Edge F1'],
-        'Edge distribution shift', 'Edge F1'
-    )
+    # make_scatterplot(
+    #     os.path.join(fig_dir, "state-oov_vs_state-accuracy.png"),
+    #     all_metrics['State OOV rate'],
+    #     all_metrics['State Accuracy'],
+    #     'State OOV rate', 'State Accuracy',
+    #     classes=(np.array(all_metrics['Edge OOV rate']) < 0.05).astype(int)
+    # )
+    # make_scatterplot(
+    #     os.path.join(fig_dir, "state-prob_vs_state-accuracy.png"),
+    #     all_metrics['State avg prob, true'],
+    #     all_metrics['State Accuracy'],
+    #     'State avg prob, true', 'State Accuracy',
+    # )
+    # make_scatterplot(
+    #     os.path.join(fig_dir, "edge-oov_vs_state-accuracy.png"),
+    #     all_metrics['Edge OOV rate'],
+    #     all_metrics['State Accuracy'],
+    #     'Edge OOV rate', 'State Accuracy'
+    # )
+    # make_scatterplot(
+    #     os.path.join(fig_dir, "edge-oov_vs_edge-F1.png"),
+    #     all_metrics['Edge OOV rate'],
+    #     all_metrics['Edge F1'],
+    #     'Edge OOV rate', 'Edge F1'
+    # )
+    # make_scatterplot(
+    #     os.path.join(fig_dir, "edge-oov_vs_state-oov.png"),
+    #     all_metrics['Edge OOV rate'],
+    #     all_metrics['State OOV rate'],
+    #     'Edge OOV rate', 'State OOV rate'
+    # )
+    # make_scatterplot(
+    #     os.path.join(fig_dir, "edge-dist-shift_vs_state-accuracy.png"),
+    #     all_metrics['Edge distribution shift'],
+    #     all_metrics['State Accuracy'],
+    #     'Edge distribution shift', 'State Accuracy'
+    # )
+    # make_scatterplot(
+    #     os.path.join(fig_dir, "edge-dist-shift_vs_edge-F1.png"),
+    #     all_metrics['Edge distribution shift'],
+    #     all_metrics['Edge F1'],
+    #     'Edge distribution shift', 'Edge F1'
+    # )
 
-    for i, a in enumerate(pred_vocab):
-        pred_image = render(dataset, a)
-        imageprocessing.displayImage(
-            pred_image,
-            file_path=os.path.join(io_dir_images, f"pred_class={i:04d}.png")
-        )
+    # for i, a in enumerate(pred_vocab):
+    #     pred_image = render(dataset, a)
+    #     imageprocessing.displayImage(
+    #         pred_image,
+    #         file_path=os.path.join(io_dir_images, f"pred_class={i:04d}.png")
+    #     )
 
 
 if __name__ == "__main__":

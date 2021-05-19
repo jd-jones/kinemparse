@@ -23,9 +23,10 @@ imu_edge_label_dir="${imu_phase_dir}/edge-label-preds"
 phase_dir="${output_dir}/assemblies-from-edge-labels"
 fused_data_dir="${phase_dir}/fusion-dataset_rgb-only"
 cv_folds_dir="${phase_dir}/cv-folds"
-fused_scores_dir="${phase_dir}/edge-label-preds"
+# fused_scores_dir="${phase_dir}/edge-label-preds"
+fused_scores_dir="${rgb_edge_label_dir}"
 assembly_scores_dir="${phase_dir}/assembly-scores"
-decode_dir="${phase_dir}/assembly-decode_fused"
+decode_dir="${phase_dir}/assembly-decode"
 
 fusion_eval_dir="${fused_scores_dir}/eval"
 decode_eval_dir="${decode_dir}/eval"
@@ -196,8 +197,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --vocab_dir "${rgb_vocab_dir}/data" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --gpu_dev_id "'2'" \
-        --label_type "assembly" \
-        --num_disp_imgs "10"
+        --label_type "assembly"
+        # --num_disp_imgs "10"
     python analysis.py \
         --out_dir "${decode_eval_dir}/system-performance" \
         --results_file "${decode_eval_dir}/results.csv"
@@ -218,8 +219,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --vocab_dir "${rgb_vocab_dir}/data" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --gpu_dev_id "'2'" \
-        --label_type "edge" \
-        --num_disp_imgs "10"
+        --label_type "edge"
+        # --num_disp_imgs "10"
     python analysis.py \
         --out_dir "${fusion_eval_dir}/system-performance" \
         --results_file "${fusion_eval_dir}/results.csv"
