@@ -42,6 +42,7 @@ done
 # DEFINE THE FILE STRUCTURE USED BY THIS SCRIPT
 eg_root=$(pwd)
 scripts_dir="${eg_root}/scripts"
+config_dir="${eg_root}/config"
 output_dir="${HOME}/data/output/ikea_anu"
 
 # INPUT TO SCRIPT
@@ -52,15 +53,15 @@ frames_dir="${input_dir}/video_frames"
 
 # OUTPUT OF SCRIPT
 dataset_dir="${output_dir}/dataset"
+cv_folds_dir="${output_dir}/cv-folds"
 phase_dir="${output_dir}/${label_type}s-from-video"
 viz_dir="${phase_dir}/visualize"
-cv_folds_dir="${phase_dir}/cv-folds"
+slowfast_cv_folds_dir="${phase_dir}/cv-folds"
 scores_dir="${phase_dir}/scores"
 connections_dir="${phase_dir}/assembly-from-event"
 
 slowfast_scores_dir="${phase_dir}/run-slowfast"
 scores_eval_dir="${scores_dir}/eval"
-
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -101,11 +102,29 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Make cross-validation folds"
     python ${debug_str} make_cv_folds.py \
         --out_dir "${cv_folds_dir}" \
+        --data_dir "${dataset_dir}/event-dataset" \
+        --prefix "seq=" \
+        --feature_fn_format "frame-fns.json" \
+        --label_fn_format "labels.npy" \
+        --cv_params "{'val_ratio': 0.25, 'n_splits': 5}" \
+        --slowfast_csv_params "{'sep': ',',}"
+        # --cv_params "{'by_group': 'split_name', 'n_splits': 2, 'val_ratio': 0}" \
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Make cross-validation folds"
+    python ${debug_str} make_cv_folds.py \
+        --out_dir "${slowfast_cv_folds_dir}" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --prefix "seq=" \
         --feature_fn_format "frame-fns.json" \
         --label_fn_format "labels.npy" \
-        --cv_params "{'by_group': 'split_name', 'n_splits': 2, 'val_ratio': 0}" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --slowfast_csv_params "{'sep': ','}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then

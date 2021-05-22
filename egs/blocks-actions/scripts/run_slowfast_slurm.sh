@@ -24,6 +24,10 @@ eval_crit_name='top1_acc'
 num_classes=''
 
 
+# -=( PREPARE ENVIRONMENT )==--------------------------------------------------
+cd "/home/map6/jon/CompositionalActions/slowfast"
+
+
 # -=( MAIN SCRIPT )==----------------------------------------------------------
 srun ./run_slowfast_all-cvfolds.sh \
     --copy_to="thin6:/home/jjone229/data/files-from-mike" \

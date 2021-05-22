@@ -10,71 +10,18 @@
 
 set -ue
 
+
 # -=( SET DEFAULTS )==---------------------------------------------------------
 label_type='event'
 config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
 data_dir='/home/jdjones/data/ikea_anu/video_frames'
 base_dir="/home/jdjones/data/output/ikea_anu"
-num_classes=33
 loss_func='cross_entropy'
+head_act='softmax'
 eval_crit='topk_accuracy'
 eval_crit_params='["k", 1]'
 eval_crit_name='top1_acc'
-
-# -=( PARSE CLI ARGS )==-------------------------------------------------------
-for arg in "$@"; do
-    case $arg in
-        --config_dir=*)
-            config_dir="${arg#*=}"
-            shift
-            ;;
-        --data_dir=*)
-            data_dir="${arg#*=}"
-            shift
-            ;;
-        --base_dir=*)
-            base_dir="${arg#*=}"
-            shift
-            ;;
-        --label_type=*)
-            label_type="${arg#*=}"
-            shift
-            ;;
-        --num_classes=*)
-            num_classes="${arg#*=}"
-            shift
-            ;;
-        --loss_func=*)
-            loss_func="${arg#*=}"
-            shift
-            ;;
-        --eval_crit=*)
-            eval_crit="${arg#*=}"
-            shift
-            ;;
-        --eval_crit_params=*)
-            eval_crit_params="${arg#*=}"
-            shift
-            ;;
-        --eval_crit_name=*)
-            eval_crit_name="${arg#*=}"
-            shift
-            ;;
-        *) # Unknown option: print error and exit
-            echo "Error: Unrecognized argument ${arg}" >&2
-            exit 1
-            ;;
-    esac
-done
-
-# -=( SET I/O PATHS )==--------------------------------------------------------
-phase_dir="${base_dir}/${label_type}s-from-video"
-folds_dir="${phase_dir}/cv-folds/data"
-out_dir="${phase_dir}/run-slowfast"
-
-pretrained_checkpoint_file="${base_dir}/I3D_8x8_R50.pkl"
-trained_checkpoint_file=''
-
+num_classes=''
 
 # -=( PREPARE ENVIRONMENT )==--------------------------------------------------
 conda activate kinemparse

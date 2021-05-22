@@ -4,6 +4,7 @@ import json
 import glob
 
 import yaml
+import numpy as np
 import pandas as pd
 
 from mathtools import utils
@@ -13,8 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 def save_cv_folds(cv_folds, fn):
+    def to_list(indices):
+        if isinstance(indices, np.ndarray):
+            return indices.tolist()
+        return list(indices)
     cv_folds = [
-        [list(indices) for indices in split]
+        [to_list(indices) for indices in split]
         for split in cv_folds
     ]
     with open(fn, 'wt') as file_:
