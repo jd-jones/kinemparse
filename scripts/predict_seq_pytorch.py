@@ -249,7 +249,7 @@ def main(
         out_dir=None, data_dir=None, model_name=None, predict_mode='classify',
         gpu_dev_id=None, batch_size=None, learning_rate=None,
         independent_signals=None, active_only=None,
-        feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
+        prefix='trial=', feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
         dataset_params={}, model_params={}, cv_params={}, train_params={}, viz_params={},
         metric_names=['Loss', 'Accuracy', 'Precision', 'Recall', 'F1'],
         plot_predictions=None, results_file=None, sweep_param_name=None):
@@ -280,11 +280,11 @@ def main(
     # Load data
     device = torchutils.selectDevice(gpu_dev_id)
     trial_ids = utils.getUniqueIds(
-        data_dir, prefix='trial=', suffix=feature_fn_format,
+        data_dir, prefix=prefix, suffix=feature_fn_format,
         to_array=True
     )
     dataset = utils.CvDataset(
-        trial_ids, data_dir,
+        trial_ids, data_dir, prefix=prefix,
         feature_fn_format=feature_fn_format, label_fn_format=label_fn_format,
     )
     utils.saveMetadata(dataset.metadata, out_data_dir)
@@ -331,8 +331,15 @@ def main(
             f'({len(train_set)} train, {len(val_set)} val, {len(test_set)} test)'
         )
 
+        logger.info(
+            f'{train_set.num_label_types} unique labels in train set; '
+            f'vocab size is {len(dataset.vocab)}'
+        )
+
         input_dim = train_set.num_obsv_dims
-        output_dim = train_set.num_label_types
+        # output_dim = train_set.num_label_types
+        output_dim = len(dataset.vocab)
+
         if model_name == 'linear':
             model = torchutils.LinearClassifier(
                 input_dim, output_dim, **model_params
@@ -421,7 +428,7 @@ def main(
                     for x in batch
                 )
                 for preds, _, inputs, gt_labels, seq_id in zip(*batch):
-                    fn = os.path.join(io_fig_dir, f"trial={seq_id}_model-io.png")
+                    fn = os.path.join(io_fig_dir, f"{prefix}{seq_id}_model-io.png")
                     utils.plot_array(inputs, (gt_labels.T, preds.T), label_names, fn=fn)
 
         for batch in test_io_history:
@@ -430,9 +437,9 @@ def main(
                 for x in batch
             )
             for pred_seq, score_seq, feat_seq, label_seq, trial_id in zip(*batch):
-                saveVariable(pred_seq, f'trial={trial_id}_pred-label-seq')
-                saveVariable(score_seq, f'trial={trial_id}_score-seq')
-                saveVariable(label_seq, f'trial={trial_id}_true-label-seq')
+                saveVariable(pred_seq, f'{prefix}{trial_id}_pred-label-seq')
+                saveVariable(score_seq, f'{prefix}{trial_id}_score-seq')
+                saveVariable(label_seq, f'{prefix}{trial_id}_true-label-seq')
 
         saveVariable(model, f'cvfold={cv_index}_{model_name}-best')
 
