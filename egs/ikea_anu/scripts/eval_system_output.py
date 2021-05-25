@@ -124,11 +124,11 @@ def main(
     per_class_acc, class_counts = metrics.perClassAcc(confusions, return_counts=True)
     logger.info(f"MACRO ACC: {per_class_acc.mean() * 100:.2f}%")
 
-    metrics.plotConfusions(os.path.join(fig_dir, 'confusions.png'), confusions, vocab)
-    metrics.plotPerClassAcc(
-        os.path.join(fig_dir, 'per-class-results.png'),
-        vocab, per_class_acc, class_counts
-    )
+    # metrics.plotConfusions(os.path.join(fig_dir, 'confusions.png'), confusions, vocab)
+    # metrics.plotPerClassAcc(
+    #     os.path.join(fig_dir, 'per-class-results.png'),
+    #     vocab, per_class_acc, class_counts
+    # )
 
 
 if __name__ == "__main__":

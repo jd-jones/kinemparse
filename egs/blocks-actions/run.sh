@@ -7,6 +7,7 @@ start_at="0"
 stop_after="100"
 debug_str=""
 
+
 # -=( PARSE CLI ARGS )==-------------------------------------------------------
 for arg in "$@"; do
 	case $arg in
@@ -259,7 +260,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} eval_system_output.py \
         --out_dir "${smoothed_eval_dir}" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
-        --scores_dir "${scores_dir}/data" \
+        --scores_dir "${smoothed_scores_dir}/data" \
         --frames_dir "${frames_dir}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "False" \

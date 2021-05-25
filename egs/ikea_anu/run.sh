@@ -55,13 +55,43 @@ frames_dir="${input_dir}/video_frames"
 dataset_dir="${output_dir}/dataset"
 cv_folds_dir="${output_dir}/cv-folds"
 phase_dir="${output_dir}/${label_type}s-from-video"
-viz_dir="${phase_dir}/visualize"
 slowfast_cv_folds_dir="${phase_dir}/cv-folds"
+slowfast_scores_dir="${phase_dir}/slowfast-scores"
 scores_dir="${phase_dir}/scores"
-connections_dir="${phase_dir}/assembly-from-event"
+smoothed_scores_dir="${phase_dir}/scores-smoothed"
+viz_dir="${phase_dir}/visualize"
 
-slowfast_scores_dir="${phase_dir}/run-slowfast"
 scores_eval_dir="${scores_dir}/eval"
+smoothed_eval_dir="${smoothed_scores_dir}/eval"
+
+# Figure out how many classes there are by counting commas in the vocab file.
+# (This won't work if the vocab contains non-alphanumeric objects or if
+# something in the vocab contains a comma)
+vocab_file="${dataset_dir}/${label_type}-dataset/vocab.json"
+num_classes=$((`cat ${vocab_file} | tr -cd ',' | wc -c`+1))
+
+case $label_type in
+    'event' | 'action')
+        eval_crit='topk_accuracy'
+        eval_crit_params='["k", 1]'
+        eval_crit_name='top1_acc'
+        loss_func='cross_entropy'
+        head_act='softmax'
+        ;;
+    'part')
+        eval_crit='F1'
+        eval_crit_params='["background_index", 0]'
+        eval_crit_name='F1'
+        loss_func='bce_logit'
+        # Decrease num_classes by one to ignore background class
+        num_classes=$((num_classes-1))
+        head_act='sigmoid'
+        ;;
+    *)
+        echo "Error: Unrecognized label_type ${label_type}" >&2
+        exit 1
+        ;;
+esac
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -155,14 +185,16 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Post-process slowfast output"
-    python ${debug_str} postprocess_slowfast_output.py \
-        --out_dir "${scores_dir}" \
-        --data_dir "${dataset_dir}/${label_type}-dataset" \
-        --results_file "${slowfast_scores_dir}/results_test.pkl" \
-        --cv_file "${cv_folds_dir}/data/cvfold=1_test_slowfast-labels_win.csv" \
-        --col_format "ikea_tk" \
-        --win_params "{'win_size': 150, 'stride': 15}" \
-        --slowfast_csv_params "{'sep': ' '}"
+    for cvfold_dir in ${slowfast_scores_dir}/*; do
+        cvfold_str="`basename ${cvfold_dir}`"
+        python ${debug_str} postprocess_slowfast_output.py \
+            --out_dir "${scores_dir}" \
+            --data_dir "${dataset_dir}/${label_type}-dataset" \
+            --results_file "${cvfold_dir}/results_test.pkl" \
+            --cv_file "${slowfast_cv_folds_dir}/data/${cvfold_str}_test_slowfast-labels_win.csv" \
+            --slowfast_csv_params "{'sep': ','}" \
+            --win_params "{'win_size': 100, 'stride': 10}"
+    done
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
@@ -178,7 +210,6 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --scores_dir "${scores_dir}/data" \
         --frames_dir "${frames_dir}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --only_fold 1 \
         --plot_io "False" \
         --prefix "seq="
     python ${debug_str} analysis.py \
@@ -192,34 +223,55 @@ fi
 
 
 if [ "$start_at" -le "${STAGE}" ]; then
-    echo "STAGE ${STAGE}: Compute connection scores from action scores"
-    export LD_LIBRARY_PATH="${HOME}/miniconda3/envs/kinemparse/lib"
-    event_attr_fn="${HOME}/data/event_metadata/ikea-anu.csv"
-    connection_attr_fn="${HOME}/data/action_to_connection/ikea-anu.csv"
-    part_info_fn="${HOME}/data/assembly_structures/ikea-anu.json"
-    python ${debug_str} event_to_connection.py \
-        --out_dir "${connections_dir}" \
-        --data_dir "${dataset_dir}/${label_type}-dataset" \
-        --scores_dir "${scores_dir}/data" \
-        --event_attr_fn "${event_attr_fn}" \
-        --connection_attr_fn "${connection_attr_fn}" \
-        --assembly_attr_fn "${part_info_fn}" \
-        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --plot_io "True" \
-        --only_fold 1 \
-        --prefix "seq=" \
-        --background_action "NA" \
+    echo "STAGE ${STAGE}: Smooth predictions"
+    python ${debug_str} predict_seq_pytorch.py \
+        --out_dir "${smoothed_scores_dir}" \
+        --data_dir "${scores_dir}/data" \
+        --prefix="seq=" \
+        --feature_fn_format "score-seq.npy" \
+        --label_fn_format "true-label-seq.npy" \
+        --gpu_dev_id "'1'" \
+        --predict_mode "'classify'" \
+        --model_name "'LSTM'" \
+        --batch_size "1" \
+        --learning_rate "0.0002" \
+        --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
+        --dataset_params "{'transpose_data': False, 'flatten_feats': False}" \
+        --train_params "{'num_epochs': 100, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
         --model_params "{ \
-            'decode_type': 'joint', \
-            'output_stage': 3, \
-            'return_label': 'output', \
-            'reduce_order': 'post' \
+            'hidden_dim': 512, \
+            'num_layers': 1, \
+            'bias': True, \
+            'batch_first': True, \
+            'dropout': 0, \
+            'bidirectional': True \
         }" \
-        --stop_after 5
+        --plot_predictions "True"
+    python analysis.py \
+        --out_dir "${smoothed_scores_dir}/system-performance" \
+        --results_file "${smoothed_scores_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 1
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Evaluate system output"
+    python ${debug_str} eval_system_output.py \
+        --out_dir "${smoothed_eval_dir}" \
+        --data_dir "${dataset_dir}/${label_type}-dataset" \
+        --scores_dir "${smoothed_scores_dir}/data" \
+        --frames_dir "${frames_dir}" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
+        --plot_io "False" \
+        --prefix "seq="
+    python ${debug_str} analysis.py \
+        --out_dir "${smoothed_eval_dir}/aggregate-results" \
+        --results_file "${smoothed_eval_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0
 fi
 ((++STAGE))
-
-
