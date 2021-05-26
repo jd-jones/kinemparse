@@ -136,7 +136,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --prefix "seq=" \
         --feature_fn_format "frame-fns.json" \
         --label_fn_format "labels.npy" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 5}" \
+        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
         --slowfast_csv_params "{'sep': ',',}"
         # --cv_params "{'by_group': 'split_name', 'n_splits': 2, 'val_ratio': 0}" \
 fi

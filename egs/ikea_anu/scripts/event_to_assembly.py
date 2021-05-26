@@ -634,7 +634,7 @@ def main(
 
             # FIXME: the serialized variables are probs, not log-probs
             # event_score_seq = suppress_nonmax(event_score_seq)
-            event_score_seq = np.log(event_score_seq)
+            # event_score_seq = np.log(event_score_seq)
 
             decode_score_seq = model.forward(event_score_seq)
             pred_seq = model.predict(decode_score_seq)

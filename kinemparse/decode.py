@@ -66,9 +66,9 @@ class AssemblyActionRecognizer(object):
         vocab : list( string )
         """
 
-        self.vocabs = vocabs
+        self.vocabs = vocabs.copy()
         self.scores = scores
-        self.params = params
+        self.params = params.copy()
 
         self._init_vocabs(**vocabs)
         self._init_models(*scores, **params)

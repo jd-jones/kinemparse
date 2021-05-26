@@ -51,7 +51,7 @@ frames_dir="${HOME}/data/blocks-videos-as-jpg/child"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 dataset_dir="${output_dir}/dataset"
-cv_folds_dir="${output_dir}/cv-folds"
+cv_folds_dir="${output_dir}/cv-folds_shuffled"
 phase_dir="${output_dir}/${label_type}s-from-video"
 slowfast_cv_folds_dir="${phase_dir}/cv-folds"
 slowfast_scores_dir="${phase_dir}/slowfast-scores"
@@ -135,7 +135,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --prefix "seq=" \
         --feature_fn_format "frame-fns.json" \
         --label_fn_format "labels.npy" \
-        --cv_params "{'val_ratio': 0.25, 'n_splits': 5}" \
+        --cv_params "{'val_ratio': 0.25, 'n_splits': 5, 'shuffle': True}" \
         --slowfast_csv_params "{'sep': ',',}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then

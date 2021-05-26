@@ -44,14 +44,14 @@ output_dir="${HOME}/data/output/ikea_anu"
 dataset_dir="${output_dir}/dataset"
 phase_dir="${output_dir}/events-from-video"
 cv_folds_dir="${phase_dir}/cv-folds"
-event_scores_dir="${phase_dir}/scores"
+event_scores_dir="${phase_dir}/scores-smoothed"
 event_attr_fn="${HOME}/data/event_metadata/ikea-anu.json"
 connection_attr_fn="${HOME}/data/action_to_connection/ikea-anu.csv"
 assembly_attr_fn="${HOME}/data/assembly_structures/ikea-anu.json"
 
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-events"
-assembly_scores_dir="${phase_dir}/event-scores_smooth_full-model"
+assembly_scores_dir="${phase_dir}/event-scores_decode_full-model"
 assembly_scores_eval_dir="${assembly_scores_dir}/eval"
 
 
@@ -73,11 +73,10 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --assembly_attr_fn "${assembly_attr_fn}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
-        --only_fold 1 \
         --prefix "seq=" \
         --background_action "NA" \
         --model_params "{ \
-            'decode_type': 'marginal', \
+            'decode_type': 'joint', \
             'output_stage': 3, \
             'return_label': 'input', \
             'reduce_order': 'post', \
