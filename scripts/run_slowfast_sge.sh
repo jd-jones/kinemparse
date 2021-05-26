@@ -13,9 +13,9 @@ set -ue
 
 # -=( SET DEFAULTS )==---------------------------------------------------------
 label_type='event'
-config_dir="/home/jdjones/repo/kinemparse/egs/ikea_anu/config"
-data_dir='/home/jdjones/data/ikea_anu/video_frames'
-base_dir="/home/jdjones/data/output/ikea_anu"
+config_dir="/home/jdjones/repo/kinemparse/egs/blocks-actions/config"
+data_dir='/home/jdjones/data/blocks-videos-as-jpg/child'
+base_dir="/home/jdjones/data/output/blocks-actions"
 loss_func='cross_entropy'
 head_act='softmax'
 eval_crit='topk_accuracy'
@@ -30,15 +30,14 @@ cd "/home/jdjones/repo/CompositionalActions/slowfast"
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
-python tools/run_net.py \
-    --cfg "${config_dir}/I3D_8x8_R50.yaml" \
-    OUTPUT_DIR "${out_dir}" \
-    MODEL.NUM_CLASSES "${num_classes}" \
-    MODEL.LOSS_FUNC "${loss_func}" \
-    DATA.PATH_TO_DATA_DIR "${folds_dir}" \
-    DATA.PATH_PREFIX "${data_dir}" \
-    TRAIN.CHECKPOINT_FILE_PATH "${pretrained_checkpoint_file}" \
-    TRAIN.EVAL_CRIT "${eval_crit}" \
-    TRAIN.EVAL_CRIT_PARAMS "${eval_crit_params}" \
-    TRAIN.EVAL_CRIT_NAME "${eval_crit_name}" \
-    TEST.CHECKPOINT_FILE_PATH "${trained_checkpoint_file}"
+./run_slowfast_all-cvfolds.sh \
+    --config_dir="${config_dir}" \
+    --data_dir="${data_dir}" \
+    --base_dir="${base_dir}" \
+    --label_type="${label_type}" \
+    --num_classes="${num_classes}" \
+    --loss_func="${loss_func}" \
+    --head_act="${head_act}" \
+    --eval_crit="${eval_crit}" \
+    --eval_crit_params="${eval_crit_params}" \
+    --eval_crit_name="${eval_crit_name}"

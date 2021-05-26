@@ -51,7 +51,7 @@ frames_dir="${HOME}/data/blocks-videos-as-jpg/child"
 
 # DATA DIRS CREATED OR MODIFIED BY THIS SCRIPT
 dataset_dir="${output_dir}/dataset"
-cv_folds_dir="${output_dir}/cv-folds_shuffled"
+cv_folds_dir="${output_dir}/cv-folds"
 phase_dir="${output_dir}/${label_type}s-from-video"
 slowfast_cv_folds_dir="${phase_dir}/cv-folds"
 slowfast_scores_dir="${phase_dir}/slowfast-scores"

@@ -17,7 +17,7 @@ pd.options.mode.chained_assignment = None
 logger = logging.getLogger(__name__)
 
 
-def actions_to_events(actions_arr, use_coarse_actions=False):
+def actions_to_events_DEPRECATED(actions_arr, use_coarse_actions=False):
     def event_from_parts(df_row):
         args = sorted([df_row.object, df_row.target])
         args = [arg for arg in args if arg]
@@ -68,6 +68,45 @@ def actions_to_events(actions_arr, use_coarse_actions=False):
     return events_df
 
 
+def actions_to_events(actions_seq, action_vocab):
+    def event_from_parts(df_row):
+        args = sorted([df_row.object, df_row.target])
+        args = [arg for arg in args if arg]
+        arg_str = ','.join(args)
+        event_name = f"{df_row.action}({arg_str})"
+        return event_name
+
+    def makeEvent(assembly_action):
+        return utils.getIndex(assembly_action, action_vocab)
+
+    def makeAction(assembly_action):
+        if not assembly_action.blocks:
+            raise AssertionError()
+        if isinstance(assembly_action.sign, np.ndarray):
+            return 'mixed'
+        if assembly_action.sign == -1:
+            return 'disconnect'
+        if assembly_action.sign == 1:
+            return 'connect'
+        raise AssertionError()
+
+    def isActive(block_name, assembly_action):
+        i = definitions.block_ids[block_name]
+        is_active = i in assembly_action.blocks
+        return is_active
+
+    cols = {
+        'start': [a.action_start_idx for a in actions_seq],
+        'end': [a.action_end_idx for a in actions_seq],
+        'event': [makeEvent(a) for a in actions_seq],
+        'action': [makeAction(a) for a in actions_seq]
+    }
+    for name in definitions.blocks:
+        cols[f"{name}_active"] = [isActive(name, a) for a in actions_seq]
+    events_df = pd.DataFrame(cols)
+    return events_df
+
+
 def fixStartEndIndices(action_seq, rgb_frame_timestamp_seq, new_timestamps):
     start_times = rgb_frame_timestamp_seq[action_seq['start']]
     end_times = rgb_frame_timestamp_seq[action_seq['end']]
@@ -82,7 +121,7 @@ def load_all_labels(
         corpus_name, default_annotator, metadata_file, metadata_criteria,
         start_video_from_first_touch=True, subsample_period=None,
         use_coarse_actions=False, frames_dir=None):
-    def load_one(trial_id):
+    def load_one(trial_id, assembly_action_vocab):
         if start_video_from_first_touch:
             label_seq = corpus.readLabels(trial_id, default_annotator)[0]
             first_touch_idxs = label_seq['start'][label_seq['action'] == 7]
@@ -139,7 +178,20 @@ def load_all_labels(
             raise AssertionError("Couldn't parse actions into assemblies")
         assembly_seq[-1].end_idx = len(new_timestamps)
 
-        action_seq = actions_to_events(action_seq, use_coarse_actions=use_coarse_actions)
+        def make_action(a_cur, a_next):
+            action = a_next - a_cur
+            action.action_start_idx = a_next.action_start_idx
+            action.action_end_idx = a_next.action_end_idx
+            return action
+
+        tmp_assembly_seq, _ = labels.parseLabelSeq(
+            action_seq.copy(), timestamps=new_timestamps
+        )
+        assembly_action_seq = tuple(
+            make_action(a_cur, a_next)
+            for a_cur, a_next in zip(tmp_assembly_seq[:-1], tmp_assembly_seq[1:])
+        )
+        action_seq = actions_to_events(assembly_action_seq, assembly_action_vocab)
 
         # rgb_frame_timestamp_seq = rgb_frame_timestamp_seq[selected_frame_indices]
         rgb_frame_fn_seq = rgb_frame_fn_seq[selected_frame_indices]
@@ -153,6 +205,7 @@ def load_all_labels(
     corpus = duplocorpus.DuploCorpus(corpus_name)
     seq_ids = metadata.index.to_numpy()
 
+    assembly_action_vocab = []
     event_labels = []
     assembly_seqs = []
     frame_fn_seqs = []
@@ -163,9 +216,11 @@ def load_all_labels(
     processed_seq_ids = []
     for i, seq_id in enumerate(seq_ids):
         try:
-            event_df, assembly_seq, rgb_frame_fn_seq, rgb_frame_fn_idx_seq, ann_name = load_one(
-                seq_id
-            )
+            (
+                event_df, assembly_seq,
+                rgb_frame_fn_seq, rgb_frame_fn_idx_seq,
+                ann_name
+            ) = load_one(seq_id, assembly_action_vocab)
         except AssertionError as e:
             warn_str = f"Skipping video {seq_id}: {e}"
             logger.warning(warn_str)
@@ -193,10 +248,11 @@ def load_all_labels(
         'action': action_vocab,
         'part': part_vocab
     }
+
     ret = (
         seq_ids, event_labels, assembly_seqs,
         frame_fn_seqs, frame_fn_idx_seqs,
-        all_vocabs, metadata
+        all_vocabs, assembly_action_vocab, metadata
     )
     return ret
 
@@ -243,10 +299,25 @@ def make_labels(seg_bounds, seg_labels, default_val, num_samples=None, frame_ind
     labels = np.full(label_shape, default_val, dtype=seg_labels.dtype)
     for (start, end), l in zip(seg_bounds, seg_labels):
         if frame_indices is None:
+            seg = labels[start:end + 1]
+            seg_is_default = seg == default_val
+            if not (seg_is_default).all():
+                logger.warning(
+                    f"Overwriting {seg_is_default.sum()} of {len(seg)} labels in segment"
+                )
             labels[start:end + 1] = l
         else:
             in_seg = (frame_indices >= start) & (frame_indices <= end)
+            seg = labels[in_seg]
+            seg_is_default = seg == default_val
+            if not (seg_is_default).all():
+                logger.warning(
+                    f"Overwriting {seg_is_default.sum()} of {len(seg)} labels in segment"
+                )
             labels[in_seg] = l
+
+    if np.all(labels == default_val):
+        import pdb; pdb.set_trace()
 
     return labels
 
@@ -397,7 +468,7 @@ def main(
 
     (
         seq_ids, event_labels, assembly_seqs,
-        frame_fn_seqs, frame_fn_idx_seqs, vocabs, metadata
+        frame_fn_seqs, frame_fn_idx_seqs, vocabs, assembly_action_vocab, metadata
     ) = load_all_labels(
         corpus_name, default_annotator, metadata_file, metadata_criteria,
         start_video_from_first_touch=True, subsample_period=None,
@@ -410,6 +481,7 @@ def main(
         for state_seq in assembly_seqs
     )
     utils.saveVariable(assembly_vocab, 'vocab', assembly_data_dir)
+    utils.saveVariable(assembly_action_vocab, 'assembly-action-vocab', data_dirs['event'])
     vocabs = {label_name: vocabs[label_name] for label_name in label_types}
     for name, vocab in vocabs.items():
         utils.saveVariable(vocab, 'vocab', data_dirs[name])
