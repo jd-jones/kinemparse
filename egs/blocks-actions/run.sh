@@ -152,6 +152,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --prefix "seq=" \
         --feature_fn_format "frame-fns.json" \
         --label_fn_format "labels.npy" \
+        --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --slowfast_csv_params "{'sep': ',',}"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then

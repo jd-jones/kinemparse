@@ -26,7 +26,7 @@ num_classes=''
 # -=( PREPARE ENVIRONMENT )==--------------------------------------------------
 conda activate kinemparse
 export CUDA_VISIBLE_DEVICES=$(free-gpu -n 2)
-cd "/home/jdjones/repo/CompositionalActions/slowfast"
+cd '/home/jdjones/repo/kinemparse/egs/blocks-actions/scripts'
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
