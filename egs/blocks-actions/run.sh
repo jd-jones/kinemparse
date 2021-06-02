@@ -163,8 +163,7 @@ fi
 
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Train action recognition model"
-    # qsub run_slowfast_sge.sh
-    sbatch run_slowfast_slurm.sh \
+    qsub run_slowfast_sge.sh \
         --config_dir="${config_dir}" \
         --data_dir="${frames_dir}" \
         --base_dir="${output_dir}" \

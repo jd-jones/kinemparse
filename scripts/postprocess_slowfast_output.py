@@ -72,6 +72,8 @@ def main(
             fn=os.path.join(fig_dir, f"{seq_id_str}.png"),
             subplot_width=12, subplot_height=5
         )
+    utils.saveVariable(vocab, 'vocab', out_data_dir)
+    utils.saveMetadata(metadata, out_data_dir)
 
 
 if __name__ == "__main__":

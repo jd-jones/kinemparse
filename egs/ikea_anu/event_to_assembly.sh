@@ -51,7 +51,8 @@ assembly_attr_fn="${HOME}/data/assembly_structures/ikea-anu.json"
 
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-events"
-assembly_scores_dir="${phase_dir}/event-scores_decode_full-model"
+assembly_data_dir="${phase_dir}/assembly-dataset"
+assembly_scores_dir="${phase_dir}/event-scores_decode_reduce=pre_decode=marginal"
 assembly_scores_eval_dir="${assembly_scores_dir}/eval"
 
 
@@ -59,6 +60,19 @@ assembly_scores_eval_dir="${assembly_scores_dir}/eval"
 # -=( MAIN SCRIPT )==----------------------------------------------------------
 cd ${scripts_dir}
 STAGE=0
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Compute assembly scores from event scores"
+    python ${debug_str} make_assembly_data.py \
+        --out_dir "${assembly_data_dir}" \
+        --labels_dir "$HOME/data/ikea_anu/assembly-labels" \
+        --data_dir "${dataset_dir}/event-dataset"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
 
 
 if [ "$start_at" -le "${STAGE}" ]; then
@@ -76,10 +90,10 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --prefix "seq=" \
         --background_action "NA" \
         --model_params "{ \
-            'decode_type': 'joint', \
+            'decode_type': 'marginal', \
             'output_stage': 3, \
             'return_label': 'input', \
-            'reduce_order': 'post', \
+            'reduce_order': 'pre', \
             'allow_self_transitions': False \
         }"
     python ${debug_str} analysis.py \
