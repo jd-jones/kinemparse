@@ -17,57 +17,6 @@ pd.options.mode.chained_assignment = None
 logger = logging.getLogger(__name__)
 
 
-def actions_to_events_DEPRECATED(actions_arr, use_coarse_actions=False):
-    def event_from_parts(df_row):
-        args = sorted([df_row.object, df_row.target])
-        args = [arg for arg in args if arg]
-        arg_str = ','.join(args)
-        event_name = f"{df_row.action}({arg_str})"
-        return event_name
-
-    def coarsen_actions(actions_df, part_is_active):
-        action_names = actions_df['action'].to_list()
-        is_connection = [a in definitions.constructive_actions for a in action_names]
-        # is_disconnection = [a in definitions.deconstructive_actions for a in action_names]
-        is_rotation = [a in definitions.rotation_actions for a in action_names]
-        is_tag = [a in definitions.annotation_tags for a in action_names]
-
-        actions_df['action'].loc[is_connection] = 'connect'
-        actions_df['action'].loc[is_rotation] = 'rotate'
-
-        is_not_tag = ~np.array(is_tag, dtype=bool)
-        actions_df = actions_df.loc[is_not_tag]
-        part_is_active = part_is_active.loc[is_not_tag]
-        return actions_df, part_is_active
-
-    actions_df = pd.DataFrame(actions_arr)
-
-    # Make part-activity dataframe
-    is_active = np.zeros((actions_df.shape[0], len(definitions.blocks)), dtype=bool)
-    for col_name in ('object', 'target'):
-        col = actions_df[col_name].to_numpy()
-        rows = np.nonzero(col >= 0)[0]
-        is_active[rows, col[rows]] = True
-    col_names = [f"{name}_active" for name in definitions.blocks]
-    part_is_active = pd.DataFrame(is_active, columns=col_names)
-
-    # Make event and action-name dataframe
-    for key in ('action', 'object', 'target'):
-        if key == 'action':
-            vocab = definitions.actions
-        else:
-            vocab = definitions.blocks
-        actions_df[key] = ['' if i == -1 else vocab[i] for i in actions_df[key]]
-    if use_coarse_actions:
-        actions_df, part_is_active = coarsen_actions(actions_df, part_is_active)
-    actions_df['event'] = actions_df.apply(event_from_parts, axis=1)
-
-    # Combine event/action, part dataframes
-    col_names = ['start', 'end', 'event', 'action']
-    events_df = pd.concat((actions_df[col_names], part_is_active), axis=1)
-    return events_df
-
-
 def actions_to_events(actions_seq, action_vocab):
     def event_from_parts(df_row):
         args = sorted([df_row.object, df_row.target])
@@ -103,7 +52,15 @@ def actions_to_events(actions_seq, action_vocab):
     }
     for name in definitions.blocks:
         cols[f"{name}_active"] = [isActive(name, a) for a in actions_seq]
+
+    start_idxs = np.array(cols['start'], dtype=int)
+    end_idxs = np.array(cols['end'], dtype=int)
+    is_bad_bound = end_idxs <= start_idxs
+    if is_bad_bound.any():
+        raise AssertionError()
+
     events_df = pd.DataFrame(cols)
+
     return events_df
 
 
@@ -300,24 +257,21 @@ def make_labels(seg_bounds, seg_labels, default_val, num_samples=None, frame_ind
     for (start, end), l in zip(seg_bounds, seg_labels):
         if frame_indices is None:
             seg = labels[start:end + 1]
-            seg_is_default = seg == default_val
-            if not (seg_is_default).all():
+            seg_isnt_default = seg != default_val
+            if (seg_isnt_default).any():
                 logger.warning(
-                    f"Overwriting {seg_is_default.sum()} of {len(seg)} labels in segment"
+                    f"Overwriting {seg_isnt_default.sum()} of {seg.size} labels in segment"
                 )
             labels[start:end + 1] = l
         else:
             in_seg = (frame_indices >= start) & (frame_indices <= end)
             seg = labels[in_seg]
-            seg_is_default = seg == default_val
-            if not (seg_is_default).all():
+            seg_isnt_default = seg != default_val
+            if (seg_isnt_default).any():
                 logger.warning(
-                    f"Overwriting {seg_is_default.sum()} of {len(seg)} labels in segment"
+                    f"Overwriting {seg_isnt_default.sum()} of {seg.size} labels in segment"
                 )
             labels[in_seg] = l
-
-    if np.all(labels == default_val):
-        import pdb; pdb.set_trace()
 
     return labels
 
@@ -602,12 +556,12 @@ def main(
                 counts[action_index, part_index] += int(is_active)
 
     for name, sf_labels in all_slowfast_labels_seg.items():
-        pd.concat(sf_labels, axis=0).reset_index().to_csv(
+        pd.concat(sf_labels, axis=0).to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_seg.csv'),
             **slowfast_csv_params
         )
     for name, sf_labels in all_slowfast_labels_win.items():
-        pd.concat(sf_labels, axis=0).reset_index().to_csv(
+        pd.concat(sf_labels, axis=0).to_csv(
             os.path.join(data_dirs[name], 'slowfast-labels_win.csv'),
             **slowfast_csv_params
         )
