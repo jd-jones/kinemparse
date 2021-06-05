@@ -52,9 +52,8 @@ assembly_attr_fn="${HOME}/data/assembly_structures/ikea-anu.json"
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-events"
 assembly_data_dir="${phase_dir}/assembly-dataset"
-assembly_scores_dir="${phase_dir}/event-scores_decode_reduce=pre_decode=marginal"
+assembly_scores_dir="${phase_dir}/event-scores_decode"
 assembly_scores_eval_dir="${assembly_scores_dir}/eval"
-
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -81,6 +80,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} event_to_assembly.py \
         --out_dir "${assembly_scores_dir}" \
         --data_dir "${dataset_dir}/event-dataset" \
+        --assembly_data_dir "${assembly_data_dir}/data" \
         --scores_dir "${event_scores_dir}/data" \
         --event_attr_fn "${event_attr_fn}" \
         --connection_attr_fn "${connection_attr_fn}" \
@@ -89,8 +89,9 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --plot_io "True" \
         --prefix "seq=" \
         --background_action "NA" \
+        --stride 15 \
         --model_params "{ \
-            'decode_type': 'marginal', \
+            'decode_type': 'joint', \
             'output_stage': 3, \
             'return_label': 'input', \
             'reduce_order': 'pre', \
@@ -113,7 +114,6 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --scores_dir "${scores_dir}/data" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --only_fold 1 \
         --plot_io "False" \
         --prefix "seq="
     python ${debug_str} analysis.py \

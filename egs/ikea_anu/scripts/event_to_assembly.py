@@ -19,8 +19,10 @@ from mathtools import utils  # , metrics
 logger = logging.getLogger(__name__)
 
 
-def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background_action=''):
-    def gen_assembly_vocab(final_assemblies, part_categories):
+def loadPartInfo(
+        event_attr_fn, connection_attr_fn, assembly_attr_fn,
+        background_action='', assembly_vocab=None):
+    def gen_assembly_vocab(final_assemblies, part_categories, ref_vocab=None):
         def get_parts(joints):
             return frozenset(p for joint in joints for p in joint)
 
@@ -86,6 +88,13 @@ def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background
             tuple(sorted(tuple(sorted(j)) for j in joints))
             for joints in sorted(assembly_vocab, key=len)
         )
+
+        if ref_vocab is not None:
+            v = list(ref_vocab)
+            for a in assembly_vocab:
+                utils.getIndex(a, v)
+            assembly_vocab = tuple(v)
+
         return assembly_vocab
 
     with open(assembly_attr_fn, 'rt') as file_:
@@ -99,7 +108,9 @@ def loadPartInfo(event_attr_fn, connection_attr_fn, assembly_attr_fn, background
         for joints in data['final_assemblies']
     )
 
-    assembly_attrs = gen_assembly_vocab(final_assembly_attrs, part_categories)
+    assembly_attrs = gen_assembly_vocab(
+        final_assembly_attrs, part_categories, ref_vocab=assembly_vocab
+    )
 
     connection_probs, action_vocab, connection_vocab = connection_attrs_to_probs(
         pd.read_csv(connection_attr_fn, index_col=False, keep_default_na=False),
@@ -271,7 +282,6 @@ def assembly_attrs_to_probs(
 
     assembly_vocab = tuple(
         tuple(sorted(set(part for joint in a for part in joint)))
-        # i
         for i, a in enumerate(assembly_attrs)
     )
 
@@ -522,13 +532,14 @@ def suppress_nonmax(scores):
 
 
 def main(
-        out_dir=None, data_dir=None, scores_dir=None,
+        out_dir=None, data_dir=None, assembly_data_dir=None, scores_dir=None,
         event_attr_fn=None, connection_attr_fn=None, assembly_attr_fn=None,
         only_fold=None, plot_io=None, prefix='seq=', stop_after=None,
-        background_action='', model_params={}, cv_params={},
+        background_action='', model_params={}, cv_params={}, stride=None,
         results_file=None, sweep_param_name=None):
 
     data_dir = os.path.expanduser(data_dir)
+    assembly_data_dir = os.path.expanduser(assembly_data_dir)
     scores_dir = os.path.expanduser(scores_dir)
     event_attr_fn = os.path.expanduser(event_attr_fn)
     connection_attr_fn = os.path.expanduser(connection_attr_fn)
@@ -574,9 +585,14 @@ def main(
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     # Load event, connection attributes
+    assembly_vocab = tuple(
+        tuple(sorted(tuple(sorted(joint)) for joint in a))
+        for a in utils.loadVariable('vocab', assembly_data_dir)
+    )
     (*probs, assembly_transition_probs), vocabs = loadPartInfo(
         event_attr_fn, connection_attr_fn, assembly_attr_fn,
-        background_action=background_action
+        background_action=background_action,
+        assembly_vocab=assembly_vocab
     )
     event_assembly_scores = event_to_assembly_scores(*probs, vocabs)
     assembly_transition_scores = np.log(assembly_transition_probs)
@@ -607,7 +623,7 @@ def main(
 
         class_priors, event_dur_probs = count_priors(
             train_data[0], len(dataset.vocab),
-            stride=10, approx_upto=0.95, support_only=True
+            stride=stride, approx_upto=0.95, support_only=True
         )
         event_dur_scores = np.log(event_dur_probs)
         event_dur_scores = np.zeros_like(event_dur_scores)
@@ -626,11 +642,31 @@ def main(
             if stop_after is not None and i >= stop_after:
                 break
 
+            trial_prefix = f"{prefix}{seq_id}"
+
+            if model_params['return_label'] == 'input':
+                true_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
+            elif model_params['return_label'] == 'output':
+                try:
+                    true_seq = utils.loadVariable(
+                        f"{trial_prefix}_label-seq",
+                        assembly_data_dir
+                    )
+                    true_seq = true_seq[::stride]
+                except AssertionError:
+                    # logger.info(f'  Skipping sequence {seq_id}: {e}')
+                    continue
+
             logger.info(f"  Processing sequence {seq_id}...")
 
-            trial_prefix = f"{prefix}{seq_id}"
             event_score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", scores_dir)
-            true_event_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
+
+            if event_score_seq.shape[0] != true_seq.shape[0]:
+                err_str = (
+                    f'Event scores shape {event_score_seq.shape} '
+                    f'!= labels shape {true_seq.shape}'
+                )
+                raise AssertionError(err_str)
 
             # FIXME: the serialized variables are probs, not log-probs
             # event_score_seq = suppress_nonmax(event_score_seq)
@@ -639,27 +675,27 @@ def main(
             decode_score_seq = model.forward(event_score_seq)
             pred_seq = model.predict(decode_score_seq)
 
-            if model_params['return_label'] == 'input':
-                metric_dict = eval_metrics(pred_seq, true_event_seq)
-                for name, value in metric_dict.items():
-                    logger.info(f"    {name}: {value * 100:.2f}%")
-                utils.saveVariable(
-                    true_event_seq, f'{trial_prefix}_true-label-seq',
-                    out_data_dir
-                )
-                utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
+            metric_dict = eval_metrics(pred_seq, true_seq)
+            for name, value in metric_dict.items():
+                logger.info(f"    {name}: {value * 100:.2f}%")
+            utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
             utils.saveVariable(decode_score_seq, f'{trial_prefix}_score-seq', out_data_dir)
             utils.saveVariable(pred_seq, f'{trial_prefix}_pred-label-seq', out_data_dir)
+            utils.saveVariable(true_seq, f'{trial_prefix}_true-label-seq', out_data_dir)
 
             if plot_io:
                 utils.plot_array(
-                    decode_score_seq.T, (pred_seq.T,), ('pred',),
+                    event_score_seq.T, (pred_seq.T, true_seq.T), ('pred', 'true'),
                     fn=os.path.join(fig_dir, f"seq={seq_id:03d}.png")
                 )
                 write_labels(
                     os.path.join(misc_dir, f"seq={seq_id:03d}_pred-seq.txt"),
                     pred_seq, model.output_vocab.as_raw()
+                )
+                write_labels(
+                    os.path.join(misc_dir, f"seq={seq_id:03d}_true-seq.txt"),
+                    true_seq, model.output_vocab.as_raw()
                 )
 
 
