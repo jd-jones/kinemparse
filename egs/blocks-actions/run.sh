@@ -55,8 +55,8 @@ cv_folds_dir="${output_dir}/cv-folds"
 phase_dir="${output_dir}/${label_type}s-from-video"
 slowfast_cv_folds_dir="${phase_dir}/cv-folds"
 slowfast_scores_dir="${phase_dir}/slowfast-scores"
-scores_dir="${phase_dir}/scores"
-smoothed_scores_dir="${phase_dir}/scores-smoothed"
+scores_dir="${phase_dir}/probs"
+smoothed_scores_dir="${phase_dir}/probs-smoothed"
 
 scores_eval_dir="${scores_dir}/eval"
 smoothed_eval_dir="${smoothed_scores_dir}/eval"
@@ -191,7 +191,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
             --results_file "${cvfold_dir}/results_test.pkl" \
             --cv_file "${slowfast_cv_folds_dir}/data/${cvfold_str}_test_slowfast-labels_win.csv" \
             --slowfast_csv_params "{'sep': ','}" \
-            --win_params "{'win_size': 100, 'stride': 10}"
+            --win_params "{'win_size': 100, 'stride': 10}" \
+            --take_log "False"
     done
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
@@ -229,7 +230,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --feature_fn_format "score-seq.npy" \
         --label_fn_format "true-label-seq.npy" \
         --gpu_dev_id "'2'" \
-        --predict_mode "'classify'" \
+        --predict_mode "'binary multiclass'" \
         --model_name "'LSTM'" \
         --batch_size "1" \
         --learning_rate "0.0002" \
@@ -237,14 +238,16 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --dataset_params "{'transpose_data': False, 'flatten_feats': False}" \
         --train_params "{'num_epochs': 100, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
         --model_params "{ \
-            'hidden_dim': 512, \
+            'hidden_dim': 256, \
             'num_layers': 1, \
             'bias': True, \
             'batch_first': True, \
             'dropout': 0, \
-            'bidirectional': True \
+            'bidirectional': True, \
+            'binary_multiclass': True \
         }" \
         --plot_predictions "True"
+        # --predict_mode "'classify'"
     python analysis.py \
         --out_dir "${smoothed_scores_dir}/system-performance" \
         --results_file "${smoothed_scores_dir}/results.csv"

@@ -2,7 +2,6 @@ import os
 import logging
 import json
 import itertools
-import collections
 
 import yaml
 import numpy as np

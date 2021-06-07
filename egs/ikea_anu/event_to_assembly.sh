@@ -41,6 +41,8 @@ scripts_dir="${eg_root}/scripts"
 output_dir="${HOME}/data/output/ikea_anu"
 
 # INPUT TO SCRIPT
+input_dir="${HOME}/data/ikea_anu"
+frames_dir="${input_dir}/video_frames"
 dataset_dir="${output_dir}/dataset"
 phase_dir="${output_dir}/events-from-video"
 cv_folds_dir="${phase_dir}/cv-folds"
@@ -52,7 +54,7 @@ assembly_attr_fn="${HOME}/data/assembly_structures/ikea-anu.json"
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-events"
 assembly_data_dir="${phase_dir}/assembly-dataset"
-assembly_scores_dir="${phase_dir}/event-scores_decode"
+assembly_scores_dir="${phase_dir}/assembly-scores_decode"
 assembly_scores_eval_dir="${assembly_scores_dir}/eval"
 
 
@@ -93,7 +95,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --model_params "{ \
             'decode_type': 'joint', \
             'output_stage': 3, \
-            'return_label': 'input', \
+            'return_label': 'output', \
             'reduce_order': 'pre', \
             'allow_self_transitions': False \
         }"
@@ -110,15 +112,17 @@ fi
 if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate system output"
     python ${debug_str} eval_system_output.py \
-        --out_dir "${scores_eval_dir}" \
-        --data_dir "${dataset_dir}/${label_type}-dataset" \
-        --scores_dir "${scores_dir}/data" \
-        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
+        --out_dir "${assembly_scores_eval_dir}" \
+        --data_dir "${assembly_data_dir}/data" \
+        --scores_dir "${assembly_scores_dir}/data" \
+        --frames_dir "${frames_dir}" \
         --plot_io "False" \
-        --prefix "seq="
+        --prefix "seq=" \
+        --no_cv "True"
+        # --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
     python ${debug_str} analysis.py \
-        --out_dir "${scores_eval_dir}/aggregate-results" \
-        --results_file "${scores_eval_dir}/results.csv"
+        --out_dir "${assembly_scores_eval_dir}/aggregate-results" \
+        --results_file "${assembly_scores_eval_dir}/results.csv"
 fi
 if [ "$stop_after" -eq "${STAGE}" ]; then
     exit 0

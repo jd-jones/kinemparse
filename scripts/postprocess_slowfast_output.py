@@ -2,6 +2,7 @@ import os
 import logging
 import pickle
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def main(
         out_dir=None, data_dir=None, results_file=None, cv_file=None,
-        col_format=None, win_params={}, slowfast_csv_params={}):
+        take_log=False, col_format=None, win_params={}, slowfast_csv_params={}):
     out_dir = os.path.expanduser(out_dir)
     data_dir = os.path.expanduser(data_dir)
     results_file = os.path.expanduser(results_file)
@@ -42,12 +43,12 @@ def main(
     metadata = metadata.drop('seq_id', axis=1)
 
     with open(results_file, 'rb') as file_:
-        model_scores, gt_labels = pickle.load(file_)
-        model_scores = model_scores.numpy()
+        model_probs, gt_labels = pickle.load(file_)
+        model_probs = model_probs.numpy()
         gt_labels = gt_labels.numpy()
 
-    if len(model_scores) != len(seg_ids):
-        err_str = f"{len(model_scores)} segment scores != {slowfast_labels.shape[0]} CSV rows"
+    if len(model_probs) != len(seg_ids):
+        err_str = f"{len(model_probs)} segment scores != {slowfast_labels.shape[0]} CSV rows"
         raise AssertionError(err_str)
 
     logger.info(f"Loaded {len(seg_ids)} segments, {len(vid_ids)} videos")
@@ -55,19 +56,22 @@ def main(
     for vid_id, vid_name in zip(vid_ids, vid_names):
         matches_video = (slowfast_labels['video_name'] == vid_name).to_numpy()
         win_labels = gt_labels[matches_video]
-        win_scores = model_scores[matches_video, :]
+        win_probs = model_probs[matches_video, :]
 
-        if win_labels.shape == win_scores.shape:
-            win_preds = (win_scores > 0.5).astype(int)
+        if win_labels.shape == win_probs.shape:
+            win_preds = (win_probs > 0.5).astype(int)
         else:
-            win_preds = win_scores.argmax(axis=1)
+            win_preds = win_probs.argmax(axis=1)
+
+        if take_log:
+            win_probs = np.log(win_probs)
 
         seq_id_str = f"seq={vid_id}"
-        utils.saveVariable(win_scores, f'{seq_id_str}_score-seq', out_data_dir)
+        utils.saveVariable(win_probs, f'{seq_id_str}_score-seq', out_data_dir)
         utils.saveVariable(win_labels, f'{seq_id_str}_true-label-seq', out_data_dir)
         utils.saveVariable(win_preds, f'{seq_id_str}_pred-label-seq', out_data_dir)
         utils.plot_array(
-            win_scores.T, (win_labels.T, win_preds.T), ('true', 'pred'),
+            win_probs.T, (win_labels.T, win_preds.T), ('true', 'pred'),
             tick_names=vocab,
             fn=os.path.join(fig_dir, f"{seq_id_str}.png"),
             subplot_width=12, subplot_height=5

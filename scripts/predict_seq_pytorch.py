@@ -128,15 +128,23 @@ class LstmClassifier(torch.nn.Module):
         self.out_set_size = out_set_size
         self.binary_multiclass = binary_multiclass
         self.num_multiclass = num_multiclass
+        self.hidden_size = hidden_dim
+        self.num_layers = lstm_kwargs.get('num_layers', 1)
+        if lstm_kwargs.get('bidirectional', False):
+            self.num_directions = 2
+        else:
+            self.num_directions = 1
 
-        num_directions = 2
-        self.LSTM = torch.nn.LSTM(input_dim, hidden_dim, **lstm_kwargs)
+        self.LSTM = torch.nn.LSTM(input_dim, self.hidden_size, **lstm_kwargs)
 
         if self.num_multiclass is None:
-            self.linear = torch.nn.Linear(num_directions * hidden_dim, self.out_set_size)
+            self.linear = torch.nn.Linear(
+                self.num_directions * self.hidden_size,
+                self.out_set_size
+            )
         else:
             self.linear = torch.nn.Linear(
-                num_directions * hidden_dim,
+                self.num_directions * self.hidden_size,
                 self.out_set_size * self.num_multiclass
             )
 
@@ -147,15 +155,12 @@ class LstmClassifier(torch.nn.Module):
 
     def forward(self, input_seq, return_feats=False):
         batch_size = input_seq.shape[0]
-        hidden_size = 512
-        num_layers = 1
-        num_directions = 2
         h0 = torch.randn(
-            num_layers * num_directions, batch_size, hidden_size,
+            self.num_layers * self.num_directions, batch_size, self.hidden_size,
             device=input_seq.device
         )
         c0 = torch.randn(
-            num_layers * num_directions, batch_size, hidden_size,
+            self.num_layers * self.num_directions, batch_size, self.hidden_size,
             device=input_seq.device
         )
         lstm_out, (hn, cn) = self.LSTM(input_seq, (h0, c0))
@@ -295,9 +300,10 @@ def main(
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     if predict_mode == 'binary multiclass':
-        criterion = torchutils.BootstrappedCriterion(
-            0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
-        )
+        # criterion = torchutils.BootstrappedCriterion(
+        #     0.25, base_criterion=torch.nn.functional.binary_cross_entropy_with_logits,
+        # )
+        criterion = torch.nn.BCEWithLogitsLoss()
         labels_dtype = torch.float
     elif predict_mode == 'multiclass':
         criterion = torch.nn.CrossEntropyLoss()

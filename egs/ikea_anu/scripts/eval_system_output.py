@@ -8,7 +8,7 @@ import yaml
 
 import LCTM.metrics
 
-from mathtools import utils, metrics
+from mathtools import utils  # , metrics
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ def eval_metrics(pred_seq, true_seq, name_suffix='', append_to={}):
 def main(
         out_dir=None, data_dir=None, scores_dir=None, frames_dir=None,
         vocab_from_scores_dir=None, only_fold=None, plot_io=None, prefix='seq=',
+        no_cv=False,
         results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
 
     data_dir = os.path.expanduser(data_dir)
@@ -63,21 +64,24 @@ def main(
         os.makedirs(out_data_dir)
 
     seq_ids = utils.getUniqueIds(
-        data_dir, prefix=prefix, suffix='labels.*',
+        scores_dir, prefix=prefix, suffix='true-label-seq.*',
         to_array=True
     )
 
     logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
 
-    if vocab_from_scores_dir:
-        vocab = utils.loadVariable('vocab', scores_dir)
-    else:
-        vocab = utils.loadVariable('vocab', data_dir)
+    # if vocab_from_scores_dir:
+    #     vocab = utils.loadVariable('vocab', scores_dir)
+    # else:
+    #     vocab = utils.loadVariable('vocab', data_dir)
 
     all_metrics = collections.defaultdict(list)
 
     # Define cross-validation folds
-    cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
+    if no_cv:
+        cv_folds = ((tuple(), tuple(), tuple(range(len(seq_ids)))),)
+    else:
+        cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     all_pred_seqs = []
@@ -118,11 +122,11 @@ def main(
                     fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
                 )
 
-    confusions = metrics.confusionMatrix(all_pred_seqs, all_true_seqs, len(vocab))
-    utils.saveVariable(confusions, "confusions", out_data_dir)
+    # confusions = metrics.confusionMatrix(all_pred_seqs, all_true_seqs, len(vocab))
+    # utils.saveVariable(confusions, "confusions", out_data_dir)
 
-    per_class_acc, class_counts = metrics.perClassAcc(confusions, return_counts=True)
-    logger.info(f"MACRO ACC: {per_class_acc.mean() * 100:.2f}%")
+    # per_class_acc, class_counts = metrics.perClassAcc(confusions, return_counts=True)
+    # logger.info(f"MACRO ACC: {per_class_acc.mean() * 100:.2f}%")
 
     # metrics.plotConfusions(os.path.join(fig_dir, 'confusions.png'), confusions, vocab)
     # metrics.plotPerClassAcc(

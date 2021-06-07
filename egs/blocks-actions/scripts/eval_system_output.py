@@ -74,7 +74,7 @@ def main(
         os.makedirs(out_data_dir)
 
     seq_ids = utils.getUniqueIds(
-        data_dir, prefix=prefix, suffix='labels.*',
+        scores_dir, prefix=prefix, suffix='pred-label-seq.*',
         to_array=True
     )
 
