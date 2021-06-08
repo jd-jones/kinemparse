@@ -253,7 +253,7 @@ def joinSeqs(batches):
 def main(
         out_dir=None, data_dir=None, model_name=None, predict_mode='classify',
         gpu_dev_id=None, batch_size=None, learning_rate=None,
-        independent_signals=None, active_only=None,
+        independent_signals=None, active_only=None, output_dim_from_vocab=False,
         prefix='trial=', feature_fn_format='feature-seq.pkl', label_fn_format='label_seq.pkl',
         dataset_params={}, model_params={}, cv_params={}, train_params={}, viz_params={},
         metric_names=['Loss', 'Accuracy', 'Precision', 'Recall', 'F1'],
@@ -343,8 +343,9 @@ def main(
         )
 
         input_dim = train_set.num_obsv_dims
-        # output_dim = train_set.num_label_types
-        output_dim = len(dataset.vocab)
+        output_dim = train_set.num_label_types
+        if output_dim_from_vocab:
+            output_dim = len(dataset.vocab)
 
         if model_name == 'linear':
             model = torchutils.LinearClassifier(
