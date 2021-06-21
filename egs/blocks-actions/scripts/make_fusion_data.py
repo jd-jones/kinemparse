@@ -8,8 +8,8 @@ import scipy
 # from matplotlib import pyplot as plt
 
 from mathtools import utils
-# from blocks.core import labels as labels_lib
-# from blocks.core.blockassembly import BlockAssembly
+from blocks.core import labels as labels_lib
+from blocks.core import blockassembly
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,9 @@ class FusionDataset(object):
             'actions': self.actions_dir,
             'parts': self.parts_dir,
             'events': self.events_dir,
-            'edges': self.edges_dir
+            'edges': self.edges_dir,
+            'edge diffs': self.events_dir,
+            'edge diffs binary': self.events_dir
         }
 
         labels_dir = self.data_dirs[self.labels]
@@ -47,19 +49,33 @@ class FusionDataset(object):
             suffix=f'{label_fn_format}.*',
             to_array=True
         )
-        if vocab is None:
-            vocab = utils.loadVariable('vocab', labels_dir)
-        self.vocab = vocab
-        self.metadata = utils.loadMetadata(labels_dir, rows=self.trial_ids)
-
         self.prefix = prefix
         self.feature_fn_format = feature_fn_format
         self.label_fn_format = label_fn_format
 
-        # self.parts_vocab, self.part_labels = labels_lib.make_parts_vocab(
-        #     self.vocab, lower_tri_only=True, append_to_vocab=False
-        # )
-        # self.part_labels = (self.part_labels > 0).astype(int)
+        if self.labels in ('edge diffs', 'edge diffs binary'):
+            vocab = (
+                [blockassembly.AssemblyAction()]
+                + utils.loadVariable('assembly-action-vocab', self.events_dir)
+            )
+            for a in vocab:
+                if isinstance(a.sign, np.ndarray):
+                    a.sign = np.sign(a.sign.sum())
+                    logger.info('Replaced sign')
+            self.parts_vocab, self.edge_diffs = labels_lib.make_parts_vocab(
+                vocab, lower_tri_only=True, append_to_vocab=False
+            )
+            signs = np.array([a.sign for a in vocab], dtype=int)
+            signs[signs == -1] = 2
+            self.edge_diffs = np.concatenate((self.edge_diffs, signs[:, None]), axis=1)
+
+            if self.labels == 'edge diffs binary':
+                self.edge_diffs = (self.edge_diffs > 0).astype(int)
+
+        if vocab is None:
+            vocab = utils.loadVariable('vocab', labels_dir)
+        self.vocab = vocab
+        self.metadata = utils.loadMetadata(labels_dir, rows=self.trial_ids)
 
     def loadInputs(self, seq_id, prefix=None, stride=None):
         if prefix is None:
@@ -75,7 +91,7 @@ class FusionDataset(object):
             f"{prefix}{seq_id}_{self.feature_fn_format}",
             self.events_dir
         )
-        events_seq = scipy.special.softmax(events_seq, axis=1)
+        # events_seq = scipy.special.softmax(events_seq, axis=1)
 
         parts_seq = utils.loadVariable(
             f"{prefix}{seq_id}_{self.feature_fn_format}",
@@ -95,7 +111,7 @@ class FusionDataset(object):
         attribute_feats = {
             'actions': make_attribute_features(actions_seq),
             'parts': make_attribute_features(parts_seq),
-            'events': make_attribute_features(events_seq),
+            'events': events_seq,
             'edges': make_attribute_features(edges_seq)
         }
 
@@ -122,7 +138,9 @@ class FusionDataset(object):
                 f'{prefix}{seq_id}_{self.label_fn_format}',
                 self.data_dirs[self.labels]
             )
-            # true_label_seq = self.part_labels[true_label_seq]
+
+        if self.labels in ('edge diffs', 'edge diffs binary'):
+            true_label_seq = self.edge_diffs[true_label_seq]
 
         return true_label_seq
 

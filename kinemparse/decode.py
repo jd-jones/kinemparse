@@ -76,10 +76,20 @@ class AssemblyActionRecognizer(object):
     def make_vocab(self, vocab):
         return Vocabulary(vocab, aux_symbols=self.aux_symbols)
 
-    def product_vocab(self, *vocabs):
-        product = ((tuple(),))
-        for vocab in vocabs:
-            product = tuple((*prod_item, item) for item in vocab.as_raw() for prod_item in product)
+    def product_vocab(self, *vocabs, nonzero_indices=None):
+        if nonzero_indices is None:
+            product = ((tuple(),))
+            for vocab in vocabs:
+                product = tuple(
+                    (*prod_item, item)
+                    for item in vocab.as_raw()
+                    for prod_item in product
+                )
+        else:
+            product = tuple(
+                tuple(vocabs[i].as_raw()[j] for i, j in enumerate(indices))
+                for indices in nonzero_indices
+            )
         return self.make_vocab(product)
 
     def map_parts_to_str(self, product_vocab, *part_vocabs):
@@ -115,10 +125,6 @@ class AssemblyActionRecognizer(object):
 
         self.dur_vocab = self.make_vocab(dur_vocab)
         self.event_vocab = self.make_vocab(event_vocab)
-        # self.action_vocab = self.make_vocab(action_vocab)
-        # self.part_vocab = self.make_vocab(part_vocab)
-        # self.joint_vocab = self.make_vocab(joint_vocab)
-        # self.connection_vocab = self.make_vocab(connection_vocab)
         self.assembly_vocab = self.make_vocab(assembly_vocab)
 
     def _init_models(
@@ -132,6 +138,19 @@ class AssemblyActionRecognizer(object):
         self.output_stage = output_stage
         self.decode_type = decode_type
         self.allow_self_transitions = allow_self_transitions
+
+        self.event_assembly_tx_weights = -stage_scores[1]
+        self.event_assembly_weights = -scipy.special.logsumexp(
+            -self.event_assembly_tx_weights,
+            axis=-1
+        )
+        self.ead_weights = np.stack(
+            (self.event_assembly_weights, self.event_assembly_weights),
+            axis=-1
+        )
+        self.nonzero_indices_ead = np.column_stack(
+            np.nonzero(~np.isinf(self.ead_weights))
+        )
 
         model_builders = [
             self.make_event_dur_model,
@@ -184,11 +203,12 @@ class AssemblyActionRecognizer(object):
 
     def make_event_to_assembly_model(self, event_to_assembly_weights):
         self.event_assembly_tx_dur_vocab = self.product_vocab(
-            self.event_vocab, self.assembly_vocab, self.assembly_vocab, self.dur_vocab
+            self.event_vocab, self.assembly_vocab, self.dur_vocab,
+            nonzero_indices=self.nonzero_indices_ead
         )
         self.event_assembly_tx_dur_to_str = self.map_parts_to_str(
             self.event_assembly_tx_dur_vocab,
-            self.event_vocab, self.assembly_vocab, self.assembly_vocab, self.dur_vocab
+            self.event_vocab, self.assembly_vocab, self.dur_vocab
         )
 
         event_to_assembly_fst = make_event_to_assembly_fst(
@@ -200,7 +220,8 @@ class AssemblyActionRecognizer(object):
             eps_str=self.eps_str,
             dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
             bos_str=self.bos_str, eos_str=self.eos_str,
-            arc_type=self.arc_type
+            arc_type=self.arc_type,
+            sparsity_ref=self.event_assembly_tx_weights
         ).arcsort(sort_type='ilabel')
 
         if self.return_label == 'output':
@@ -252,7 +273,8 @@ class AssemblyActionRecognizer(object):
             dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
             bos_str=self.bos_str, eos_str=self.eos_str,
             state_tx_in_input=True,
-            arc_type=self.arc_type
+            arc_type=self.arc_type,
+            sparsity_ref=self.event_assembly_tx_weights
         ).arcsort(sort_type='ilabel')
 
         if self.return_label == 'output':
@@ -790,7 +812,10 @@ def make_event_to_assembly_fst(
         state_tx_in_input=False,
         eps_str='ε', dur_internal_str='I', dur_final_str='F',
         bos_str='<BOS>', eos_str='<EOS>',
-        arc_type='standard'):
+        arc_type='standard', sparsity_ref=None):
+
+    if sparsity_ref is None:
+        sparsity_ref = weights
 
     fst = openfst.VectorFst(arc_type=arc_type)
     fst.set_input_symbols(input_symbols)
@@ -799,19 +824,19 @@ def make_event_to_assembly_fst(
     zero = openfst.Weight.zero(fst.weight_type())
     one = openfst.Weight.one(fst.weight_type())
 
+    def nonzero_indices(array):
+        return np.column_stack(np.nonzero(array != float(zero)))
+
     init_state = fst.add_state()
     final_state = fst.add_state()
     fst.set_start(init_state)
     fst.set_final(final_state, one)
 
-    W_a_s = -scipy.special.logsumexp(-weights, axis=-1)
+    io_sparsity_ref = -scipy.special.logsumexp(-sparsity_ref, axis=-1)
 
     def make_states(i_input, i_output):
         seg_internal_state = fst.add_state()
         seg_final_state = fst.add_state()
-
-        if openfst.Weight(fst.weight_type(), W_a_s[i_input, i_output]) == zero:
-            return [seg_internal_state, seg_final_state]
 
         state_istr = input_vocab[i_input]
         state_ostr = output_vocab[i_output]
@@ -834,10 +859,10 @@ def make_event_to_assembly_fst(
 
         # (in, I) : (out, I), weight one, self transition
         if state_tx_in_input:
-            arc_istr = input_parts_to_str[state_istr, state_ostr, state_ostr, dur_internal_str]
+            arc_istr = input_parts_to_str[state_istr, state_ostr, dur_internal_str]
         else:
             arc_istr = input_parts_to_str[state_istr, dur_internal_str]
-        arc_ostr = output_parts_to_str[state_istr, state_ostr, state_ostr, dur_internal_str]
+        arc_ostr = output_parts_to_str[state_istr, state_ostr, dur_internal_str]
         arc = openfst.Arc(
             fst.input_symbols().find(arc_istr),
             fst.output_symbols().find(arc_ostr),
@@ -848,10 +873,10 @@ def make_event_to_assembly_fst(
 
         # (in, F) : (out, F), weight one, transition into final state
         if state_tx_in_input:
-            arc_istr = input_parts_to_str[state_istr, state_ostr, state_ostr, dur_final_str]
+            arc_istr = input_parts_to_str[state_istr, state_ostr, dur_final_str]
         else:
             arc_istr = input_parts_to_str[state_istr, dur_final_str]
-        arc_ostr = output_parts_to_str[state_istr, state_ostr, state_ostr, dur_final_str]
+        arc_ostr = output_parts_to_str[state_istr, state_ostr, dur_final_str]
         arc = openfst.Arc(
             fst.input_symbols().find(arc_istr),
             fst.output_symbols().find(arc_ostr),
@@ -879,11 +904,43 @@ def make_event_to_assembly_fst(
         return [seg_internal_state, seg_final_state]
 
     # Build segmental backbone
-    states = [
-        [make_states(i_input, i_output) for i_output, _ in enumerate(output_vocab)]
-        for i_input, _ in enumerate(input_vocab)
-    ]
+    # states = [
+    #     [make_states(i_input, i_output) for i_output, _ in enumerate(output_vocab)]
+    #     for i_input, _ in enumerate(input_vocab)
+    # ]
+    states = {}
+    for i_input, i_output in nonzero_indices(io_sparsity_ref).tolist():
+        seg_internal_state, seg_final_state = make_states(i_input, i_output)
+        states[i_input, i_output, 0] = seg_internal_state
+        states[i_input, i_output, 1] = seg_final_state
 
+    for i_input_cur, i_output_cur, i_output_next in nonzero_indices(sparsity_ref).tolist():
+        tx_weight = weights[i_input_cur, i_output_cur, i_output_next]
+        weight = openfst.Weight(fst.weight_type(), tx_weight)
+        for i_input_next, in nonzero_indices(io_sparsity_ref[:, i_output_next]).tolist():
+            for i_dur, dur_str in enumerate((dur_internal_str, dur_final_str)):
+                # From Seg-Final to Seg-Final or Seg-Internal
+                from_state = states[i_input_cur, i_output_cur, 1]
+                to_state = states[i_input_next, i_output_next, i_dur]
+
+                istr = input_vocab[i_input_next]
+                cur_ostr = output_vocab[i_output_next]
+                # next_ostr = output_vocab[i_output_next]
+                if state_tx_in_input:
+                    arc_istr = input_parts_to_str[istr, cur_ostr, dur_str]
+                else:
+                    arc_istr = input_parts_to_str[istr, dur_str]
+                arc_ostr = output_parts_to_str[istr, cur_ostr, dur_str]
+
+                arc = openfst.Arc(
+                    fst.input_symbols().find(arc_istr),
+                    fst.output_symbols().find(arc_ostr),
+                    weight,
+                    to_state
+                )
+                fst.add_arc(from_state, arc)
+
+    """
     # Add transitions from final (action, assembly) to initial (action, assembly)
     for i_input_cur, arr in enumerate(weights):
         for i_output_cur, row in enumerate(arr):
@@ -912,6 +969,7 @@ def make_event_to_assembly_fst(
                                 to_state
                             )
                             fst.add_arc(from_state, arc)
+    """
 
     if not fst.verify():
         raise openfst.FstError("fst.verify() returned False")
