@@ -54,9 +54,9 @@ assembly_scores_dir="$HOME/data/output/blocks-assemblies/assemblies-from-edge-la
 
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/fuse-modalities"
-fusion_dataset_dir="${phase_dir}/dataset_event-to-edge-diff"
+fusion_dataset_dir="${phase_dir}/dataset_event-to-event"
 cv_folds_dir="${phase_dir}/cv-folds"
-scores_dir="${phase_dir}/scores_event-to-edge-diff"
+scores_dir="${phase_dir}/scores_event-to-event"
 
 scores_eval_dir="${scores_dir}/eval"
 
@@ -117,11 +117,11 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --feature_fn_format "feature-seq.npy" \
         --label_fn_format "label-seq.npy" \
         --gpu_dev_id "'2'" \
-        --predict_mode "'multiclass'" \
+        --predict_mode "'classify'" \
         --model_name "'LSTM'" \
         --batch_size "1" \
         --learning_rate "0.0002" \
-        --output_dim_from_vocab "False" \
+        --output_dim_from_vocab "True" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --dataset_params "{'transpose_data': False, 'flatten_feats': False}" \
         --train_params "{'num_epochs': 100, 'test_metric': 'Accuracy', 'seq_as_batch': 'seq mode'}" \

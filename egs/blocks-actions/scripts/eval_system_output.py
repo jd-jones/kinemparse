@@ -167,7 +167,12 @@ def main(
     else:
         vocab = utils.loadVariable('vocab', data_dir)
 
-    # edge_attrs = makeEdges(vocab)
+    for i in range(len(vocab)):
+        sign = vocab[i].sign
+        if isinstance(sign, np.ndarray):
+            vocab[i].sign = np.sign(sign.sum())
+
+    edge_attrs = makeEdges(vocab)
 
     all_metrics = collections.defaultdict(list)
 
@@ -197,13 +202,13 @@ def main(
             pred_seq = utils.loadVariable(f"{trial_prefix}_pred-label-seq", scores_dir)
             true_seq = utils.loadVariable(f"{trial_prefix}_true-label-seq", scores_dir)
 
-            # pred_parts_seq = edge_attrs[pred_seq]
-            # true_parts_seq = edge_attrs[true_seq]
-            pred_parts_seq = pred_seq
-            true_parts_seq = true_seq
+            pred_parts_seq = edge_attrs[pred_seq]
+            true_parts_seq = edge_attrs[true_seq]
+            # pred_parts_seq = pred_seq
+            # true_parts_seq = true_seq
 
-            # metric_dict = eval_metrics(pred_seq, true_seq)
-            metric_dict = {}
+            # metric_dict = {}
+            metric_dict = eval_metrics(pred_seq, true_seq)
             part_metric_dict = eval_metrics_part(pred_parts_seq, true_parts_seq)
             for key, value in part_metric_dict.items():
                 metric_dict[f'Part {key}'] = value
