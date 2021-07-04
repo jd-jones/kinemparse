@@ -148,6 +148,9 @@ class AssemblyActionRecognizer(object):
             (self.event_assembly_weights, self.event_assembly_weights),
             axis=-1
         )
+        self.nonzero_indices_ea = np.column_stack(
+            np.nonzero(~np.isinf(self.event_assembly_weights))
+        )
         self.nonzero_indices_ead = np.column_stack(
             np.nonzero(~np.isinf(self.ead_weights))
         )
@@ -272,7 +275,7 @@ class AssemblyActionRecognizer(object):
             eps_str=self.eps_str,
             dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
             bos_str=self.bos_str, eos_str=self.eos_str,
-            state_tx_in_input=True,
+            state_in_input=True,
             arc_type=self.arc_type,
             sparsity_ref=self.event_assembly_tx_weights
         ).arcsort(sort_type='ilabel')
@@ -809,7 +812,7 @@ def make_event_to_assembly_fst(
         input_parts_to_str, output_parts_to_str,
         init_weights=None, final_weights=None,
         input_symbols=None, output_symbols=None,
-        state_tx_in_input=False,
+        state_in_input=False,
         eps_str='ε', dur_internal_str='I', dur_final_str='F',
         bos_str='<BOS>', eos_str='<EOS>',
         arc_type='standard', sparsity_ref=None):
@@ -858,7 +861,7 @@ def make_event_to_assembly_fst(
             fst.add_arc(init_state, arc)
 
         # (in, I) : (out, I), weight one, self transition
-        if state_tx_in_input:
+        if state_in_input:
             arc_istr = input_parts_to_str[state_istr, state_ostr, dur_internal_str]
         else:
             arc_istr = input_parts_to_str[state_istr, dur_internal_str]
@@ -872,7 +875,7 @@ def make_event_to_assembly_fst(
         fst.add_arc(seg_internal_state, arc)
 
         # (in, F) : (out, F), weight one, transition into final state
-        if state_tx_in_input:
+        if state_in_input:
             arc_istr = input_parts_to_str[state_istr, state_ostr, dur_final_str]
         else:
             arc_istr = input_parts_to_str[state_istr, dur_final_str]
@@ -926,7 +929,7 @@ def make_event_to_assembly_fst(
                 istr = input_vocab[i_input_next]
                 cur_ostr = output_vocab[i_output_next]
                 # next_ostr = output_vocab[i_output_next]
-                if state_tx_in_input:
+                if state_in_input:
                     arc_istr = input_parts_to_str[istr, cur_ostr, dur_str]
                 else:
                     arc_istr = input_parts_to_str[istr, dur_str]

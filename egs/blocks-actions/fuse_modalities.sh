@@ -152,7 +152,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --scores_dir "${scores_dir}/data" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --plot_io "False" \
+        --plot_io "True" \
         --prefix "seq="
     python ${debug_str} analysis.py \
         --out_dir "${scores_eval_dir}/aggregate-results" \
@@ -196,7 +196,7 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --scores_dir "${event_scores_dir}/data" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --plot_io "False" \
+        --plot_io "True" \
         --prefix "seq="
     python ${debug_str} analysis.py \
         --out_dir "${event_scores_eval_dir}/aggregate-results" \
