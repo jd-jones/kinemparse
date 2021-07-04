@@ -175,17 +175,103 @@ def computeMoments(feature_seqs):
 
 def make_joint_scores(event_score_seq, assembly_score_seq, nonzero_indices, weights=[1, 1]):
     event_indices, assembly_indices = nonzero_indices.T
-    all_scores = np.column_stack(
-        (event_score_seq[:, event_indices] + assembly_score_seq[:, assembly_indices])
+    score_seq = (
+        weights[0] * event_score_seq[:, event_indices]
+        + weights[1] * assembly_score_seq[:, assembly_indices]
     )
-    score_seq = all_scores @ np.array(weights)
 
     return score_seq
 
 
 def make_joint_labels(e, a, ea_mapper):
-    labels = np.array([ea_mapper[i, j] for i, j in zip(e, a)], dtype=int)
+    labels = np.array(
+        [utils.getIndex((i, j), ea_mapper) for i, j in zip(e, a)],
+        dtype=int
+    )
     return labels
+
+
+def make_duration_fst(
+        final_weights, class_vocab, class_dur_to_str, input_str_to_parts,
+        dur_internal_str='I', dur_final_str='F',
+        input_symbols=None, output_symbols=None,
+        allow_self_transitions=True,
+        arc_type='standard'):
+    num_classes, num_states = final_weights.shape
+
+    fst = openfst.VectorFst(arc_type=arc_type)
+    fst.set_input_symbols(input_symbols)
+    fst.set_output_symbols(output_symbols)
+
+    one = openfst.Weight.one(fst.weight_type())
+    zero = openfst.Weight.zero(fst.weight_type())
+
+    init_state = fst.add_state()
+    final_state = fst.add_state()
+    fst.set_start(init_state)
+    fst.set_final(final_state, one)
+
+    def durationFst(label_str, dur_internal_str, dur_final_str, final_weights):
+        """ Construct a left-to-right WFST from an input sequence.
+
+        Parameters
+        ----------
+        input_seq : iterable(int or string)
+
+        Returns
+        -------
+        fst : openfst.Fst
+        """
+
+        input_label = fst.input_symbols().find(label_str)
+        output_label_int = fst.output_symbols().find(dur_internal_str)
+        output_label_ext = fst.output_symbols().find(dur_final_str)
+
+        max_dur = np.nonzero(final_weights != float(zero))[0].max()
+        if max_dur < 1:
+            raise AssertionError(f"max_dur = {max_dur}, but should be >= 1)")
+
+        states = tuple(fst.add_state() for __ in range(max_dur))
+        seg_final_state = fst.add_state()
+        fst.add_arc(init_state, openfst.Arc(0, 0, one, states[0]))
+        fst.add_arc(seg_final_state, openfst.Arc(0, 0, one, final_state))
+
+        for i, cur_state in enumerate(states):
+            cur_state = states[i]
+
+            final_weight = openfst.Weight(fst.weight_type(), final_weights[i])
+            if final_weight != zero:
+                arc = openfst.Arc(input_label, output_label_ext, one, seg_final_state)
+                fst.add_arc(cur_state, arc)
+
+            if i + 1 < len(states):
+                next_state = states[i + 1]
+                arc = openfst.Arc(input_label, output_label_int, one, next_state)
+                fst.add_arc(cur_state, arc)
+
+        return states[0], seg_final_state
+
+    endpoints = tuple(
+        durationFst(
+            class_vocab[i],
+            class_dur_to_str[(*input_str_to_parts[class_vocab[i]], dur_internal_str)],
+            class_dur_to_str[(*input_str_to_parts[class_vocab[i]], dur_final_str)],
+            final_weights[i],
+        )
+        for i in range(num_classes)
+    )
+
+    for i, (s_cur_first, s_cur_last) in enumerate(endpoints):
+        for j, (s_next_first, s_next_last) in enumerate(endpoints):
+            if not allow_self_transitions and i == j:
+                continue
+            arc = openfst.Arc(0, 0, one, s_next_first)
+            fst.add_arc(s_cur_last, arc)
+
+    if not fst.verify():
+        raise openfst.FstError("fst.verify() returned False")
+
+    return fst
 
 
 class AssemblyActionRecognizer(decode.AssemblyActionRecognizer):
@@ -254,14 +340,17 @@ class AssemblyActionRecognizer(decode.AssemblyActionRecognizer):
             self.event_vocab, self.assembly_vocab, self.dur_vocab
         )
 
+        input_str_to_parts = {v: k for k, v in self.event_assembly_tx_to_str.items()}
+
         event_duration_fst = decode.add_endpoints(
-            decode.make_duration_fst(
+            make_duration_fst(
                 duration_weights,
                 self.event_assembly_tx_vocab.as_str(),
                 self.event_assembly_tx_dur_to_str,
+                input_str_to_parts,
                 dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
-                input_symbols=self.event_vocab.symbol_table,
-                output_symbols=self.event_dur_vocab.symbol_table,
+                input_symbols=self.event_assembly_tx_vocab.symbol_table,
+                output_symbols=self.event_assembly_tx_dur_vocab.symbol_table,
                 allow_self_transitions=self.allow_self_transitions,
                 arc_type=self.arc_type,
             ),
@@ -291,8 +380,8 @@ class AssemblyActionRecognizer(decode.AssemblyActionRecognizer):
         event_to_assembly_fst = decode.make_event_to_assembly_fst(
             event_to_assembly_weights,
             self.event_vocab.as_str(), self.assembly_vocab.as_str(),
-            self.event_dur_to_str, self.event_assembly_tx_dur_to_str,
-            input_symbols=self.event_dur_vocab.symbol_table,
+            self.event_assembly_tx_dur_to_str, self.event_assembly_tx_dur_to_str,
+            input_symbols=self.event_assembly_tx_dur_vocab.symbol_table,
             output_symbols=self.event_assembly_tx_dur_vocab.symbol_table,
             eps_str=self.eps_str,
             dur_internal_str=self.dur_internal_str, dur_final_str=self.dur_final_str,
@@ -321,6 +410,49 @@ class AssemblyActionRecognizer(decode.AssemblyActionRecognizer):
         ).arcsort(sort_type='ilabel')
 
         return event_to_assembly_fst, output_vocab, reducer
+
+    def forward(self, input_scores):
+        """ Combine action and part scores into event scores.
+
+        Parameters
+        ----------
+        event_scores : np.ndarray of float with shape (NUM_SAMPLES, NUM_EVENTS)
+
+        Returns
+        -------
+        connection_scores : np.ndarray of float with shape (NUM_SAMPLES, 2, NUM_EDGES)
+        """
+
+        # Convert event scores to lattice
+        sample_vocab = decode.Vocabulary(
+            tuple(f"{i}" for i in range(input_scores.shape[0])),
+            aux_symbols=self.aux_symbols
+        )
+
+        input_lattice = decode.add_endpoints(
+            decode.fromArray(
+                -input_scores,
+                sample_vocab.as_str(), self.event_assembly_tx_vocab.as_str(),
+                input_symbols=sample_vocab.symbol_table,
+                output_symbols=self.event_assembly_tx_vocab.symbol_table,
+                arc_type=self.arc_type
+            ),
+            bos_str=self.bos_str, eos_str=self.eos_str
+        ).arcsort(sort_type='ilabel')
+
+        # Compose event scores with event --> connection map
+        decode_lattice = openfst.compose(input_lattice, self.seq_model)
+        if not decode_lattice.num_states():
+            warn_str = "Empty decode lattice: Input scores aren't compatible with seq model"
+            logger.warning(warn_str)
+        output_lattice = self._decode(decode_lattice)
+        output_weights, weight_type = decode.toArray(
+            output_lattice,
+            sample_vocab.str_integerizer,
+            self.output_vocab.str_integerizer
+        )
+
+        return -output_weights
 
 
 def main(
@@ -429,9 +561,10 @@ def main(
         for indices in nonzero_indices_ea
     )
     ea_mapper = {
-        indices: i
+        tuple(indices.tolist()): i
         for i, indices in enumerate(nonzero_indices_ea)
     }
+    pair_vocab_size = len(ea_mapper)
 
     for cv_index, cv_fold in enumerate(cv_folds):
         if only_fold is not None and cv_index != only_fold:
@@ -470,12 +603,11 @@ def main(
         )
 
         class_priors, dur_probs = count_priors(
-            train_labels, len(ea_vocab),
+            train_labels, len(ea_mapper),
             approx_upto=0.95, support_only=True
         )
-        # FIXME: event durs -> joint durs
         dur_scores = np.log(dur_probs)
-        dur_scores = np.zeros_like(dur_scores)
+        dur_scores = np.zeros_like(dur_scores)[:pair_vocab_size]
         scores = (dur_scores, event_assembly_scores, assembly_transition_scores)
 
         model = AssemblyActionRecognizer(scores, vocabs, model_params)
