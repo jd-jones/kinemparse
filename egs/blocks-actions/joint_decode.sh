@@ -56,7 +56,8 @@ assembly_data_dir="$HOME/data/output/blocks-assemblies/assemblies-from-edge-labe
 phase_dir="${output_dir}/event-assembly-decode"
 decode_dataset_dir="${phase_dir}/dataset"
 cv_folds_dir="${phase_dir}/cv-folds"
-decode_dir="${phase_dir}/joint-decode"
+scores_dir="${phase_dir}/joint-scores_parts"
+decode_dir="${phase_dir}/joint-decode_calibrated-scores"
 
 decode_eval_dir="${decode_dir}/eval"
 
@@ -133,12 +134,42 @@ fi
 
 
 if [ "$start_at" -le "${STAGE}" ]; then
+    echo "STAGE ${STAGE}: Fuse assembly and event scores"
+    python ${debug_str} predict_joint.py \
+        --out_dir "${scores_dir}" \
+        --assembly_scores_dir "${decode_dataset_dir}/assembly-data" \
+        --event_scores_dir "${decode_dataset_dir}/event-data" \
+        --labels_from "${label_type}s" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
+        --plot_io "True" \
+        --prefix "seq=" \
+        --feature_fn_format "score-seq" \
+        --label_fn_format "true-label-seq" \
+        --batch_size "1" \
+        --learning_rate "0.005" \
+        --train_params "{'num_epochs': 250, 'test_metric': 'Accuracy', 'seq_as_batch': 'seq mode'}" \
+        --model_params "{}" \
+        --out_type "parts" \
+        --gpu_dev_id "'cpu'" \
+        --plot_predictions "True"
+    python ${debug_str} analysis.py \
+        --out_dir "${scores_dir}/aggregate-results" \
+        --results_file "${scores_dir}/results.csv"
+fi
+if [ "$stop_after" -eq "${STAGE}" ]; then
+    exit 0
+fi
+((++STAGE))
+
+
+if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Compute assembly scores from event scores"
     export LD_LIBRARY_PATH="${HOME}/miniconda3/envs/kinemparse/lib"
     python ${debug_str} joint_decode.py \
         --out_dir "${decode_dir}" \
         --assembly_scores_dir "${decode_dataset_dir}/assembly-data" \
         --event_scores_dir "${decode_dataset_dir}/event-data" \
+        --joint_scores_dir "${scores_dir}/data" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
         --prefix "seq=" \

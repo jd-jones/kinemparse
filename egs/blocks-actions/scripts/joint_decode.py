@@ -457,7 +457,7 @@ class AssemblyActionRecognizer(decode.AssemblyActionRecognizer):
 
 def main(
         out_dir=None, assembly_scores_dir=None, event_scores_dir=None,
-        labels_from='assemblies',
+        joint_scores_dir=None, labels_from='assemblies',
         feature_fn_format='score-seq', label_fn_format='true-label-seq',
         only_fold=None, plot_io=None, prefix='seq=', stop_after=None,
         background_action='', stride=None, standardize_inputs=False,
@@ -466,6 +466,8 @@ def main(
 
     event_scores_dir = os.path.expanduser(event_scores_dir)
     assembly_scores_dir = os.path.expanduser(assembly_scores_dir)
+    if joint_scores_dir is not None:
+        joint_scores_dir = os.path.expanduser(joint_scores_dir)
     out_dir = os.path.expanduser(out_dir)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -581,12 +583,6 @@ def main(
         (train_event_labels, train_seq_ids), _, (_, test_seq_ids) = event_dataset.getFold(cv_fold)
         (train_assembly_labels, _), _, _ = assembly_dataset.getFold(cv_fold)
 
-        event_score_seqs = tuple(
-            utils.loadVariable(f"{prefix}{seq_id}_score-seq", event_scores_dir)
-            for seq_id in train_seq_ids
-        )
-        event_mean, event_std = computeMoments(event_score_seqs)
-
         assembly_start_probs, assembly_end_probs = count_transitions(
             train_assembly_labels, len(assembly_vocab),
             support_only=True
@@ -597,13 +593,19 @@ def main(
             assembly_scores, assembly_start_scores, assembly_end_scores
         )
 
-        train_labels = tuple(
-            make_joint_labels(e, a, ea_mapper)
-            for e, a in zip(train_event_labels, train_assembly_labels)
-        )
+        if joint_scores_dir is None:
+            train_labels = tuple(
+                make_joint_labels(e, a, ea_mapper)
+                for e, a in zip(train_event_labels, train_assembly_labels)
+            )
+        else:
+            train_labels = tuple(
+                utils.loadVariable(f"{prefix}{seq_id}_true-label-seq", joint_scores_dir)
+                for seq_id in train_seq_ids
+            )
 
         class_priors, dur_probs = count_priors(
-            train_labels, len(ea_mapper),
+            train_labels, np.hstack(train_labels).max() + 1,
             approx_upto=0.95, support_only=True
         )
         dur_scores = np.log(dur_probs)
@@ -632,17 +634,19 @@ def main(
             )
 
             event_score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", event_scores_dir)
-            if standardize_inputs:
-                event_score_seq = (event_score_seq - event_mean) / event_std
             assembly_score_seq = utils.loadVariable(
                 f"{trial_prefix}_score-seq",
                 assembly_scores_dir
             )
 
-            joint_score_seq = make_joint_scores(
-                event_score_seq, assembly_score_seq,
-                model.nonzero_indices_ea
-            )
+            if joint_scores_dir is None:
+                joint_score_seq = make_joint_scores(
+                    event_score_seq, assembly_score_seq,
+                    model.nonzero_indices_ea
+                )
+            else:
+                joint_score_seq = utils.loadVariable(f'{trial_prefix}_score-seq', joint_scores_dir)
+                joint_score_seq = joint_score_seq[:, :pair_vocab_size]
 
             score_seq = model.forward(joint_score_seq)
             pred_label_seq = model.predict(score_seq)
