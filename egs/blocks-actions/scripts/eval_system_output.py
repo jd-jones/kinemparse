@@ -108,13 +108,15 @@ def drawLabels(paths, fig_fn, base_path, state_img_dir, path_labels=None, img_ex
     path_graph.render(filename=fig_fn, directory=base_path, cleanup=True)
 
 
-def makeEdges(vocab):
+def makeEdges(vocab, is_action=False):
     parts_vocab, edge_diffs = labels_lib.make_parts_vocab(
         vocab, lower_tri_only=True, append_to_vocab=False
     )
-    signs = np.array([a.sign for a in vocab], dtype=int)
-    signs[signs == -1] = 2
-    edge_diffs = np.concatenate((edge_diffs, signs[:, None]), axis=1)
+
+    if is_action:
+        signs = np.array([a.sign for a in vocab], dtype=int)
+        signs[signs == -1] = 2
+        edge_diffs = np.concatenate((edge_diffs, signs[:, None]), axis=1)
 
     return edge_diffs
 
@@ -167,12 +169,12 @@ def main(
     else:
         vocab = utils.loadVariable('vocab', data_dir)
 
-    for i in range(len(vocab)):
-        sign = vocab[i].sign
-        if isinstance(sign, np.ndarray):
-            vocab[i].sign = np.sign(sign.sum())
+    # for i in range(len(vocab)):
+    #     sign = vocab[i].sign
+    #     if isinstance(sign, np.ndarray):
+    #         vocab[i].sign = np.sign(sign.sum())
 
-    edge_attrs = makeEdges(vocab)
+    edge_attrs = makeEdges(vocab, is_action=False)
 
     all_metrics = collections.defaultdict(list)
 
@@ -204,10 +206,7 @@ def main(
 
             pred_parts_seq = edge_attrs[pred_seq]
             true_parts_seq = edge_attrs[true_seq]
-            # pred_parts_seq = pred_seq
-            # true_parts_seq = true_seq
 
-            # metric_dict = {}
             metric_dict = eval_metrics(pred_seq, true_seq)
             part_metric_dict = eval_metrics_part(pred_parts_seq, true_parts_seq)
             for key, value in part_metric_dict.items():

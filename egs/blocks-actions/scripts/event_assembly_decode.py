@@ -284,14 +284,8 @@ def main(
 
         cv_str = f'cvfold={cv_index}'
 
-        (train_event_labels, train_seq_ids), _, (_, test_seq_ids) = event_dataset.getFold(cv_fold)
+        (train_event_labels, _), _, (_, test_seq_ids) = event_dataset.getFold(cv_fold)
         (train_assembly_labels, _), _, _ = assembly_dataset.getFold(cv_fold)
-
-        event_score_seqs = tuple(
-            utils.loadVariable(f"{prefix}{seq_id}_score-seq", event_scores_dir)
-            for seq_id in train_seq_ids
-        )
-        event_mean, event_std = computeMoments(event_score_seqs)
 
         assembly_start_probs, assembly_end_probs = count_transitions(
             train_assembly_labels, len(assembly_vocab),
@@ -333,17 +327,9 @@ def main(
             )
 
             event_score_seq = utils.loadVariable(f"{trial_prefix}_score-seq", event_scores_dir)
-            if standardize_inputs:
-                event_score_seq = (event_score_seq - event_mean) / event_std
-            # assembly_score_seq = utils.loadVariable(
-            #     f"{trial_prefix}_score-seq",
-            #     assembly_scores_dir
-            # )
 
             score_seq = model.forward(event_score_seq)
             pred_label_seq = model.predict(score_seq)
-
-            # import pdb; pdb.set_trace()
 
             metric_dict = eval_metrics(pred_label_seq, true_label_seq)
             for name, value in metric_dict.items():

@@ -54,7 +54,7 @@ assembly_attr_fn="${HOME}/data/assembly_structures/ikea-anu.json"
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-events"
 assembly_data_dir="${phase_dir}/assembly-dataset"
-assembly_scores_dir="${phase_dir}/assembly-scores_decode"
+assembly_scores_dir="${phase_dir}/event-scores_decode"
 assembly_scores_eval_dir="${assembly_scores_dir}/eval"
 
 
@@ -113,13 +113,13 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate system output"
     python ${debug_str} eval_system_output.py \
         --out_dir "${assembly_scores_eval_dir}" \
-        --data_dir "${assembly_data_dir}/data" \
+        --data_dir "${dataset_dir}/event-dataset" \
         --scores_dir "${assembly_scores_dir}/data" \
         --frames_dir "${frames_dir}" \
         --plot_io "False" \
         --prefix "seq=" \
-        --no_cv "True"
-        # --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
+        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
+        --no_cv "False"
     python ${debug_str} analysis.py \
         --out_dir "${assembly_scores_eval_dir}/aggregate-results" \
         --results_file "${assembly_scores_eval_dir}/results.csv"
