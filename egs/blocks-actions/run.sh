@@ -55,8 +55,8 @@ cv_folds_dir="${output_dir}/cv-folds"
 phase_dir="${output_dir}/${label_type}s-from-video"
 slowfast_cv_folds_dir="${phase_dir}/cv-folds"
 slowfast_scores_dir="${phase_dir}/slowfast-scores"
-scores_dir="${phase_dir}/probs"
-smoothed_scores_dir="${phase_dir}/probs-smoothed"
+scores_dir="${phase_dir}/scores"
+smoothed_scores_dir="${phase_dir}/scores-smoothed"
 
 scores_eval_dir="${scores_dir}/eval"
 smoothed_eval_dir="${smoothed_scores_dir}/eval"
@@ -207,9 +207,10 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --out_dir "${scores_eval_dir}" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --scores_dir "${scores_dir}/data" \
-        --frames_dir "${frames_dir}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --plot_io "False" \
+        --plot_io "True" \
+        --draw_labels "False" \
+        --is_event "True" \
         --prefix "seq="
     python ${debug_str} analysis.py \
         --out_dir "${scores_eval_dir}/aggregate-results" \
@@ -230,10 +231,11 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --feature_fn_format "score-seq.npy" \
         --label_fn_format "true-label-seq.npy" \
         --gpu_dev_id "'2'" \
-        --predict_mode "'binary multiclass'" \
+        --predict_mode "'classify'" \
         --model_name "'LSTM'" \
         --batch_size "1" \
         --learning_rate "0.0002" \
+        --output_dim_from_vocab "True" \
         --cv_params "{'precomputed_fn': '${cv_folds_dir}/data/cv-folds.json'}" \
         --dataset_params "{'transpose_data': False, 'flatten_feats': False}" \
         --train_params "{'num_epochs': 100, 'test_metric': 'F1', 'seq_as_batch': 'seq mode'}" \
@@ -244,10 +246,9 @@ if [ "$start_at" -le "${STAGE}" ]; then
             'batch_first': True, \
             'dropout': 0, \
             'bidirectional': True, \
-            'binary_multiclass': True \
+            'binary_multiclass': False \
         }" \
         --plot_predictions "True"
-        # --predict_mode "'classify'"
     python analysis.py \
         --out_dir "${smoothed_scores_dir}/system-performance" \
         --results_file "${smoothed_scores_dir}/results.csv"
@@ -264,9 +265,9 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --out_dir "${smoothed_eval_dir}" \
         --data_dir "${dataset_dir}/${label_type}-dataset" \
         --scores_dir "${smoothed_scores_dir}/data" \
-        --frames_dir "${frames_dir}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --plot_io "False" \
+        --plot_io "True" \
+        --is_event "True" \
         --prefix "seq="
     python ${debug_str} analysis.py \
         --out_dir "${smoothed_eval_dir}/aggregate-results" \

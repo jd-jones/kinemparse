@@ -56,7 +56,7 @@ assembly_data_dir="$HOME/data/output/blocks-assemblies/assemblies-from-edge-labe
 phase_dir="${output_dir}/event-assembly-decode"
 decode_dataset_dir="${phase_dir}/dataset"
 cv_folds_dir="${phase_dir}/cv-folds"
-decode_dir="${phase_dir}/decode_assemblies_stage=3_reduce=pre"
+decode_dir="${phase_dir}/decode_events_smoothed"
 
 decode_eval_dir="${decode_dir}/eval"
 
@@ -138,22 +138,23 @@ if [ "$start_at" -le "${STAGE}" ]; then
     python ${debug_str} event_assembly_decode.py \
         --out_dir "${decode_dir}" \
         --assembly_scores_dir "${decode_dataset_dir}/assembly-data" \
-        --event_scores_dir "${decode_dataset_dir}/event-data" \
+        --event_scores_dir "${output_dir}/fuse-modalities/scores_event-to-event/data" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
         --prefix "seq=" \
         --feature_fn_format "score-seq" \
         --label_fn_format "true-label-seq" \
-        --labels_from "assemblies" \
+        --labels_from "events" \
         --standardize_inputs "False" \
         --model_params "{ \
             'decode_type': 'joint', \
             'output_stage': 3, \
-            'return_label': 'output', \
+            'return_label': 'input', \
             'reduce_order': 'pre', \
             'allow_self_transitions': False \
         }"
         # --labels_from "${label_type}s" \
+        # --event_scores_dir "${decode_dataset_dir}/event-data" \
     python ${debug_str} analysis.py \
         --out_dir "${decode_dir}/aggregate-results" \
         --results_file "${decode_dir}/results.csv"

@@ -11,7 +11,7 @@ import LCTM.metrics
 
 from mathtools import utils, metrics
 from blocks.core import labels as labels_lib
-
+from blocks.core import blockassembly
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def main(
         out_dir=None, data_dir=None, scores_dir=None,
         vocab_from_scores_dir=None, only_fold=None,
         plot_io=None, draw_labels=None, vocab_fig_dir=None,
-        prefix='seq=',
+        prefix='seq=', is_event=False,
         results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
 
     data_dir = os.path.expanduser(data_dir)
@@ -169,12 +169,18 @@ def main(
     else:
         vocab = utils.loadVariable('vocab', data_dir)
 
-    # for i in range(len(vocab)):
-    #     sign = vocab[i].sign
-    #     if isinstance(sign, np.ndarray):
-    #         vocab[i].sign = np.sign(sign.sum())
+    logger.info(f"Loaded vocab with {len(vocab)} items")
 
-    edge_attrs = makeEdges(vocab, is_action=False)
+    if is_event:
+        if vocab[0] != blockassembly.AssemblyAction():
+            vocab = [blockassembly.AssemblyAction()] + vocab
+
+        for i in range(len(vocab)):
+            sign = vocab[i].sign
+            if isinstance(sign, np.ndarray):
+                vocab[i].sign = np.sign(sign.sum())
+
+    edge_attrs = makeEdges(vocab, is_action=is_event)
 
     all_metrics = collections.defaultdict(list)
 

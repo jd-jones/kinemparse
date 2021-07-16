@@ -210,7 +210,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --scores_dir "${scores_dir}/data" \
         --frames_dir "${frames_dir}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --plot_io "False" \
+        --plot_io "True" \
+        --is_assembly "False" \
         --prefix "seq="
     python ${debug_str} analysis.py \
         --out_dir "${scores_eval_dir}/aggregate-results" \
@@ -265,7 +266,8 @@ if [ "$start_at" -le "${STAGE}" ]; then
         --scores_dir "${smoothed_scores_dir}/data" \
         --frames_dir "${frames_dir}" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --plot_io "False" \
+        --plot_io "True" \
+        --is_assembly "False" \
         --prefix "seq="
     python ${debug_str} analysis.py \
         --out_dir "${smoothed_eval_dir}/aggregate-results" \

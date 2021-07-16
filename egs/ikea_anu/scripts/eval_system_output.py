@@ -77,7 +77,7 @@ def make_attrs(s, edge_vocab):
 def main(
         out_dir=None, data_dir=None, scores_dir=None, frames_dir=None,
         vocab_from_scores_dir=None, only_fold=None, plot_io=None, prefix='seq=',
-        no_cv=False, background_class='NA',
+        no_cv=False, background_class='NA', is_assembly=False,
         results_file=None, sweep_param_name=None, model_params={}, cv_params={}):
 
     data_dir = os.path.expanduser(data_dir)
@@ -120,7 +120,7 @@ def main(
     vocab = utils.loadVariable('vocab', data_dir)
     background_index = vocab.index(background_class)
 
-    if False:
+    if is_assembly:
         vocab = tuple(
             tuple(sorted(tuple(sorted(joint)) for joint in a))
             for a in utils.loadVariable('vocab', data_dir)
@@ -161,7 +161,7 @@ def main(
 
             metric_dict = eval_metrics(pred_seq, true_seq, background_index=background_index)
 
-            if False:
+            if is_assembly:
                 pred_edges = attr_vocab[pred_seq]
                 true_edges = attr_vocab[true_seq]
                 part_metric_dict = eval_metrics_part(pred_edges, true_edges)
@@ -178,10 +178,22 @@ def main(
             all_true_seqs.append(true_seq)
 
             if plot_io:
+                perf_str = '  '.join(
+                    f'{name}: {metric_dict[name] * 100:.2f}%'
+                    for name in ('Accuracy', 'F1', 'Edit Score')
+                )
+                title = f'{trial_prefix}  {perf_str}'
                 utils.plot_array(
                     score_seq.T, (true_seq, pred_seq), ('true', 'pred'),
-                    fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png")
+                    fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png"),
+                    title=title
                 )
+                if is_assembly:
+                    utils.plot_array(
+                        score_seq.T, (true_edges.T, pred_edges.T), ('true', 'pred'),
+                        fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png"),
+                        title=title
+                    )
 
     if False:
         confusions = metrics.confusionMatrix(all_pred_seqs, all_true_seqs, len(vocab))
