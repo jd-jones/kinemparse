@@ -117,6 +117,7 @@ def main(
 
     logger.info(f"Loaded scores for {len(seq_ids)} sequences from {scores_dir}")
 
+    metadata = utils.loadMetadata(data_dir, rows=seq_ids)
     vocab = utils.loadVariable('vocab', data_dir)
     background_index = vocab.index(background_class)
 
@@ -134,7 +135,7 @@ def main(
     if no_cv:
         cv_folds = ((tuple(), tuple(), tuple(range(len(seq_ids)))),)
     else:
-        cv_folds = utils.makeDataSplits(len(seq_ids), **cv_params)
+        cv_folds = utils.makeDataSplits(len(seq_ids), metadata=metadata, **cv_params)
     utils.saveVariable(cv_folds, 'cv-folds', out_data_dir)
 
     all_pred_seqs = []
@@ -149,6 +150,8 @@ def main(
             f"CV FOLD {cv_index + 1} / {len(cv_folds)}: "
             f"{len(train_indices)} train, {len(val_indices)} val, {len(test_indices)} test"
         )
+
+        fold_metrics = collections.defaultdict(list)
 
         for i in test_indices:
             seq_id = seq_ids[i]
@@ -171,6 +174,7 @@ def main(
             for name, value in metric_dict.items():
                 logger.info(f"    {name}: {value * 100:.2f}%")
                 all_metrics[name].append(value)
+                fold_metrics[name].append(value)
 
             utils.writeResults(results_file, metric_dict, sweep_param_name, model_params)
 
@@ -191,22 +195,25 @@ def main(
                 if is_assembly:
                     utils.plot_array(
                         score_seq.T, (true_edges.T, pred_edges.T), ('true', 'pred'),
-                        fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}.png"),
+                        fn=os.path.join(io_dir_plots, f"seq={seq_id:03d}_parts.png"),
                         title=title
                     )
+        for name, values in fold_metrics.items():
+            value = np.array(values).mean()
+            logger.info(f"  {name}: {value * 100:.2f}%")
 
-    if False:
-        confusions = metrics.confusionMatrix(all_pred_seqs, all_true_seqs, len(vocab))
-        utils.saveVariable(confusions, "confusions", out_data_dir)
+    # if False:
+    confusions = metrics.confusionMatrix(all_pred_seqs, all_true_seqs, len(vocab))
+    utils.saveVariable(confusions, "confusions", out_data_dir)
 
-        per_class_acc, class_counts = metrics.perClassAcc(confusions, return_counts=True)
-        logger.info(f"MACRO ACC: {per_class_acc.mean() * 100:.2f}%")
+    per_class_acc, class_counts = metrics.perClassAcc(confusions, return_counts=True)
+    logger.info(f"MACRO ACC: {per_class_acc.mean() * 100:.2f}%")
 
-        metrics.plotConfusions(os.path.join(fig_dir, 'confusions.png'), confusions, vocab)
-        metrics.plotPerClassAcc(
-            os.path.join(fig_dir, 'per-class-results.png'),
-            vocab, per_class_acc, class_counts
-        )
+    metrics.plotConfusions(os.path.join(fig_dir, 'confusions.png'), confusions, vocab)
+    metrics.plotPerClassAcc(
+        os.path.join(fig_dir, 'per-class-results.png'),
+        vocab, per_class_acc, class_counts, class_counts
+    )
 
 
 if __name__ == "__main__":

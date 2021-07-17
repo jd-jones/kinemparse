@@ -53,9 +53,12 @@ assembly_attr_fn="${HOME}/data/assembly_structures/ikea-anu.json"
 
 # OUTPUT OF SCRIPT
 phase_dir="${output_dir}/assemblies-from-events"
-assembly_data_dir="${phase_dir}/assembly-dataset"
-assembly_scores_dir="${phase_dir}/assembly-scores_decode"
-assembly_scores_eval_dir="${assembly_scores_dir}/eval"
+# assembly_data_dir="${phase_dir}/assembly-dataset"
+# assembly_scores_dir="${phase_dir}/assembly-scores_decode"
+# assembly_scores_eval_dir="${assembly_scores_dir}/eval_furniture"
+assembly_data_dir="${phase_dir}/event-dataset"
+assembly_scores_dir="${phase_dir}/event-scores_decode"
+assembly_scores_eval_dir="${assembly_scores_dir}/eval_furniture"
 
 
 # -=( MAIN SCRIPT )==----------------------------------------------------------
@@ -113,16 +116,18 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate system output"
     python ${debug_str} eval_system_output.py \
         --out_dir "${assembly_scores_eval_dir}" \
-        --data_dir "${phase_dir}/assembly-dataset/data" \
+        --data_dir "${dataset_dir}/event-dataset" \
         --scores_dir "${assembly_scores_dir}/data" \
         --frames_dir "${frames_dir}" \
         --plot_io "True" \
         --prefix "seq=" \
-        --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
-        --is_assembly "True" \
-        --no_cv "True" \
-        --background_class "[]"
+        --cv_params "{'by_group': 'furn_name', 'val_ratio': 0}" \
+        --is_assembly "False" \
+        --no_cv "False" \
+        --background_class "NA"
+        # --background_class "[]"
         # --data_dir "${dataset_dir}/assembly-dataset" \
+        # --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
     python ${debug_str} analysis.py \
         --out_dir "${assembly_scores_eval_dir}/aggregate-results" \
         --results_file "${assembly_scores_eval_dir}/results.csv"

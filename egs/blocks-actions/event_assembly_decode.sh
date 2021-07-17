@@ -56,7 +56,7 @@ assembly_data_dir="$HOME/data/output/blocks-assemblies/assemblies-from-edge-labe
 phase_dir="${output_dir}/event-assembly-decode"
 decode_dataset_dir="${phase_dir}/dataset"
 cv_folds_dir="${phase_dir}/cv-folds"
-decode_dir="${phase_dir}/decode_events_smoothed"
+decode_dir="${phase_dir}/decode_events_stage=3"
 
 decode_eval_dir="${decode_dir}/eval"
 
@@ -169,12 +169,13 @@ if [ "$start_at" -le "${STAGE}" ]; then
     echo "STAGE ${STAGE}: Evaluate system output"
     python ${debug_str} eval_system_output.py \
         --out_dir "${decode_eval_dir}" \
-        --data_dir "${decode_dataset_dir}/assembly-data" \
+        --data_dir "${decode_dataset_dir}/event-data" \
         --scores_dir "${decode_dir}/data" \
         --cv_params "{'precomputed_fn': ${cv_folds_dir}/data/cv-folds.json}" \
         --plot_io "True" \
         --prefix "seq=" \
         --draw_labels "True" \
+        --is_event "True" \
         --vocab_fig_dir "${decode_dataset_dir}/figures/${label_type}/vocab"
     python ${debug_str} analysis.py \
         --out_dir "${decode_eval_dir}/aggregate-results" \
